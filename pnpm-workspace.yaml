@@ -8,6 +8,7 @@ packages:
   - mastracode/agent-runtime
   - mastracode/runtime-mastra-code
   - mastracode/runtime-claude-agent
+  - mastracode/sandbox-sprites
   - mastracode/auth-oidc
   - docs
   - packages/_vendored/*

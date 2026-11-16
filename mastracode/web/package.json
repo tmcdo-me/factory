@@ -25,6 +25,7 @@
   "dependencies": {
     "@clack/prompts": "^1.7.0",
     "@factory/auth-oidc": "link:../auth-oidc",
+    "@factory/sandbox-sprites": "link:../sandbox-sprites",
     "@mastra/agent-browser": "link:../../browser/agent-browser",
     "@mastra/auth-workos": "link:../../auth/workos",
     "@mastra/code-sdk": "link:../sdk",

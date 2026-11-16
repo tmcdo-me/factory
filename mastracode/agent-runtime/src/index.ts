@@ -8,6 +8,7 @@ export type * from './transcript';
 export type { EventLog } from './event-log';
 
 export { defineFactoryTool } from './tools';
+export { SANDBOX_PROCESSES, sandboxProcessesOf } from './workspace';
 export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
 export { SessionPublisher } from './session-publisher';
