@@ -753,6 +753,24 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(told).toContain('news 25');
   });
 
+  it('opens no Claude Code while another Factory process runs Claude Agent sessions', async () => {
+    const fake = fakeQuery();
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(new InMemoryEventLog()),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      host: { held: async () => false },
+      query: fake.fn,
+    });
+    await expect(sessions.commands().send('s1', { text: 'hi' }, { context: undefined })).rejects.toMatchObject({
+      code: 'session_unavailable',
+    });
+    await expect(
+      sessions.runtimeSessions().kickoff('s1', { runId: 'd1', prompt: 'Build it.' }, owner()),
+    ).rejects.toMatchObject({ code: 'session_unavailable' });
+    expect(fake.options).toHaveLength(0);
+  });
+
   it("says so when a session's runtime cannot be looked up, rather than guessing", async () => {
     const store = memoryStore([]);
     const { sessions } = toolSetup(toolCallingQuery(async () => {}).fn, {

@@ -336,13 +336,20 @@ Each slice: implement → focused tests → manual check where noted → commit.
    - **6c** ✅ Claude Agent run lifecycle (`rules/runtime-run-lifecycle.ts`): a phase goal is held on
      the session's thread in the same `threadState` record Mastra Code's objective API keeps (same
      id, count, `maxRuns`, statuses, card stamp, so leaving the phase ends it). After each turn that
-     ended on its own, Factory judges it: met once the card left the phase (or the run handed it to
-     its pull request's own card), else re-kicked with a goal-judge reminder while runs remain, else
-     parked as spent and the run fails `run_incomplete` (a retry runs its kickoff once more). A run
-     parked on a person ends the decision and is followed once they answer. Each run is on the
-     open-run ledger (in `threadState`) and in the audit log (`factory.run.started`/`ended`, with
-     usage) from its kickoff to its end, one run however many re-kicks; a run live on another
-     dispatcher hands the decision back, and a dead process's entries are swept.
+     ended on its own, Factory judges it: met once the card left the phase or the run's pull request
+     is on the card (attached to it, or filed on a card of its own), else re-kicked with a goal-judge
+     reminder while runs remain (never behind another turn in flight: judged again once it ends),
+     else parked as spent and the run fails `run_incomplete` (a retry runs its kickoff once more).
+     Without `threadState` the phase runs once, as before. A run parked on a person ends the decision
+     and is followed once they answer. Each run is on the open-run ledger (in `threadState`, renewed
+     until it ends, parked or not) and in the audit log (`factory.run.started`/`ended`, with usage)
+     from its kickoff to its end, one run however many re-kicks; a run live on another dispatcher
+     hands the decision back, and a dead process's entries are swept.
+     **One process runs Claude Agent sessions** per database (`session/claude-agent-host.ts`): their
+     Claude Code, in-memory run state and ledger writes (whole-value, no compare-and-set) live in
+     it. The first process to claim it holds it while it renews; another refuses to open Claude Agent
+     sessions until the holder is silent for 30s or released it (clean shutdown). The holder is named
+     by host and Claude Agent home, so a restart takes over from itself.
    - **6c** ✅ Messages reach Claude Agent sessions: session-to-session notifications
      (`factory_signal_session`, replies, follower reports; `tools/deliver.ts`) and GitHub
      pull request subscriptions go through the runtime instead of waking the controller

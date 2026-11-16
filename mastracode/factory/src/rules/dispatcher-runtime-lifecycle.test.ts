@@ -2,11 +2,11 @@
 // goals re-kicked until met or spent, and the open-run ledger and run records.
 import type { RequestContext } from '@mastra/core/request-context';
 import type { GoalObjectiveRecord } from '@mastra/core/storage';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { boardRegistryOf, workBoard } from '../boards/index.js';
 import { commitDecisions } from '../boards/test-utils.js';
-import { FACTORY_OPEN_RUNS_SETTING } from '../session/run-audit.js';
+import { FACTORY_OPEN_RUN_STALE_MS, FACTORY_OPEN_RUNS_SETTING, isOpenRunLiveElsewhere } from '../session/run-audit.js';
 import type { FactoryOpenRun } from '../session/run-audit.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
@@ -43,14 +43,18 @@ type Turn = (kickoff: RuntimeKickoff) => Promise<RuntimeRunEnd> | RuntimeRunEnd;
 /** A runtime whose turns end as the test scripts them, one per kickoff; past the script, each completes. */
 function scriptedRuntime(turns: Turn[]) {
   let running = false;
+  // A person's own turn in flight, until `end()`.
+  let person: { ended: Promise<void>; end: () => void } | undefined;
   const kickoffs: RuntimeKickoff[] = [];
   const runtime: FactoryRuntimeSessions = {
     runs: async sessionId => sessionId === 'session-1',
     hasRun: async () => false,
-    isRunning: () => running,
+    isRunning: () => running || person !== undefined,
     parkedBoardRun: async () => false,
     awaitsPerson: async () => false,
-    idle: async () => {},
+    idle: async () => {
+      await person?.ended;
+    },
     kickoff: vi.fn(async (_sessionId: string, kickoff: RuntimeKickoff, _requestContext: RequestContext) => {
       const turn = turns[kickoffs.length] ?? (() => ({ reason: 'complete' as const }));
       kickoffs.push(kickoff);
@@ -63,7 +67,17 @@ function scriptedRuntime(turns: Turn[]) {
     message: async () => {},
     abort: async () => {},
   };
-  return { runtime, kickoffs };
+  /** A person sends the session a turn of their own; it runs until the returned `end`. */
+  const personTurn = () => {
+    let end!: () => void;
+    const ended = new Promise<void>(resolve => (end = resolve));
+    person = { ended, end };
+    return () => {
+      person = undefined;
+      end();
+    };
+  };
+  return { runtime, kickoffs, personTurn };
 }
 
 function auditLog() {
@@ -308,11 +322,71 @@ describe('phase goals on another agent runtime', () => {
     const { transitionService } = await building(storage);
     const { runtime, kickoffs } = scriptedRuntime([]);
     const { dispatcher } = dispatcherFor(storage, transitionService, runtime);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    onTestFinished(() => warn.mockRestore());
 
     await dispatcher.runOnce(new Date());
 
-    expect(kickoffs).toHaveLength(0);
-    expect(await decisionOf(storage)).toMatchObject({ status: 'failed', failureCode: 'run_configuration_invalid' });
+    expect(kickoffs).toHaveLength(1);
+    expect(kickoffs[0]).not.toHaveProperty('goal');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('phase goal is not pursued; running once'));
+    // Its one run left the card in Building, as any working run that did nothing.
+    expect(await decisionOf(storage)).toMatchObject({ status: 'retry', failureCode: 'run_incomplete' });
+  });
+
+  it("never re-kicks behind a person's turn; the goal is judged once that turn ends", async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService, moveOn } = await building(storage);
+    const state = threadState();
+    let endPersonTurn!: () => void;
+    const script = scriptedRuntime([
+      () => {
+        // The person writes to the session while the board's turn finishes.
+        endPersonTurn = script.personTurn();
+        return { reason: 'complete' };
+      },
+      async () => {
+        await moveOn();
+        return { reason: 'complete' };
+      },
+    ]);
+    const { dispatcher } = dispatcherFor(storage, transitionService, script.runtime, { state: state.store });
+
+    await dispatcher.runOnce(new Date());
+
+    // The person took the session: no re-kick queued behind them, no verdict on the board's turn yet.
+    expect(await decisionOf(storage)).toMatchObject({ status: 'succeeded' });
+    expect(script.kickoffs).toHaveLength(1);
+    expect(await state.goal()).toMatchObject({ status: 'active', runsUsed: 0 });
+
+    endPersonTurn();
+    await vi.waitFor(async () => expect(await state.goal()).toMatchObject({ status: 'done', runsUsed: 2 }));
+    expect(script.kickoffs[1]).toMatchObject({ continuation: expect.stringMatching(/^\[Goal attempt 1\/3\]/) });
+  });
+
+  it('counts the pull request the run attached to its own card as the goal met', async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { item, transitionService } = await building(storage);
+    const state = threadState();
+    const { runtime, kickoffs } = scriptedRuntime([
+      async () => {
+        // The run opened its pull request, and Factory attached it to this card (it moves to Review next).
+        await storage.attachSource({
+          orgId: 'org-1',
+          id: item.id,
+          source: { integrationId: 'github', type: 'pull-request', externalId: 'github-pr:7' },
+          metadata: { githubPullRequestNumber: 7 },
+        });
+        return { reason: 'complete' };
+      },
+    ]);
+    const { dispatcher } = dispatcherFor(storage, transitionService, runtime, { state: state.store });
+
+    await dispatcher.runOnce(new Date());
+
+    expect(kickoffs).toHaveLength(1);
+    expect(await state.goal()).toMatchObject({ status: 'done', runsUsed: 1 });
+    expect(await decisionOf(storage)).toMatchObject({ status: 'succeeded' });
   });
 });
 
@@ -367,6 +441,31 @@ describe('run records on another agent runtime', () => {
         totals: { promptTokens: 102, completionTokens: 6, totalTokens: 108, cachedInputTokens: 90 },
       },
     });
+  });
+
+  it('keeps renewing a parked run on the ledger, so another dispatcher sees it live', async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService } = await building(storage);
+    const state = threadState();
+    const { audit } = auditLog();
+    const { runtime } = scriptedRuntime([() => ({ reason: 'awaiting_interaction', resumed: new Promise(() => {}) })]);
+    const { dispatcher } = dispatcherFor(storage, transitionService, runtime, { state: state.store, audit });
+
+    // The dispatcher's timers run on a clock the test moves.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval', 'Date'], now: Date.now() });
+    try {
+      await dispatcher.runOnce(new Date());
+      const [parked] = await state.ledger();
+      expect(parked).toMatchObject({ ownerId: 'worker-1' });
+
+      await vi.advanceTimersByTimeAsync(FACTORY_OPEN_RUN_STALE_MS * 3);
+      const [renewed] = await state.ledger();
+      expect(renewed!.heartbeatAt).toBeGreaterThan(parked!.heartbeatAt! + FACTORY_OPEN_RUN_STALE_MS * 2);
+      // Live to another dispatcher: it neither sweeps it nor starts a run beside it.
+      expect(isOpenRunLiveElsewhere(renewed!, 'worker-2')).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("hands the decision back while another dispatcher's run is live on the ledger, and sweeps a dead one's", async () => {

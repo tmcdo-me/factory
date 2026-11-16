@@ -38,6 +38,7 @@ import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeRunUsage } from '../
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { withWorkItemDescription } from '../work-items/description-context.js';
 import type { ClaudeAgentContext, ClaudeAgentContextBlock } from './claude-agent-context.js';
+import type { ClaudeAgentHost } from './claude-agent-host.js';
 import type { CheckoutPosture } from './claude-agent-posture.js';
 import { factorySkillsOf } from './claude-agent-skills.js';
 import {
@@ -102,6 +103,11 @@ export interface ClaudeAgentSessionsDeps {
   onShellResult?(result: ClaudeAgentShellResult): Promise<void>;
   /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
   home?: string;
+  /**
+   * Whether this process may run Claude Agent sessions: one process sharing the database does (see
+   * `claudeAgentHostLease`). Without it every process may.
+   */
+  host?: Pick<ClaudeAgentHost, 'held'>;
   hostEnv?: Record<string, string | undefined>;
   query?: QueryFn;
 }
@@ -178,6 +184,12 @@ export class ClaudeAgentSessions {
     if (record?.runtimeId !== CLAUDE_AGENT_RUNTIME_ID) {
       this.#live.delete(sessionId);
       return undefined;
+    }
+    if (this.#deps.host && !(await this.#deps.host.held())) {
+      throw new FactoryDispatchError(
+        'session_unavailable',
+        `Session ${sessionId} runs on Claude Agent, which another Factory process sharing this database runs.`,
+      );
     }
     const workspace = await this.#deps.workspace(sessionId, requestContext);
     const { cwd, env } = workspace;

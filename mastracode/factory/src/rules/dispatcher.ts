@@ -46,7 +46,7 @@ import {
   recordSessionRunStart,
   waitForSessionRunAudit,
 } from '../session/run-audit.js';
-import type { FactoryRunUsageCounts, RunEndCaptureSession } from '../session/run-audit.js';
+import type { FactoryRunUsageCounts } from '../session/run-audit.js';
 import { resolvePromptInvocation, resolveSkillInvocation, resolveSkillResumeInvocation } from '../skills/service.js';
 import type { SkillSession } from '../skills/service.js';
 import { isHumanActorId } from '../storage/domains/audit/actors.js';
@@ -82,7 +82,7 @@ import {
   runtimeRunLedgers,
   runtimeUsageSteps,
 } from './runtime-run-lifecycle.js';
-import type { RuntimeGoal, RuntimeGoalVerdict } from './runtime-run-lifecycle.js';
+import type { RuntimeGoal, RuntimeGoalVerdict, RuntimeRunLedger } from './runtime-run-lifecycle.js';
 import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeThreadState } from './runtime-sessions.js';
 import type { FactoryTransitionService } from './transition-service.js';
 import type { FactoryCommitDecision, FactoryRuleActor, FactoryRuleCausalEntry } from './types.js';
@@ -454,6 +454,26 @@ interface SeamWorkingPhase {
   verdict(): Promise<RuntimeGoalVerdict>;
 }
 
+/** The pull requests a card carries, by source key: its own source, or any attached to it. */
+function pullRequestSourcesOf(card: Card): string[] {
+  const ownKey = card.externalSource?.type === 'pull-request' ? externalSourceKey(card.externalSource) : null;
+  const own = ownKey ? [ownKey] : [];
+  const attached = (card.workItem?.sources ?? [])
+    .filter(source => source.sourceType === 'pull-request')
+    .map(source => source.sourceKey ?? source.id);
+  return [...own, ...attached];
+}
+
+/** Start a turn of a seam run (its kickoff or a goal's re-kick). */
+type SeamSend = (
+  kickoff: Omit<Parameters<FactoryRuntimeSessions['kickoff']>[1], 'autoApprovePlan'>,
+) => Promise<{ ended: Promise<RuntimeRunEnd> }>;
+
+type SeamGoalStep =
+  | { kind: 'done' }
+  | { kind: 'busy' }
+  | { kind: 'rekicked'; started: { ended: Promise<RuntimeRunEnd> } };
+
 interface SeamRun {
   binding: FactoryRunBindingRecord;
   startedBy: string;
@@ -789,8 +809,9 @@ export class FactoryDecisionDispatcher {
   readonly #runtimeSessions?: FactoryRuntimeSessions; // fork(claude-agent)
   // fork(claude-agent): seam sessions' goals and ledgers, and the seam runs this process follows.
   readonly #runtimeThreadState?: () => Promise<RuntimeThreadState | undefined>;
-  readonly #seamLedger?: (threadId: string) => RunEndCaptureSession;
-  readonly #seamOpenRuns = new Set<string>();
+  readonly #seamLedger?: (threadId: string) => RuntimeRunLedger;
+  /** Seam runs this process follows, by kickoff id, with the timer renewing their ledger entry. */
+  readonly #seamOpenRuns = new Map<string, ReturnType<typeof setInterval> | undefined>();
   readonly #maxInFlight: number;
   readonly #staleBindingSweepIntervalMs: number;
   readonly #staleBindingTtlMs: number;
@@ -3142,12 +3163,16 @@ export class FactoryDecisionDispatcher {
   async #seamIdle(binding: FactoryRunBindingRecord, label: string): Promise<void> {
     const ledger = this.#seamLedger?.(binding.threadId);
     if (ledger) {
-      const open = (await listSessionOpenRuns(ledger)).filter(entry => entry.bindingId === binding.id);
-      if (open.some(entry => isOpenRunLiveElsewhere(entry, this.#ownerId))) {
-        throw new FactoryDispatchError(
-          'session_unavailable',
-          `Factory binding ${binding.id} has a run in flight on another dispatcher.`,
-        );
+      try {
+        const open = (await listSessionOpenRuns(ledger.handle)).filter(entry => entry.bindingId === binding.id);
+        if (open.some(entry => isOpenRunLiveElsewhere(entry, this.#ownerId))) {
+          throw new FactoryDispatchError(
+            'session_unavailable',
+            `Factory binding ${binding.id} has a run in flight on another dispatcher.`,
+          );
+        }
+      } finally {
+        ledger.release();
       }
     }
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -3177,10 +3202,14 @@ export class FactoryDecisionDispatcher {
     record: FactoryDeferredDecisionRecord,
     goal: { objective: string; maxRuns?: number },
     binding: FactoryRunBindingRecord,
-  ): Promise<RuntimeGoal> {
+  ): Promise<RuntimeGoal | undefined> {
     const store = await this.#runtimeThreadState?.();
     if (!store) {
-      throw new FactoryDispatchError('run_configuration_invalid', 'The Factory session has no storage to hold a goal.');
+      // As before goals came to this runtime: the phase still runs, once.
+      console.warn(
+        `[factory] run on ${binding.sessionId}: Factory's storage holds no thread state, so its phase goal is not pursued; running once.`,
+      );
+      return undefined;
     }
     // The phase this run is for, read before the goal exists (the kickoff was checked against it).
     const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
@@ -3232,9 +3261,12 @@ export class FactoryDecisionDispatcher {
     const existingLinkedReviewIds = new Set(
       (await this.#storage.listLinked({ item: runItem, limit: 100 })).map(card => card.id),
     );
+    const existingPullRequests = new Set(pullRequestSourcesOf(runItem));
     const read = () => this.#storage.get({ orgId: record.orgId, id: record.workItemId! });
-    // The run opened its change request and left it to review on that pull request's own card.
+    // The run opened its change request: attached to this card (its own pull request), or left to
+    // review on that pull request's own card (boards that file it separately).
     const ownCardHandOff = async (after: Card) =>
+      pullRequestSourcesOf(after).some(source => !existingPullRequests.has(source)) ||
       (await this.#storage.listLinked({ item: after, limit: 100 })).some(card => {
         if (
           card.parentWorkItemId !== after.id ||
@@ -3315,10 +3347,6 @@ export class FactoryDecisionDispatcher {
     // Whether the role had handed the card on when its run ended; a move after that keeps the run's verdict.
     let supersededAtEnd: Promise<boolean> | undefined;
     const handedOn = async () => (await supersededAtEnd) ?? (await run.superseded?.()) ?? false;
-    const heartbeat = record
-      ? setInterval(() => void heartbeatSessionOpenRun(record, kickoffId), Math.floor(FACTORY_OPEN_RUN_STALE_MS / 3))
-      : undefined;
-    heartbeat?.unref?.();
     try {
       await this.#reportingRunEnd(
         { binding, startedBy, since, attempts: run.attempts, superseded: handedOn },
@@ -3360,13 +3388,23 @@ export class FactoryDecisionDispatcher {
               }
               ended = 'complete';
               if (await supersededAtEnd) return;
-              const next =
-                run.goal && run.workingPhase ? await this.#nextSeamGoalAttempt(run.goal, run.workingPhase) : undefined;
-              if (!next) {
+              if (!run.goal || !run.workingPhase) {
                 await run.workingPhase?.verify();
                 return;
               }
-              started = await send({ runId: `${kickoffId}:goal:${next.attempt}`, continuation: next.continuation });
+              const step = await this.#seamGoalStep(run.goal, run.workingPhase, binding, send, kickoffId);
+              if (step.kind === 'done') {
+                await run.workingPhase.verify();
+                return;
+              }
+              // Another turn took the session first (a person's): its goal goes on after it, unwatched,
+              // as a Mastra Code run steered by a person goes on.
+              if (step.kind === 'busy') {
+                ended = undefined;
+                following = Promise.resolve({ reason: 'complete' });
+                return;
+              }
+              started = step.started;
               ended = undefined;
             }
           } finally {
@@ -3380,7 +3418,6 @@ export class FactoryDecisionDispatcher {
       if (!(await handedOn())) throw error;
       await run.onSuperseded?.();
     } finally {
-      clearInterval(heartbeat);
       if (ended) await this.#closeSeamRun(record, binding, kickoffId, ended, steps);
       else if (following) void this.#followSeamRun(run, { record, kickoffId, steps, send }, following);
     }
@@ -3394,12 +3431,10 @@ export class FactoryDecisionDispatcher {
   async #followSeamRun(
     run: SeamRun,
     ctx: {
-      record: RunEndCaptureSession | undefined;
+      record: RuntimeRunLedger | undefined;
       kickoffId: string;
       steps: FactoryRunUsageCounts[];
-      send: (
-        kickoff: Omit<Parameters<FactoryRuntimeSessions['kickoff']>[1], 'autoApprovePlan'>,
-      ) => Promise<{ ended: Promise<RuntimeRunEnd> }>;
+      send: SeamSend;
     },
     pending: Promise<RuntimeRunEnd>,
   ): Promise<void> {
@@ -3424,19 +3459,19 @@ export class FactoryDecisionDispatcher {
         const goal = run.goal;
         const workingPhase = run.workingPhase;
         if (!goal || !workingPhase || (await run.superseded?.())) break;
-        // Another turn in flight (a person's, a new phase's kickoff) is not this goal's to queue behind.
-        const rekick: { ended?: Promise<RuntimeRunEnd> } = {};
+        // Another turn in flight (a person's, a new phase's kickoff): the goal is judged once it ends.
+        await this.#runtimeSessions!.idle(binding.sessionId);
+        const taken: { step: SeamGoalStep } = { step: { kind: 'done' } };
         await this.#withBindingSkillRun(binding.id, async () => {
-          if (this.#runtimeSessions!.isRunning(binding.sessionId)) return;
-          const next = await this.#nextSeamGoalAttempt(goal, workingPhase);
-          if (!next) return;
-          const started = await ctx.send({
-            runId: `${ctx.kickoffId}:goal:${next.attempt}`,
-            continuation: next.continuation,
-          });
-          rekick.ended = started.ended;
+          taken.step = await this.#seamGoalStep(goal, workingPhase, binding, ctx.send, ctx.kickoffId);
         });
-        current = rekick.ended;
+        const step = taken.step;
+        if (step.kind === 'busy') {
+          current = Promise.resolve({ reason: 'complete' });
+          continue;
+        }
+        if (step.kind === 'done') break;
+        current = step.started.ended;
       }
     } catch (error) {
       console.warn(
@@ -3446,6 +3481,30 @@ export class FactoryDecisionDispatcher {
       ended = 'error';
     }
     await this.#closeSeamRun(ctx.record, binding, ctx.kickoffId, ended, ctx.steps);
+  }
+
+  /**
+   * The goal's next step after a turn that ended on its own: `done` (met, spent, no longer this run's),
+   * `rekicked`, or `busy` when another turn holds the session (a person's), which a re-kick must never
+   * queue behind with a verdict from before it. Judged right before the re-kick is sent.
+   */
+  async #seamGoalStep(
+    goal: RuntimeGoal,
+    workingPhase: SeamWorkingPhase,
+    binding: FactoryRunBindingRecord,
+    send: SeamSend,
+    kickoffId: string,
+  ): Promise<SeamGoalStep> {
+    const seam = this.#runtimeSessions!;
+    if (seam.isRunning(binding.sessionId)) return { kind: 'busy' };
+    const next = await this.#nextSeamGoalAttempt(goal, workingPhase);
+    if (!next) return { kind: 'done' };
+    // Judging read storage: a turn that started meanwhile goes first, and the goal is judged after it.
+    if (seam.isRunning(binding.sessionId)) return { kind: 'busy' };
+    return {
+      kind: 'rekicked',
+      started: await send({ runId: `${kickoffId}:goal:${next.attempt}`, continuation: next.continuation }),
+    };
   }
 
   /** The goal's re-kick after a turn that ended on its own, or none (met, spent, no longer this run's). */
@@ -3459,14 +3518,27 @@ export class FactoryDecisionDispatcher {
     return judgeRuntimeGoal(store, goal, workingPhase.verdict);
   }
 
-  /** Put a seam run on its thread's open-run ledger and record its start, as `#recordRunStart` does. */
-  async #openSeamRun(run: SeamRun, kickoffId: string): Promise<RunEndCaptureSession | undefined> {
-    const record = this.#seamLedger?.(run.binding.threadId);
-    if (!record || !this.#audit) return undefined;
+  /**
+   * Put a seam run on its thread's open-run ledger and record its start, as `#recordRunStart` does. Its
+   * entry is renewed until the run's record ends (`#closeSeamRun`), watched or followed: a parked run is
+   * live, and another dispatcher must neither sweep it nor start a second Claude Code beside it.
+   */
+  async #openSeamRun(run: SeamRun, kickoffId: string): Promise<RuntimeRunLedger | undefined> {
+    const ledger = this.#seamLedger?.(run.binding.threadId);
+    if (!ledger) return undefined;
+    if (!this.#audit) {
+      ledger.release();
+      return undefined;
+    }
     const { binding } = run;
     const humanApproved = isHumanActorId(run.approvedBy);
-    this.#seamOpenRuns.add(kickoffId);
-    await recordSessionRunStart(record, {
+    const heartbeat = setInterval(
+      () => void heartbeatSessionOpenRun(ledger.handle, kickoffId),
+      Math.floor(FACTORY_OPEN_RUN_STALE_MS / 3),
+    );
+    heartbeat.unref?.();
+    this.#seamOpenRuns.set(kickoffId, heartbeat);
+    await recordSessionRunStart(ledger.handle, {
       audit: this.#audit,
       actorType: humanApproved ? 'human' : 'system',
       // The run's end is recorded by whoever follows it (`#closeSeamRun`).
@@ -3487,31 +3559,32 @@ export class FactoryDecisionDispatcher {
         branch: binding.branch,
       },
     });
-    return record;
+    return ledger;
   }
 
   /**
-   * End a seam run's record. Entries on the thread's ledger whose run nothing here follows and nothing
-   * elsewhere renews died with their process: they end too (as aborted), as Mastra Code's next run end
-   * sweeps them.
+   * End a seam run's record and stop renewing its entry. Entries on the thread's ledger whose run
+   * nothing here follows and nothing elsewhere renews died with their process: they end too (as
+   * aborted), as Mastra Code's next run end sweeps them.
    */
   async #closeSeamRun(
-    record: RunEndCaptureSession | undefined,
+    ledger: RuntimeRunLedger | undefined,
     binding: FactoryRunBindingRecord,
     kickoffId: string,
     reason: 'complete' | 'aborted' | 'error',
     steps: FactoryRunUsageCounts[],
   ): Promise<void> {
+    clearInterval(this.#seamOpenRuns.get(kickoffId));
     this.#seamOpenRuns.delete(kickoffId);
-    if (!record || !this.#audit) return;
+    if (!ledger || !this.#audit) return;
     try {
-      await recordSessionRunEnd(record, {
+      await recordSessionRunEnd(ledger.handle, {
         audit: this.#audit,
         reason,
         ending: entry => entry.kickoffId === kickoffId,
         steps,
       });
-      await recordSessionRunEnd(record, {
+      await recordSessionRunEnd(ledger.handle, {
         audit: this.#audit,
         reason: 'aborted',
         ending: entry =>
@@ -3522,6 +3595,8 @@ export class FactoryDecisionDispatcher {
       });
     } catch (error) {
       console.warn(`[factory] recording the end of run ${kickoffId} on ${binding.sessionId} failed:`, error);
+    } finally {
+      ledger.release();
     }
   }
 

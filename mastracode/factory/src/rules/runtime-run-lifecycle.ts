@@ -3,6 +3,7 @@
 import type { GoalObjectiveRecord } from '@mastra/core/storage';
 import { DEFAULT_GOAL_MAX_RUNS, GOAL_STATE_TYPE } from '@mastra/core/tools';
 
+import { waitForSessionRunAudit } from '../session/run-audit.js';
 import type { RunEndCaptureSession } from '../session/run-audit.js';
 import type { RuntimeRunUsage, RuntimeThreadState } from './runtime-sessions.js';
 
@@ -110,38 +111,57 @@ export async function judgeRuntimeGoal(
   };
 }
 
-/** The ledger entries Factory keeps for a thread, under the type Mastra Code's thread setting is named. */
-const MAX_LEDGERS = 1000;
+/** A thread's open-run ledger, held while its holder reads or writes it. */
+export interface RuntimeRunLedger {
+  handle: RunEndCaptureSession;
+  /** Done with it; the handle is dropped once nobody holds it and its writes landed. */
+  release(): void;
+}
 
 /**
  * The open-run ledger of each thread, kept in thread state rather than the thread's metadata (which the
  * agent controller writes with its own queue): the same entries, records and readers as Mastra Code's.
- * One handle per thread, so its writes queue in order (`run-audit` serializes by handle).
+ *
+ * A ledger is one value, read, changed and written whole, and `threadState` has no compare-and-set: its
+ * writes are safe only from one process, which keeps them in order (`run-audit` queues them per handle,
+ * and a thread has one handle while anyone holds it). Only the Factory process that hosts Claude Agent
+ * sessions writes them (see `claudeAgentHostLease`); other processes only read.
  */
 export function runtimeRunLedgers(store: () => Promise<RuntimeThreadState | undefined>) {
-  const handles = new Map<string, RunEndCaptureSession>();
-  return (threadId: string): RunEndCaptureSession => {
-    let handle = handles.get(threadId);
-    if (handle) {
-      handles.delete(threadId);
-    } else {
-      handle = {
-        thread: {
-          getSetting: async ({ key }) => (await store())?.getState({ threadId, type: key }),
-          setSetting: async ({ key, value }) => {
-            await (await store())?.setState({ threadId, type: key, value });
+  const held = new Map<string, { handle: RunEndCaptureSession; holders: number }>();
+  return (threadId: string): RuntimeRunLedger => {
+    let entry = held.get(threadId);
+    if (!entry) {
+      entry = {
+        handle: {
+          thread: {
+            getSetting: async ({ key }) => (await store())?.getState({ threadId, type: key }),
+            setSetting: async ({ key, value }) => {
+              await (await store())?.setState({ threadId, type: key, value });
+            },
           },
+          // No agent-controller events: the dispatcher records each end itself.
+          subscribe: () => () => {},
         },
-        // No agent-controller events: the dispatcher records each end itself.
-        subscribe: () => () => {},
+        holders: 0,
       };
+      held.set(threadId, entry);
     }
-    handles.set(threadId, handle);
-    for (const oldest of handles.keys()) {
-      if (handles.size <= MAX_LEDGERS) break;
-      handles.delete(oldest);
-    }
-    return handle;
+    const holding = entry;
+    holding.holders += 1;
+    let released = false;
+    return {
+      handle: holding.handle,
+      release: () => {
+        if (released) return;
+        released = true;
+        holding.holders -= 1;
+        if (holding.holders > 0) return;
+        void waitForSessionRunAudit(holding.handle).then(() => {
+          if (holding.holders === 0 && held.get(threadId) === holding) held.delete(threadId);
+        });
+      },
+    };
   };
 }
 
