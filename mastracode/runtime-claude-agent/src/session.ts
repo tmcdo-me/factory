@@ -43,6 +43,12 @@ export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?
 
 export interface ClaudeAgentSessionOptions {
   sessionId: string;
+  /**
+   * How long a Claude Code that was told to stop (SIGTERM, SIGINT, SIGHUP) waits for the host to close
+   * the session before its run counts as failed. The host's own shutdown signals Claude Code with it,
+   * often before it gets to close the session. Default 2 seconds.
+   */
+  signalGraceMs?: number;
   /** The session's working directory (its checkout). */
   cwd: string;
   emit(event: FactoryEvent): void;
@@ -210,12 +216,19 @@ export class ClaudeAgentSession {
     this.#options.model = modelId;
   }
 
-  async close(): Promise<void> {
+  /**
+   * Stop Claude Code; its open runs end as aborted. `notice`, when given, says why in the transcript
+   * (the host shutting down), on the run in flight.
+   */
+  async close(notice?: string): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeNotice = notice;
+    this.#onClose?.();
     this.#input?.close();
     this.#query?.close();
     await this.#pump?.catch(() => undefined);
+    this.#noticeClose();
     this.#endOpenRuns('aborted', 'Session closed');
   }
 
@@ -290,13 +303,23 @@ export class ClaudeAgentSession {
       this.#endOpenRuns('error', 'Claude Code exited');
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      // Told to stop: by the host's own shutdown (which signals Claude Code with it, often before it
+      // closes the session), or by something else (an out-of-memory killer, an evicted container). Only
+      // the host closing the session soon after makes it a stop; anything else is a failure.
+      if (!this.#closed && stoppedBySignal(text)) await this.#closedWithin(this.#options.signalGraceMs ?? 2_000);
+      const runId = this.#runs[0];
+      if (this.#closed) {
+        this.#noticeClose();
+        this.#endOpenRuns('aborted', text);
+        return;
+      }
       this.#options.emit({
         type: 'error',
         message: text,
         retryable: false,
-        ...(this.#runs[0] ? { runId: this.#runs[0] } : {}),
+        ...(runId ? { runId } : {}),
       });
-      this.#endOpenRuns(this.#closed ? 'aborted' : 'error', text);
+      this.#endOpenRuns('error', text);
     } finally {
       // A new send starts a fresh process (resuming the Claude session).
       this.#query = undefined;
@@ -323,12 +346,52 @@ export class ClaudeAgentSession {
     });
   }
 
+  #closeNotice: string | undefined;
+  #closeNoticed = false;
+  #onClose: (() => void) | undefined;
+
+  /** Resolves once the session is closed, or after `ms`. */
+  #closedWithin(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const timer = setTimeout(done, ms);
+      timer.unref?.();
+      function done() {
+        clearTimeout(timer);
+        resolve();
+      }
+      this.#onClose = done;
+    });
+  }
+
+  /** Say, once, on the run in flight, why the host closed the session. */
+  #noticeClose(): void {
+    const runId = this.#runs[0];
+    if (!this.#closeNotice || !runId || this.#closeNoticed) return;
+    this.#closeNoticed = true;
+    this.#options.emit({
+      type: 'notice',
+      noticeId: this.#newId(),
+      kind: 'system-reminder',
+      tag: 'run-stopped',
+      text: this.#closeNotice,
+      runId,
+    });
+  }
+
   #endOpenRuns(reason: RunEndReason, error: string): void {
     for (const runId of this.#runs.splice(0)) {
       this.#options.emit({ type: 'run.ended', runId, reason, ...(reason === 'error' ? { error } : {}) });
     }
     this.#aborting = false;
   }
+}
+
+/**
+ * Whether Claude Code ended because it was told to stop (SIGTERM, SIGINT, SIGHUP), as the SDK reports
+ * it: by the signal, or by the shell-style exit code it maps to (143, 130, 129).
+ */
+export function stoppedBySignal(message: string): boolean {
+  return /process exited with code (?:129|130|143)\b|terminated by signal SIG(?:TERM|INT|HUP)\b/.test(message);
 }
 
 /** What Claude reads: the turn's context, each in its own element, then the turn (in its notice's element). */

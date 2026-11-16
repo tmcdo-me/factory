@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { claudeProcessEnv } from './env';
 import type { FactoryToolCall } from './factory-tools';
-import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
+import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
 
@@ -499,6 +499,84 @@ describe('ClaudeAgentSession', () => {
     await session.send({ text: 'two' });
     await settled(events, 2);
     expect(starts).toBe(2);
+  });
+
+  it('reports a turn whose Claude Code was told to stop as stopped only when the host closes the session', async () => {
+    const stoppedSession = (exit: string) => {
+      const events: FactoryEvent[] = [];
+      const fn: QueryFn = ({ prompt, options }) =>
+        Object.assign(
+          (async function* () {
+            for await (const _message of prompt) throw new Error(exit);
+          })(),
+          { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(), options },
+        ) as unknown as Query;
+      const session = new ClaudeAgentSession({
+        sessionId: 's1',
+        cwd: '/w',
+        env: {},
+        emit: e => events.push(e),
+        query: fn,
+        signalGraceMs: 50,
+      });
+      return { events, session };
+    };
+
+    // The host's shutdown signalled Claude Code, then closed the session: a stop, and the transcript says why.
+    for (const exit of [
+      'Claude Code process exited with code 143',
+      'Claude Code process terminated by signal SIGTERM',
+      'Claude Code process exited with code 130',
+    ]) {
+      const { events, session } = stoppedSession(exit);
+      const { runId } = await session.send({ text: 'one' });
+      await new Promise(resolve => setTimeout(resolve, 5));
+      await session.close('The server restarted.');
+      await settled(events);
+      expect(events.find(e => e.type === 'run.ended')).toEqual({ type: 'run.ended', runId, reason: 'aborted' });
+      expect(events.some(e => e.type === 'error')).toBe(false);
+      expect(events.filter(e => e.type === 'notice' && e.tag === 'run-stopped')).toEqual([
+        expect.objectContaining({ runId, text: 'The server restarted.' }),
+      ]);
+    }
+
+    // Told to stop by something else (an out-of-memory killer, an evicted container) while the host
+    // runs on: a failure, as any other exit.
+    const outside = stoppedSession('Claude Code process exited with code 143');
+    await outside.session.send({ text: 'one' });
+    await settled(outside.events);
+    expect(outside.events.find(e => e.type === 'run.ended')).toMatchObject({ reason: 'error' });
+    expect(outside.events).toContainEqual(
+      expect.objectContaining({ type: 'error', message: expect.stringContaining('143') }),
+    );
+    expect(outside.events.some(e => e.type === 'notice' && e.tag === 'run-stopped')).toBe(false);
+
+    expect(stoppedBySignal('Claude Code process exited with code 1')).toBe(false);
+    expect(stoppedBySignal('Claude Code process exited with code 137')).toBe(false);
+    expect(stoppedBySignal('Claude Code process terminated by signal SIGKILL')).toBe(false);
+  });
+
+  it('fails a killed Claude Code at once, without waiting for the host', async () => {
+    const events: FactoryEvent[] = [];
+    const fn: QueryFn = ({ prompt, options }) =>
+      Object.assign(
+        (async function* () {
+          for await (const _message of prompt) throw new Error('Claude Code process terminated by signal SIGKILL');
+        })(),
+        { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(), options },
+      ) as unknown as Query;
+    // A grace longer than the test: a kill never waits for it.
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/w',
+      env: {},
+      emit: e => events.push(e),
+      query: fn,
+      signalGraceMs: 60_000,
+    });
+    await session.send({ text: 'one' });
+    await settled(events);
+    expect(events.find(e => e.type === 'run.ended')).toMatchObject({ reason: 'error' });
   });
 
   it('switches the live model and sends images as image blocks', async () => {

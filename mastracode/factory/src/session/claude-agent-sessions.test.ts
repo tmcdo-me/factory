@@ -581,6 +581,104 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(fake.options[1]).toMatchObject({ resume: 'claude-xyz' });
   });
 
+  it('records an untrusted checkout without putting back a resume id Claude replaced meanwhile', async () => {
+    // Claude Code answers only the first turn, once released; later turns stay in flight.
+    let release!: () => void;
+    const released = new Promise<void>(resolve => (release = resolve));
+    let turns = 0;
+    const query: QueryFn = ({ prompt }) =>
+      Object.assign(
+        (async function* () {
+          for await (const _message of prompt) {
+            if (turns++ > 0) await new Promise(() => {});
+            yield { type: 'system', subtype: 'init', session_id: 'claude-new', model: 'm', uuid: 'u' } as never;
+            await released;
+            yield {
+              type: 'result',
+              subtype: 'success',
+              session_id: 'claude-new',
+              uuid: 'u',
+              total_cost_usd: 0,
+              usage: { input_tokens: 1, output_tokens: 1 },
+            } as never;
+          }
+        })(),
+        { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() },
+      ) as never;
+    const stored = memoryStore([claude('s1', { runtimeState: { claudeSessionId: 'claude-old' } })]);
+    // A copy per read, as a database returns rows.
+    const store = { ...stored, get: async (id: string) => structuredClone(await stored.get(id)) };
+    // Trusted when it opens; the next turn's check is slow, and finds the checkout untrusted.
+    let untrusted!: () => void;
+    const checkout = vi
+      .fn<() => Promise<'trusted' | 'untrusted'>>()
+      .mockResolvedValueOnce('trusted')
+      .mockImplementationOnce(() => new Promise(resolve => (untrusted = () => resolve('untrusted'))));
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(new InMemoryEventLog()),
+      sessions: store,
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      checkout,
+      query,
+    });
+    const commands = sessions.commands();
+    await commands.send('s1', { text: 'one' }, { context: undefined });
+    // The next turn reads the record (still `claude-old`) and waits on the posture check.
+    const second = commands.send('s1', { text: 'two' }, { context: undefined }).catch(() => undefined);
+    await vi.waitFor(() => expect(checkout).toHaveBeenCalledTimes(2));
+    release();
+    await vi.waitFor(async () =>
+      expect((await store.get('s1'))?.runtimeState).toEqual({ claudeSessionId: 'claude-new' }),
+    );
+
+    untrusted();
+    await second;
+    // Before the next turn ends and rewrites it.
+    await vi.waitFor(async () =>
+      expect((await store.get('s1'))?.runtimeState).toEqual({ claudeSessionId: 'claude-new', untrustedCheckout: true }),
+    );
+  });
+
+  it('stops the runs in flight when the server shuts down, saying so', async () => {
+    // A turn that runs until Claude Code is closed; closing ends its process (a signal exit).
+    const query: QueryFn = ({ prompt }) => {
+      let kill!: () => void;
+      const killed = new Promise<void>(resolve => (kill = resolve));
+      return Object.assign(
+        (async function* () {
+          for await (const _message of prompt) {
+            await killed;
+            throw new Error('Claude Code process exited with code 143');
+          }
+        })(),
+        { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(() => kill()) },
+      ) as never;
+    };
+    const log = new InMemoryEventLog();
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      query,
+    });
+    await sessions.commands().send('s1', { text: 'one' }, { context: undefined });
+
+    await sessions.shutdown();
+
+    await vi.waitFor(async () => {
+      const events = (await log.list('s1')).map(e => e.event);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.ended', reason: 'aborted' }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'notice',
+          tag: 'run-stopped',
+          text: expect.stringContaining('shut down or restarted'),
+        }),
+      );
+      expect(events.some(event => event.type === 'error')).toBe(false);
+    });
+  });
+
   it('holds at most 20 waiting messages, and says how many it dropped', async () => {
     const fake = toolCallingQuery(async () => {});
     const { sessions, log } = toolSetup(fake.fn);
