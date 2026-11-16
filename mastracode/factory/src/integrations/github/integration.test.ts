@@ -1170,9 +1170,24 @@ describe('GithubIntegration workers', () => {
     Object.assign(process.env, originalEnv);
   });
 
-  it('registers a single reconcile worker that folds PR and issue sweeps', () => {
+  // fork(claude-agent): plus the poll of active cards' pull requests, for a Factory GitHub can't reach.
+  it('registers a single reconcile worker that folds PR and issue sweeps, and the active pull request poll', () => {
     const github = new GithubIntegration(validConfig());
-    expect(github.workers(context()).map(worker => worker.name)).toEqual(['github-pull-request-reconcile']);
+    expect(github.workers(context()).map(worker => worker.name)).toEqual([
+      'github-pull-request-reconcile',
+      'github-active-pull-request-poll',
+    ]);
+  });
+
+  // fork(claude-agent)
+  it('leaves the active pull request poll off when its interval is 0', () => {
+    process.env.MASTRACODE_GITHUB_ACTIVE_PR_POLL_INTERVAL_MS = '0';
+    try {
+      const github = new GithubIntegration(validConfig());
+      expect(github.workers(context()).map(worker => worker.name)).toEqual(['github-pull-request-reconcile']);
+    } finally {
+      delete process.env.MASTRACODE_GITHUB_ACTIVE_PR_POLL_INTERVAL_MS;
+    }
   });
 
   it('allows issue reconciliation when legacy reconciliation is disabled', () => {

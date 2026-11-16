@@ -437,6 +437,19 @@ Each slice: implement → focused tests → manual check where noted → commit.
      A message stays answerable for 7 days after Claude read it, then is forgotten (Mastra Code's
      notification records have no such window); one still waiting is never forgotten. Without the domain (a warning at start), messages wait in
      memory and `held` says a restart would lose them.
+   - **6f** ✅ Pull requests on active cards without webhooks (the server stays unreachable from
+     GitHub): every minute (`MASTRACODE_GITHUB_ACTIVE_PR_POLL_INTERVAL_MS`, default 60000, at
+     least 10000; `0` off) the pull requests bound to cards in a working column (their own, or an
+     open one attached) are read with conditional requests (`If-None-Match` on the last ETag, so an
+     unchanged pull request is three free `304`s: the pull request, its reviews, its comments), and
+     what changed goes where a webhook delivery goes, the board's rules ingress and then the sessions
+     subscribed to the pull request (`dispatchGithubWebhook`): closed or merged (under the reconcile
+     sweep's delivery id, so whichever sees it first, the other replays), new commits
+     (`synchronize`), a review submitted, a comment. One lease across replicas; state is per process:
+     a pull request's first poll takes what it finds as known, delivering only a close and the reviews
+     and comments since its card entered the column, at most 15 minutes back; a delivery the ingress
+     replays is not sent to sessions again. The full sweeps keep their cadence. GitHub check runs
+     have no handler on either path, so they are not polled (`active-pull-request-poll.ts`).
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

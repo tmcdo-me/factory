@@ -2799,6 +2799,8 @@ export class MastraFactory {
           buildIntegrationContext(
             {
               controller: prepared.base.controller,
+              // fork(claude-agent): what the workers deliver (the active pull request poll) reaches Claude Agent sessions too.
+              ...(this.#claudeAgentSessions ? { runtimeSessions: this.#claudeAgentSessions.runtimeSessions() } : {}),
               publicOrigin,
               auth: routeAuth,
               stateSigner,
