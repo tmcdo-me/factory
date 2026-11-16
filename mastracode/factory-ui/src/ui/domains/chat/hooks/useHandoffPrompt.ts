@@ -3,14 +3,15 @@ import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
 import { useEffect, useRef } from 'react';
 import { useLocation, useNavigate } from 'react-router';
 
-import { useSendAgentControllerMessageMutation } from '../../../../hooks/useAgentControllerRunMutations';
-import { useSwitchAgentControllerModelMutation } from '../../../../hooks/useAgentControllerStateMutations';
+import {
+  useSendSessionMessageMutation,
+  useSwitchSessionModelMutation,
+} from '../../../../hooks/useSessionCommandMutations';
 import { useChatCommands } from '../context/ChatCommandsProvider';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import { useChatTranscript } from '../context/useChatTranscript';
 import { useComposerImagesState } from '../context/useComposerImagesState';
 import type { PendingImage } from '../context/ComposerImagesContext';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { peekHandoffFiles, takeHandoffFiles } from '../services/handoffFiles';
 
 interface PromptHandoff {
@@ -96,14 +97,9 @@ export function useHandoffPrompt(): void {
   const { localUser, clearPending, pushNotice } = useChatTranscript();
   const { restoreComposerDraft } = useChatCommands();
   const { setImages } = useComposerImagesState();
-  const mutationArgs = {
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  };
-  const { mutateAsync: sendMessage } = useSendAgentControllerMessageMutation(mutationArgs);
-  const { mutateAsync: switchModel } = useSwitchAgentControllerModelMutation(mutationArgs);
+  const mutationArgs = { sessionId, baseUrl };
+  const { mutateAsync: sendMessage } = useSendSessionMessageMutation(mutationArgs);
+  const { mutateAsync: switchModel } = useSwitchSessionModelMutation(mutationArgs);
   const handedOff = useRef(false);
   const recovered = useRef(false);
   const shown = useRef(false);

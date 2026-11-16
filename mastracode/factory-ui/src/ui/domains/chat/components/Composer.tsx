@@ -26,10 +26,7 @@ import type { KeyboardEvent, ReactNode } from 'react';
 import { useMatch, useNavigate, useParams } from 'react-router';
 
 import { INITIAL_THREAD_MESSAGE_LIMIT, queryKeys } from '../../../../api/keys';
-import {
-  useAbortAgentControllerMutation,
-  useSendAgentControllerMessageMutation,
-} from '../../../../hooks/useAgentControllerRunMutations';
+import { useAbortSessionMutation, useSendSessionMessageMutation } from '../../../../hooks/useSessionCommandMutations';
 import { useCreateAgentControllerThreadMutation } from '../../../../hooks/useAgentControllerThreadMutations';
 import { useChatCommands } from '../context/ChatCommandsProvider';
 import type { PendingImage } from '../context/ComposerImagesContext';
@@ -108,8 +105,8 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
   };
   const { annotations, takeAnnotations, restoreAnnotations } = useChatAnnotations();
   const createThreadMutation = useCreateAgentControllerThreadMutation(hookArgs);
-  const sendMutation = useSendAgentControllerMessageMutation(hookArgs);
-  const abortMutation = useAbortAgentControllerMutation(hookArgs);
+  const sendMutation = useSendSessionMessageMutation({ sessionId, baseUrl });
+  const abortMutation = useAbortSessionMutation({ sessionId, baseUrl });
   const planFeedback = usePendingPlanFeedback();
 
   const preparingThreadId = usePreparingThreadId();

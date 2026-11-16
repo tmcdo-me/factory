@@ -5,7 +5,7 @@ import { toast } from '@mastra/playground-ui/components/Toaster';
 import { useQueryClient } from '@tanstack/react-query';
 import { useParams } from 'react-router';
 
-import { useSwitchAgentControllerModelMutation } from '../../../../hooks/useAgentControllerStateMutations';
+import { useSwitchSessionModelMutation } from '../../../../hooks/useSessionCommandMutations';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import {
   CLAUDE_AGENT_DEFAULT_MODEL,
@@ -13,7 +13,6 @@ import {
   useRuntimeCatalog,
   useSessionRuntimeQuery,
 } from '../hooks/useSessionRuntime';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { CLAUDE_AGENT_RUNTIME, MASTRA_CODE_RUNTIME, runtimeKeys, runtimeLabel } from '../services/factoryRuntimes';
 import type { SessionRuntime } from '../services/factoryRuntimes';
 
@@ -71,12 +70,7 @@ export function ClaudeModelPicker() {
   const runtime = useChatRuntime();
   const draft = useDraftRuntime(draftSessionId, factoryId);
   const queryClient = useQueryClient();
-  const switchModel = useSwitchAgentControllerModelMutation({
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: !draftSessionId,
-  });
+  const switchModel = useSwitchSessionModelMutation({ sessionId, baseUrl });
   const models = catalog?.runtimes.find(r => r.id === CLAUDE_AGENT_RUNTIME)?.models ?? [];
   const modelId = runtime.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL;
 

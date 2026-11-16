@@ -8,7 +8,8 @@ import { TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/re
 import { SESSION_ID, releaseSession, renderThread, stubPreparingSession } from './composer-session-test-fixture';
 import { askUserPayload, askUserSuspension } from './fixtures/ask-user';
 
-const agentControllerBaseUrl = `${TEST_BASE_URL}/api/agent-controller/code`;
+// fork(claude-agent): answers go to Factory's session API.
+const interactionsUrl = `${TEST_BASE_URL}/web/factory/sessions/:sessionId/interactions`;
 
 // Operators can answer beyond the agent's suggestions without sending a separate
 // chat message. Both transcript renderers must resume the originating tool call
@@ -23,8 +24,8 @@ describe('Factory custom question answers', () => {
       async selectionMode => {
         const captureToolResume = vi.fn();
         server.use(
-          http.post(`${agentControllerBaseUrl}/sessions/:resourceId/tool-suspension`, async ({ request, params }) => {
-            captureToolResume(params.resourceId, await request.json());
+          http.post(interactionsUrl, async ({ request, params }) => {
+            captureToolResume(params.sessionId, await request.json());
             return HttpResponse.json({ ok: true });
           }),
         );
@@ -86,8 +87,8 @@ describe('Factory custom question answers', () => {
             : 'Add a narrow handwritten RPC type';
         await waitFor(() =>
           expect(captureToolResume).toHaveBeenCalledExactlyOnceWith(SESSION_ID, {
-            toolCallId: askUserSuspension.toolCallId,
-            resumeData: expectedResumeData,
+            callId: askUserSuspension.toolCallId,
+            response: { kind: 'question', answer: expectedResumeData },
           }),
         );
         expect(sessionFixture.posted).toEqual([]);

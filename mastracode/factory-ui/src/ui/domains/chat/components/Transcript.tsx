@@ -1,4 +1,3 @@
-import type { PlanResume } from '@mastra/client-js';
 import { ChatShell } from '@mastra/playground-ui/components/ChatShell';
 import { MarkdownRenderer } from '@mastra/playground-ui/components/MarkdownRenderer';
 import { MessageScrollerItem } from '@mastra/playground-ui/components/MessageScroller';
@@ -12,11 +11,11 @@ import { useChatSessionContext } from '../context/useChatSessionContext';
 import { useChatTranscript } from '../context/useChatTranscript';
 import type { ThreadOwner } from '../services/reply-credential';
 import {
-  useApproveAgentControllerToolMutation,
-  useRespondAgentControllerSuspensionMutation,
+  useApproveSessionToolMutation,
+  useRespondSessionPromptMutation,
   isEndedPrompt,
-} from '../../../../hooks/useAgentControllerRunMutations';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
+} from '../../../../hooks/useSessionCommandMutations';
+import type { PlanResume } from '../services/factorySessionCommands';
 import { replySteps } from '../services/turns';
 import { ArrivalScope, useArriving } from '@mastra/playground-ui/components/Arrival';
 import { ActivityWorkingDirectory } from '@mastra/playground-ui/components/ai/activity';
@@ -50,17 +49,12 @@ function turnReply(steps: MessageEntry[], runningTurn: boolean): string | undefi
 }
 
 export function Transcript({ tail }: { tail?: TranscriptTail }) {
-  const { sessionId, sessionEnabled, baseUrl, owner } = useChatSessionContext();
+  const { sessionId, baseUrl, owner } = useChatSessionContext();
   const { transcript, resolvePrompt, busy, viewerId } = useChatTranscript();
   const { entries } = transcript;
-  const hookArgs = {
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  };
-  const { mutateAsync: approve, isPending: approving } = useApproveAgentControllerToolMutation(hookArgs);
-  const { mutateAsync: respond, isPending: responding } = useRespondAgentControllerSuspensionMutation(hookArgs);
+  const hookArgs = { sessionId, baseUrl };
+  const { mutateAsync: approve, isPending: approving } = useApproveSessionToolMutation(hookArgs);
+  const { mutateAsync: respond, isPending: responding } = useRespondSessionPromptMutation(hookArgs);
 
   // Pinned: these reach every entry, and a fresh pair each token would redraw the lot.
   const onApprove = useCallback(

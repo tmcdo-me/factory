@@ -13,10 +13,7 @@ import {
   useResumeAgentControllerGoalMutation,
   useSetAgentControllerGoalMutation,
 } from '../../../../hooks/useAgentControllerGoalMutations';
-import {
-  useAbortAgentControllerMutation,
-  useFollowUpAgentControllerMutation,
-} from '../../../../hooks/useAgentControllerRunMutations';
+import { useAbortSessionMutation } from '../../../../hooks/useSessionCommandMutations';
 import { useAgentControllerSettings } from '../../../../hooks/useAgentControllerSettings';
 import { useModelReasoningOptions } from '../../../../hooks/useAvailableModels';
 import { useFactoryQuery } from '../../../../hooks/useFactories';
@@ -47,7 +44,7 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
   const navigate = useNavigate();
   const location = useLocation();
   const { sessionId, sessionEnabled, baseUrl, modelLockedReason } = useChatSessionContext();
-  const { transcript, busy, localUser, pushNotice } = useChatTranscript();
+  const { transcript, busy, pushNotice } = useChatTranscript();
   const { usage, omPhase } = useChatRuntime();
   const { activeModelId, setModel } = useChatModels();
   const { catalogTarget, modelScope } = useChatModelScope();
@@ -64,8 +61,7 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
   const pauseGoalMutation = usePauseAgentControllerGoalMutation(hookArgs);
   const resumeGoalMutation = useResumeAgentControllerGoalMutation(hookArgs);
   const setGoalMutation = useSetAgentControllerGoalMutation(hookArgs);
-  const abortMutation = useAbortAgentControllerMutation(hookArgs);
-  const followUpMutation = useFollowUpAgentControllerMutation(hookArgs);
+  const abortMutation = useAbortSessionMutation({ sessionId, baseUrl });
   const settingsQuery = useAgentControllerSettings(hookArgs);
   const updateSettingsMutation = useUpdateAgentControllerSettingsMutation(hookArgs);
   const { permissions, permissionsLoading, setPermissionForCategory } = useChatPermissions();
@@ -268,18 +264,6 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
       description: 'Sign in with a provider account',
       requiresSession: false,
       execute: async () => openSessionDefaults(),
-    },
-    {
-      name: 'follow-up',
-      args: '<message>',
-      description: 'Queue a follow-up message',
-      requiresSession: true,
-      execute: async rawArguments => {
-        if (rawArguments) {
-          localUser(rawArguments);
-          await followUpMutation.mutateAsync(rawArguments);
-        }
-      },
     },
     {
       name: 'abort',

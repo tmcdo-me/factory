@@ -1,5 +1,4 @@
 // fork(claude-agent): which agent runtime the chat is on (a draft's choice, or a session's).
-import type { QueryClient } from '@tanstack/react-query';
 import { useQuery } from '@tanstack/react-query';
 import { useSyncExternalStore } from 'react';
 
@@ -85,16 +84,7 @@ export function draftRuntimeChoice(draftId: string, projectDefault: string | und
   };
 }
 
-/** Whether this session is drawn and driven through Factory's own session API. */
+/** Whether this session is drawn from Factory's own session event log (every session's writes go through its API). */
 export function usesFactorySessionApi(runtime: SessionRuntime | undefined): boolean {
   return transcriptSource === 'factory' || runtime?.runtimeId === CLAUDE_AGENT_RUNTIME;
-}
-
-/** Resolve a session's runtime (cached, else fetched once) before choosing where a command goes. */
-export async function resolveSessionRuntime(queryClient: QueryClient, baseUrl: string, sessionId: string) {
-  return queryClient.fetchQuery({
-    queryKey: runtimeKeys.session(sessionId),
-    queryFn: () => fetchSessionRuntime(baseUrl, sessionId),
-    staleTime: Infinity,
-  });
 }

@@ -179,7 +179,8 @@ function renderPicker({
       }
       return HttpResponse.json({ ok: true });
     }),
-    http.post(`${API}/sessions/:resourceId/model`, async ({ request }) => {
+    // fork(claude-agent): the model switch goes to Factory's session API.
+    http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
       modelSwitches.push(await request.json());
       await modelSwitched;
       return HttpResponse.json({ ok: true });

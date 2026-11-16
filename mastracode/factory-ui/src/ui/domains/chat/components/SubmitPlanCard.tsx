@@ -1,4 +1,4 @@
-import type { PlanResume } from '@mastra/client-js';
+import type { PlanResume } from '../services/factorySessionCommands';
 import { Button } from '@mastra/playground-ui/components/Button';
 import {
   Plan,

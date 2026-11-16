@@ -9,14 +9,15 @@ import { server } from '../../../../../../e2e/ui/msw-server';
 import { TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/render';
 import { releaseSession, renderThread, stubPreparingSession } from './composer-session-test-fixture';
 
-const API = `${TEST_BASE_URL}/api/agent-controller/code`;
+// fork(claude-agent): plan feedback goes to Factory's session API.
+const INTERACTIONS = `${TEST_BASE_URL}/web/factory/sessions/:sessionId/interactions`;
 
 describe('Composer plan feedback', () => {
   describe('when a submit_plan approval is pending', () => {
     it('resumes the plan suspension with the composer message as revision feedback', async () => {
       const onResume = vi.fn();
       server.use(
-        http.post(`${API}/sessions/:resourceId/tool-suspension`, async ({ request }) => {
+        http.post(INTERACTIONS, async ({ request }) => {
           onResume(await request.json());
           return HttpResponse.json({ ok: true });
         }),
@@ -45,13 +46,12 @@ describe('Composer plan feedback', () => {
       await waitForMutationsIdle(client);
 
       expect(onResume).toHaveBeenCalledWith({
-        toolCallId: 'plan-call-1',
-        resumeData: {
+        callId: 'plan-call-1',
+        response: {
+          kind: 'plan_approval',
           action: 'rejected',
           feedback: 'Cover the rollback path too.',
-          path: '.artifacts/plans/ship.md',
-          title: 'Ship it',
-          plan: 'Add the feature.',
+          plan: { path: '.artifacts/plans/ship.md', title: 'Ship it', content: 'Add the feature.' },
         },
       });
       expect(session.posted).toEqual([]);

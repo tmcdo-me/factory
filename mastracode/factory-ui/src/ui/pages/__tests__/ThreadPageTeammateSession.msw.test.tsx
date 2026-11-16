@@ -244,7 +244,8 @@ describe("a teammate's Factory session", () => {
       serveModelCatalogs({ sessionScope: 'user', viewerModels: [openAIKeyModel] });
       openWardSessionAs('user-damien');
       server.use(
-        http.post(`${AC}/sessions/:resourceId/model`, async ({ request }) => {
+        // fork(claude-agent): a model switch would go to Factory's session API.
+        http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
           modelSwitches.push(await request.json());
           return HttpResponse.json({ ok: true });
         }),

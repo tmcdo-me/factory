@@ -93,7 +93,7 @@ describe('Factory session commands client', () => {
       ok: false,
       reason: 'no_pending_suspension',
     });
-    await expect(abortFactorySession(TEST_BASE_URL, 's1')).rejects.toThrow(/refused/);
+    await expect(abortFactorySession(TEST_BASE_URL, 's1')).rejects.toMatchObject({ status: 409 });
 
     recordRequests(404, { ok: false, reason: 'session_not_found', message: 'No session "s1"' });
     await expect(sendFactorySessionMessage(TEST_BASE_URL, 's1', { text: 'hi' })).rejects.toThrow('No session "s1"');

@@ -20,7 +20,6 @@ const COMMAND_NAMES = [
   'settings',
   'connect',
   'login',
-  'follow-up',
   'abort',
   'help',
 ];

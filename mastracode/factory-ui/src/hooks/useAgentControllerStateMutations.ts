@@ -1,4 +1,3 @@
-import type { AgentControllerThinkingLevel } from '@mastra/client-js';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import { queryKeys } from '../api/keys';
@@ -7,9 +6,6 @@ import {
   createAgentControllerClient,
   requireAgentControllerSession,
 } from '../ui/domains/chat/services/agentControllerClient';
-// fork(claude-agent): with the Factory transcript source, the model switch goes to Factory's session API.
-import { switchFactorySessionModel } from '../ui/domains/chat/services/factorySessionCommands';
-import { resolveSessionRuntime, usesFactorySessionApi } from '../ui/domains/chat/hooks/useSessionRuntime';
 
 export function useSetAgentControllerStateMutation({
   agentControllerId,
@@ -35,34 +31,5 @@ export function useSetAgentControllerStateMutation({
           : Promise.resolve(),
       ]);
     },
-  });
-}
-
-interface ModelSwitch {
-  modelId: string;
-  thinkingLevel?: AgentControllerThinkingLevel;
-}
-
-export function useSwitchAgentControllerModelMutation(args: AgentControllerMutationArgs) {
-  const queryClient = useQueryClient();
-  const { session } = createAgentControllerClient(args);
-
-  return useMutation({
-    mutationFn: async ({ modelId, thinkingLevel }: ModelSwitch) =>
-      usesFactorySessionApi(
-        await resolveSessionRuntime(queryClient, args.baseUrl ?? '', args.sessionId).catch(() => undefined),
-      )
-        ? switchFactorySessionModel(args.baseUrl ?? '', args.sessionId, modelId, thinkingLevel)
-        : requireAgentControllerSession(session).switchModel(modelId, { thinkingLevel }),
-    onSuccess: () =>
-      Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.agentControllerConnectionState(args.agentControllerId, args.sessionId),
-        }),
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.agentControllerSettings(args.agentControllerId, args.sessionId),
-          exact: true,
-        }),
-      ]),
   });
 }

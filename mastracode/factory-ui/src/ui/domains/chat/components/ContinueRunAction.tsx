@@ -1,7 +1,7 @@
 import { Button } from '@mastra/playground-ui/components/Button';
 import { useIsMutating } from '@tanstack/react-query';
 
-import { useSendAgentControllerMessageMutation } from '../../../../hooks/useAgentControllerRunMutations';
+import { useSendSessionMessageMutation } from '../../../../hooks/useSessionCommandMutations';
 import { switchThreadMutationKey } from '../../../../hooks/useAgentControllerThreadMutations';
 import { useChatConnection } from '../context/useChatConnection';
 import { useChatSessionContext } from '../context/useChatSessionContext';
@@ -14,12 +14,7 @@ export function ContinueRunAction({ entryId }: { entryId: string }) {
   const { sessionId, baseUrl, sessionEnabled } = useChatSessionContext();
   const transcript = useChatTranscript();
   const { status, threadId: boundThreadId } = useChatConnection();
-  const sendMessage = useSendAgentControllerMessageMutation({
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  });
+  const sendMessage = useSendSessionMessageMutation({ sessionId, baseUrl });
   // The server can rebind before a switch's response lands, so the acknowledged binding is unknown until then.
   const switchingThread = useIsMutating({ mutationKey: switchThreadMutationKey(AGENT_CONTROLLER_ID, sessionId) }) > 0;
   const latestFailure =

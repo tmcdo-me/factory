@@ -315,6 +315,14 @@ Each slice: implement → focused tests → manual check where noted → commit.
      state (running, usage) from the seam, removal of the dropped Mastra-only UI (goals, OM,
      permissions, multi-thread sessions), then flip the default to `factory`.
      Renderers move from the projection to native transcript items opportunistically afterwards.
+     - ✅ Writes: every session's send (and steer), stop, tool approval, `ask_user` answer, plan
+       decision and model switch go to `/web/factory/sessions/:id/...`, whatever its runtime and
+       transcript source (`hooks/useSessionCommandMutations.ts`); Mastra Code sessions reach
+       `createMastraCodeSessionCommands` through `routeSessionCommands`. A refused answer keeps the
+       runtime's reason (`no_pending_suspension` still ends the prompt); a failed command carries
+       its HTTP status, so a refused first prompt is still told apart from one that may have
+       landed. `/follow-up` (Mastra's queued follow-up, which the seam has no command for) is gone.
+       Thinking-level changes (`/think`, the thinking picker) still write Mastra's session settings.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
