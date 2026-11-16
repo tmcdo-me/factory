@@ -16,6 +16,8 @@ interface StreamState {
 const isRecord = (value: unknown): value is Json =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 const str = (value: unknown): string | undefined => (typeof value === 'string' ? value : undefined);
+const num = (value: unknown): number | undefined =>
+  typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 
 /**
  * Translates the Claude Agent SDK's message stream (with `includePartialMessages`) into
@@ -34,12 +36,15 @@ export class ClaudeAgentEventMapper {
   readonly #inputSeen = new Set<string>();
   readonly #tools = new Map<string, string>(); // callId → tool name
   readonly #subagents = new Set<string>();
+  /** The main agent's latest model call: its model and the size of the prompt it sent. */
+  #lastCall: { model?: string; contextTokens?: number } = {};
 
   map(message: SDKMessage, context: { runId?: string } = {}): FactoryEvent[] {
     const runId = context.runId ? { runId: context.runId } : {};
     switch (message.type) {
       case 'system':
         if (message.subtype === 'init') {
+          this.#lastCall = { ...this.#lastCall, model: message.model };
           return [{ type: 'model.changed', runtimeId: CLAUDE_AGENT_RUNTIME_ID, modelId: message.model }];
         }
         return [];
@@ -51,6 +56,8 @@ export class ClaudeAgentEventMapper {
         return this.#toolResults(message);
       case 'result': {
         const usage = message.usage as unknown as Json;
+        const { contextTokens } = this.#lastCall;
+        const contextWindow = this.#contextWindow(message.modelUsage);
         const out: FactoryEvent[] = [
           {
             type: 'usage',
@@ -61,6 +68,9 @@ export class ClaudeAgentEventMapper {
               ? { cachedInputTokens: usage.cache_read_input_tokens }
               : {}),
             costUsd: message.total_cost_usd,
+            // fork(claude-agent): the context meter's numbers.
+            ...(contextTokens !== undefined ? { contextTokens } : {}),
+            ...(contextWindow !== undefined ? { contextWindow } : {}),
           },
         ];
         if (message.subtype !== 'success') {
@@ -83,8 +93,10 @@ export class ClaudeAgentEventMapper {
     const channel = parent ?? '';
     switch (event.type) {
       case 'message_start': {
-        const id = str((event.message as Json | undefined)?.id);
-        if (!id) return [];
+        const started = event.message as Json | undefined;
+        const id = str(started?.id);
+        if (!started || !id) return [];
+        if (!parent) this.#recordCall(started);
         this.#streams.set(channel, { messageId: id, blocks: new Map() });
         // A subagent's prose stays inside the subagent; only the main agent speaks in the transcript.
         if (parent || this.#messages.has(id)) return [];
@@ -142,6 +154,7 @@ export class ClaudeAgentEventMapper {
     const body = message.message as unknown as Json;
     const id = str(body.id) ?? message.uuid;
     const content = Array.isArray(body.content) ? (body.content as Json[]) : [];
+    if (!parent) this.#recordCall(body);
     const out: FactoryEvent[] = [];
     // Not streamed (partial messages off, or a replay): announce it from the full message.
     const streamed = this.#messages.has(id);
@@ -170,6 +183,43 @@ export class ClaudeAgentEventMapper {
       });
     }
     return out;
+  }
+
+  /**
+   * Remember the main agent's latest model call (a subagent has a context of its own).
+   *
+   * What is "in context" is the prompt that call sent: uncached input plus cache-read plus
+   * cache-written input. Anthropic splits a prompt across those three, so `input_tokens` alone is
+   * only the uncached tail. It is not the `result` message's usage either: that adds up every call
+   * of the turn, counting the shared prefix once per call. The call's own output joins the context
+   * on the next call and is counted then. (`Query.getContextUsage()` gives Claude Code's exact
+   * breakdown, but it is a control request the session would have to make; this needs none.)
+   */
+  #recordCall(message: Json): void {
+    const usage = isRecord(message.usage) ? message.usage : {};
+    const input = num(usage.input_tokens);
+    const contextTokens =
+      input === undefined
+        ? this.#lastCall.contextTokens
+        : input + (num(usage.cache_read_input_tokens) ?? 0) + (num(usage.cache_creation_input_tokens) ?? 0);
+    this.#lastCall = { model: str(message.model) ?? this.#lastCall.model, contextTokens };
+  }
+
+  /**
+   * The context window Claude Code reports for the main agent's model. `modelUsage` is keyed by
+   * model id and also holds subagent and helper models, so pick the main agent's entry, falling
+   * back to the only entry. Nothing is guessed when that is ambiguous.
+   */
+  #contextWindow(modelUsage: Record<string, { contextWindow?: number; canonicalModel?: string }> | undefined) {
+    if (!modelUsage) return undefined;
+    const model = this.#lastCall.model;
+    const entries = Object.entries(modelUsage);
+    const entry =
+      (model !== undefined
+        ? (modelUsage[model] ?? entries.find(([, usage]) => usage.canonicalModel === model)?.[1])
+        : undefined) ?? (entries.length === 1 ? entries[0]![1] : undefined);
+    const window = entry?.contextWindow;
+    return typeof window === 'number' && window > 0 ? window : undefined;
   }
 
   #toolStarted(

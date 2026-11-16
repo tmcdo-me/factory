@@ -122,6 +122,11 @@ export type FactoryEvent =
   /** A subagent the runtime started for a tool call (`callId`); its own tool calls carry `parentCallId`. */
   | { type: 'subagent.started'; callId: string; agentType: string; task: string; modelId?: string }
   | { type: 'subagent.ended'; callId: string; result?: string; error?: string }
+  /**
+   * Token usage, as the runtime reports it. `inputTokens`/`outputTokens` follow the runtime's own
+   * report (one model step for Mastra Code, a whole turn for Claude Agent), so they don't compare
+   * across runtimes; `contextTokens` and `contextWindow` do.
+   */
   | {
       type: 'usage';
       runId?: string;
@@ -130,6 +135,14 @@ export type FactoryEvent =
       cachedInputTokens?: number;
       reasoningTokens?: number;
       costUsd?: number;
+      /**
+       * Tokens in the main agent's context: the whole prompt of its latest model call (uncached,
+       * cache-read and cache-written input together). A snapshot, not a running total; absent when
+       * the runtime can't tell.
+       */
+      contextTokens?: number;
+      /** Context window of the model that made that call, when the runtime reports one. */
+      contextWindow?: number;
     }
   | { type: 'model.changed'; runtimeId: string; modelId: string }
   /** `code` names the failure (e.g. an error class or provider code) so the UI can offer a fix. */

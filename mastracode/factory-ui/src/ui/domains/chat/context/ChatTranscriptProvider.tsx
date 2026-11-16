@@ -9,6 +9,7 @@ import { useAgentControllerTranscript } from '../hooks/useAgentControllerTranscr
 import { useFactorySessionTranscript } from '../hooks/useFactorySessionTranscript';
 import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
 import { initialChatRuntime, runtimeReducer } from '../services/runtime';
+import type { ContextUsage } from '../services/contextUsage';
 import type { ChatRuntimeState, SessionStateSnapshot } from '../services/runtime';
 import type { TranscriptState } from '../services/transcript';
 import { SessionFavicon } from '../components/SessionFavicon';
@@ -83,7 +84,11 @@ function transcriptProviderUsing(useTranscript: typeof useAgentControllerTranscr
 
     return (
       <ChatConnectionProvider onEvent={onEvent}>
-        <ChatRuntimeValueProvider runtime={runtime} threadId={transcriptApi.transcript.threadId ?? threadId}>
+        <ChatRuntimeValueProvider
+          runtime={runtime}
+          threadId={transcriptApi.transcript.threadId ?? threadId}
+          context={transcriptApi.transcript.context}
+        >
           <ChatTranscriptValueProvider
             threadId={threadId}
             viewerId={viewerId}
@@ -103,10 +108,13 @@ function ChatRuntimeValueProvider({
   children,
   runtime,
   threadId,
+  context,
 }: {
   children: ReactNode;
   runtime: ChatRuntimeState;
   threadId?: string;
+  /** fork(claude-agent): the context Factory's event log reports; wins over the Mastra stream's. */
+  context?: ContextUsage;
 }) {
   const { state } = useChatConnection();
   const sessionState = !threadId || state?.threadId === threadId ? state : undefined;
@@ -114,6 +122,7 @@ function ChatRuntimeValueProvider({
     <ChatRuntimeContext.Provider
       value={{
         usage: runtime.usage ?? sessionState?.tokenUsage,
+        context: context ?? runtime.context,
         followUpCount: runtime.followUpCount,
         omProgress: runtime.omProgress ?? sessionState?.omProgress,
         omPhase: runtime.omPhase,

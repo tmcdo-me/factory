@@ -7,6 +7,7 @@ import type { MastraDBMessage, MastraMessagePart } from '@mastra/core/agent-cont
 import type { MastraErrorPart } from '@mastra/core/agent/message-list';
 import { z } from 'zod';
 
+import type { ContextUsage } from './contextUsage'; // fork(claude-agent)
 import { sentByOther } from './message-author';
 
 export interface ToolCall {
@@ -111,6 +112,8 @@ export interface TranscriptState {
   pending: boolean;
   threadId?: string;
   tasks: AgentControllerTaskSnapshot[];
+  /** fork(claude-agent): how full the model's context is, when the transcript source reports it. */
+  context?: ContextUsage;
 }
 
 export const initialTranscript: TranscriptState = {

@@ -46,7 +46,7 @@ import { CLAUDE_AGENT_RUNTIME } from '../services/factoryRuntimes';
 import { commandRequiresReadySession, isSlashCommand } from '../services/commands';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { mergeDictation } from '../services/dictation';
-import { ClaudeModelPicker, RuntimePicker, useChatRuntime } from './RuntimePicker';
+import { ClaudeModelPicker, RuntimePicker, useChatRuntime, useChatRuntimeLabel } from './RuntimePicker';
 import { ComposerConnectionNotice } from './ComposerConnectionNotice';
 import { ComposerImageAttachments } from './ComposerImageAttachments';
 import { ComposerPrimaryAction } from './ComposerPrimaryAction';
@@ -79,6 +79,7 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
   const { sessionId, sessionEnabled, baseUrl, factorySessionState } = useChatSessionContext();
   const { factoryId } = useParams<{ factoryId: string }>();
   const chatRuntime = useChatRuntime(); // fork(claude-agent)
+  const runtimeName = useChatRuntimeLabel(); // fork(claude-agent)
   const onDraftComposer = useMatch('/factories/:factoryId/new') !== null;
   const onUserDraft = useMatch('/factories/:factoryId/user/new/:draftSessionId') !== null;
   const navigate = useNavigate();
@@ -147,7 +148,7 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
     ? 'Give feedback on this plan'
     : liveRun
       ? 'Steer the agent'
-      : 'Ask Mastra Code';
+      : `Ask ${runtimeName}`; // fork(claude-agent): name the session's runtime
   const placeholder = initializingPlaceholder ?? normalPlaceholder;
   const sendTitle = sendTitleFor({
     waitsOnConnection: connectionLost && !onUserDraft && blocked,

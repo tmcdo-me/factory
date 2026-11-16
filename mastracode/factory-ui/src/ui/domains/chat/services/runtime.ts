@@ -3,6 +3,8 @@ import { isKnownAgentControllerEvent } from '@mastra/client-js';
 import type { TokenUsage } from '@mastra/core/agent-controller';
 import { replaceEqualDeep } from '@tanstack/react-query';
 
+import type { ContextUsage } from './contextUsage'; // fork(claude-agent)
+import { contextFromStepUsage } from './contextUsage'; // fork(claude-agent)
 import type { OMBudgets } from './om';
 
 export type SessionStateSnapshot = Pick<AgentControllerSessionState, 'threadId' | 'omProgress' | 'tokenUsage'>;
@@ -14,6 +16,8 @@ export type GoalSnapshot = Pick<
 
 export interface ChatRuntimeState {
   usage?: TokenUsage;
+  /** fork(claude-agent): the latest step's context, for the context meter. Cleared on reset. */
+  context?: ContextUsage;
   followUpCount: number;
   omProgress?: OMBudgets;
   omPhase: OMPhase;
@@ -176,6 +180,7 @@ export function runtimeReducer(state: ChatRuntimeState, action: RuntimeAction): 
       return {
         ...state,
         usage,
+        context: contextFromStepUsage(usage), // fork(claude-agent)
         tokensPerSec,
         _decodeMessageId: undefined,
         _decodeStartedAt: 0,

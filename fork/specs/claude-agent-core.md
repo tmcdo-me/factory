@@ -123,7 +123,7 @@ type FactoryEvent =
   | { type: 'tool.ended'; callId; result?: unknown; error?: string }
   | { type: 'interaction.requested'; interaction: PendingInteraction }
   | { type: 'interaction.resolved'; interactionId; response }
-  | { type: 'usage'; inputTokens; outputTokens; costUsd? }
+  | { type: 'usage'; inputTokens; outputTokens; costUsd?; contextTokens?; contextWindow? }
   | { type: 'subagent.started' | 'subagent.ended'; callId; label }
   | { type: 'error'; message; retryable: boolean };
 
@@ -134,6 +134,10 @@ type ToolCategory = 'shell' | 'file.read' | 'file.write' | 'search' | 'factory' 
   `executor: 'factory'` from the transcript — not Mastra message parts.
 - **Audits** (git audit, first-exec capture) key on `category: 'shell'` + input command, so they
   work for Mastra's `execute_command` and Claude's `Bash` alike. Adapters map tool names → category.
+- **Context meter.** `usage.contextTokens` is the whole prompt of the main agent's latest model
+  call (a snapshot, not a sum); `contextWindow` is that model's window when the runtime reports it
+  (Claude Code does, in `result.modelUsage`; Mastra's model catalog has none). The composer shows
+  both, and hides Mastra's observational-memory budgets in Claude Agent sessions.
 
 ### 3.3 Factory tools, defined once
 
