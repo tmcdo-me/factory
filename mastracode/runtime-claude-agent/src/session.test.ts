@@ -703,6 +703,8 @@ describe('claudeProcessEnv', () => {
       { GH_TOKEN: 'ghs_sandbox' },
     );
     expect(env).toEqual({
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_NOSYSTEM: '1',
       HOME: '/home/u',
       PATH: '/bin',
       CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
