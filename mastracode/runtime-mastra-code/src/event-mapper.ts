@@ -36,6 +36,7 @@ interface OpenInteraction {
 export class MastraCodeEventMapper {
   readonly #newRunId: () => string;
   #runId: string | undefined;
+  readonly #contextWindow: (() => number | undefined) | undefined;
   readonly #messages = new Set<string>();
   /** The metadata last reported per open message, so `message.meta` is only sent on change. */
   readonly #messageMeta = new Map<string, string>();
@@ -45,10 +46,30 @@ export class MastraCodeEventMapper {
   readonly #sessionId: string;
   readonly #now: () => Date;
 
-  constructor(options: { sessionId: string; newRunId?: () => string; now?: () => Date }) {
+  constructor(options: {
+    sessionId: string;
+    newRunId?: () => string;
+    now?: () => Date;
+    /**
+     * The context window of the model the session runs now, when the host knows it (a custom
+     * provider's model carries one; Mastra's catalog doesn't). Read at each model step.
+     */
+    contextWindow?: () => number | undefined;
+  }) {
     this.#sessionId = options.sessionId;
     this.#newRunId = options.newRunId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
+    this.#contextWindow = options.contextWindow;
+  }
+
+  /** The model's context window for a usage event; a failing lookup leaves it out. */
+  #window(): { contextWindow?: number } {
+    try {
+      const window = this.#contextWindow?.();
+      return window && Number.isFinite(window) && window > 0 ? { contextWindow: window } : {};
+    } catch {
+      return {};
+    }
   }
 
   map(event: AgentControllerEvent): FactoryEvent[] {
@@ -181,10 +202,11 @@ export class MastraCodeEventMapper {
             ...(event.usage.reasoningTokens !== undefined ? { reasoningTokens: event.usage.reasoningTokens } : {}),
             // `usage_update` reports one model step, so its prompt is what the model had in context
             // for that step: AI SDK's total input (cache reads and writes included; `prompt_tokens`
-            // for an OpenAI-compatible provider). No `contextWindow`: Mastra's model catalog doesn't
-            // carry one (the registry drops models.dev's `limit.context`; custom providers list
-            // model ids only).
+            // for an OpenAI-compatible provider). The window comes from the host: Mastra's model
+            // catalog carries none (the registry drops models.dev's `limit.context`), but a custom
+            // provider's model can.
             contextTokens: event.usage.promptTokens,
+            ...this.#window(),
           },
         ];
       case 'error': {

@@ -40,6 +40,8 @@ class OrgCustomProvidersSnapshot {
   readonly #orgId: string;
   readonly #storage: CustomProvidersStorage;
   #snapshot: MastraCodeCustomProvider[] = [];
+  /** fork(claude-agent): each model's context window, by full model id (`<provider id>/<model>`). */
+  #contextWindows = new Map<string, number>();
   #fetchedAt = 0;
   #hydrating: Promise<void> | undefined;
 
@@ -66,7 +68,19 @@ class OrgCustomProvidersSnapshot {
       apiKey: record.apiKey ?? undefined,
       models: record.models,
     }));
+    // fork(claude-agent)
+    this.#contextWindows = new Map(
+      records.flatMap(record =>
+        Object.entries(record.modelContextWindows).map(([model, tokens]) => [`${record.providerId}/${model}`, tokens]),
+      ),
+    );
     this.#fetchedAt = Date.now();
+  }
+
+  /** fork(claude-agent): sync like `get`, from the same snapshot. */
+  contextWindow(modelId: string): number | undefined {
+    this.get();
+    return this.#contextWindows.get(modelId);
   }
 
   /** Sync by contract; kicks a background re-hydrate when the snapshot is stale. */
@@ -123,6 +137,24 @@ export function registerCustomProvidersSource({
     if (!orgId) return [];
     return snapshotFor(orgId, storage).get();
   });
+}
+
+/**
+ * fork(claude-agent): the context window the org's custom provider sets for `modelId`
+ * (`<provider id>/<model>`), for the composer's context meter. Sync, from the snapshot model calls
+ * read (a stale one is refreshed in the background); undefined when none is set or nothing is
+ * registered. `orgId` is the session's organization; without auth every provider is the local org's.
+ */
+export function customModelContextWindow(orgId: string | undefined, modelId: string | undefined): number | undefined {
+  if (!registered || !modelId) return undefined;
+  const org = registered.authEnabled ? orgId : LOCAL_ORG;
+  if (!org) return undefined;
+  const snapshot = snapshotFor(org, registered.storage);
+  // Ids picked from the shared catalog were once saved gateway-qualified (`mastracode/<provider>/<model>`).
+  return (
+    snapshot.contextWindow(modelId) ??
+    (modelId.startsWith('mastracode/') ? snapshot.contextWindow(modelId.slice('mastracode/'.length)) : undefined)
+  );
 }
 
 /**

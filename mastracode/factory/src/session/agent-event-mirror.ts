@@ -4,6 +4,8 @@ import type { SessionEventHub } from '@factory/agent-runtime';
 import { mirrorSessionEvents } from '@factory/runtime-mastra-code';
 import type { MirrorableSession } from '@factory/runtime-mastra-code';
 
+import { customModelContextWindow } from '../routes/custom-provider-source.js';
+
 const mirrored = new WeakSet<object>();
 
 /**
@@ -11,7 +13,14 @@ const mirrored = new WeakSet<object>();
  * Read path only: nothing consumes the log yet, and failures are logged, never surfaced to the
  * session. Safe to call again for the same session object.
  */
-export function observeSessionAgentEvents(session: MirrorableSession, hub: SessionEventHub): void {
+export function observeSessionAgentEvents(
+  session: MirrorableSession,
+  hub: SessionEventHub,
+  options: {
+    /** The context window of the model the session runs now, when known (a custom provider's model). */
+    contextWindow?: () => number | undefined;
+  } = {},
+): void {
   if (mirrored.has(session)) return;
   mirrored.add(session);
   const sessionId = session.identity.getId();
@@ -24,5 +33,20 @@ export function observeSessionAgentEvents(session: MirrorableSession, hub: Sessi
     );
   };
   const publisher = new SessionPublisher(hub, sessionId, { onError: error => warnOnce('storing events', error) });
-  mirrorSessionEvents(session, publisher.emit, { onError: error => warnOnce('mapping an event', error) });
+  mirrorSessionEvents(session, publisher.emit, {
+    onError: error => warnOnce('mapping an event', error),
+    ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
+  });
+}
+
+/**
+ * The context window of the model a Mastra Code session runs now, when its organization's custom
+ * provider sets one for it (Mastra's own catalog has none), read at each model step for the
+ * composer's context meter.
+ */
+export function sessionModelContextWindow(session: {
+  state: { get(): { factoryOrgId?: string } };
+  model: { get(): string | undefined };
+}): () => number | undefined {
+  return () => customModelContextWindow(session.state.get().factoryOrgId, session.model.get());
 }

@@ -138,6 +138,17 @@ type ToolCategory = 'shell' | 'file.read' | 'file.write' | 'search' | 'factory' 
   call (a snapshot, not a sum); `contextWindow` is that model's window when the runtime reports it
   (Claude Code does, in `result.modelUsage`; Mastra's model catalog has none). The composer shows
   both, and hides Mastra's observational-memory budgets in Claude Agent sessions.
+  ✅ A custom (OpenAI-compatible) provider's model carries a window: set per model in Settings with
+  the provider's models, or, left blank, read on save from the provider's `/v1/models` (its
+  `context_length`, `context_window`, `max_model_len`, `max_input_tokens`, `max_context_length`,
+  `top_provider.context_length`, `limit.context` or llama.cpp's `meta.n_ctx`; never
+  `n_ctx_train`), asked with the provider's key. It is kept on the provider's row
+  (`model_context_windows`), and the Mastra Code mirror stamps it on each step's `usage` event as
+  `contextWindow` for the model the session runs then (`sessionModelContextWindow`, from the same
+  per-org snapshot model calls read), so the meter has a limit. Custom providers now ask for usage
+  on streamed replies (`stream_options.include_usage`), which servers only send when asked. A
+  session whose history predates the event log (drawn from Mastra's transcript) still has no
+  window. Saving a provider without a key now keeps its stored key, as the form says.
 
 ### 3.3 Factory tools, defined once
 

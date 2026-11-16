@@ -13,6 +13,15 @@ interface DraftState {
   url: string;
   apiKey: string;
   models: string;
+  /** fork(claude-agent): each model's context window as typed, by model name. */
+  contextWindows: Record<string, string>;
+}
+
+function modelNames(models: string): string[] {
+  return models
+    .split(',')
+    .map(model => model.trim())
+    .filter(Boolean);
 }
 
 export interface CustomProviderFormProps {
@@ -30,7 +39,11 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
     url: provider?.url ?? '',
     apiKey: '',
     models: provider?.models.join(', ') ?? '',
+    contextWindows: Object.fromEntries(
+      Object.entries(provider?.contextWindows ?? {}).map(([model, tokens]) => [model, String(tokens)]),
+    ),
   });
+  const listedModels = modelNames(draft.models);
 
   const save = async () => {
     const name = draft.name.trim();
@@ -40,13 +53,22 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
       return;
     }
 
-    const models = draft.models
-      .split(',')
-      .map(model => model.trim())
-      .filter(Boolean);
+    const models = modelNames(draft.models);
     if (requireModels && models.length === 0) {
       setError('At least one model is required.');
       return;
+    }
+    // fork(claude-agent): a window left blank is read from the provider's model list on save.
+    const contextWindows: Record<string, number> = {};
+    for (const model of models) {
+      const typed = draft.contextWindows[model]?.trim().replaceAll(',', '').replaceAll('_', '');
+      if (!typed) continue;
+      const tokens = Number(typed);
+      if (!Number.isInteger(tokens) || tokens <= 0) {
+        setError(`The context window for ${model} must be a whole number of tokens.`);
+        return;
+      }
+      contextWindows[model] = tokens;
     }
 
     const apiKey = draft.apiKey.trim();
@@ -54,6 +76,7 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
       name,
       url,
       models,
+      ...(Object.keys(contextWindows).length > 0 ? { contextWindows } : {}),
       ...(apiKey ? { apiKey } : {}),
       ...(provider ? { previousId: provider.id } : {}),
     };
@@ -112,6 +135,30 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
           onChange={event => setDraft({ ...draft, models: event.target.value })}
         />
       </Field>
+      {/* fork(claude-agent): the composer's context meter fills against these. */}
+      {listedModels.length > 0 && (
+        <fieldset className="flex flex-col gap-2">
+          <legend className="mb-1">
+            <Txt as="span" variant="caption" tone="muted">
+              Context window in tokens. Leave blank to read it from the provider&apos;s model list when you save.
+            </Txt>
+          </legend>
+          {listedModels.map(model => (
+            <Field key={model} className="gap-1">
+              <FieldLabel>{model} context window</FieldLabel>
+              <Input
+                size="sm"
+                inputMode="numeric"
+                placeholder="e.g. 131072"
+                value={draft.contextWindows[model] ?? ''}
+                onChange={event =>
+                  setDraft({ ...draft, contextWindows: { ...draft.contextWindows, [model]: event.target.value } })
+                }
+              />
+            </Field>
+          ))}
+        </fieldset>
+      )}
       <div className="flex items-center gap-2">
         <Button variant="primary" size="sm" disabled={saveMutation.isPending} onClick={() => void save()}>
           {saveMutation.isPending && <Spinner size="sm" aria-hidden className="size-3" />}

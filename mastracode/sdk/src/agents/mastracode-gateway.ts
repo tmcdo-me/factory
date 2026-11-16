@@ -517,6 +517,9 @@ export class MastraCodeGateway extends MastraModelGateway {
         baseURL: customProvider.url,
         apiKey: args.apiKey,
         headers: args.headers,
+        // fork(claude-agent): ask for usage on streamed replies (`stream_options.include_usage`), which
+        // OpenAI-compatible servers only send when asked; without it the context meter has no tokens.
+        includeUsage: true,
       });
       const reasoningEffort = this.#thinkingLevel ? THINKING_LEVEL_TO_REASONING_EFFORT[this.#thinkingLevel] : undefined;
       const middleware = createReasoningEffortMiddleware(args.providerId, reasoningEffort);

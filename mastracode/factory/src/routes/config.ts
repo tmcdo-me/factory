@@ -38,6 +38,7 @@ import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { THINKING_LEVELS } from './contracts.js';
+import { contextWindowValue, readProviderContextWindows } from './custom-provider-models.js'; // fork(claude-agent)
 import { createGatewayKey, getGatewayCredits, MASTRA_SIGN_IN_REQUIRED, MastraGatewayError } from './mastra-gateway.js';
 import {
   credentialLabel,
@@ -320,6 +321,8 @@ export interface CustomProviderInfo {
   url: string;
   hasApiKey: boolean;
   models: string[];
+  /** fork(claude-agent): each model's context window in tokens, where known. */
+  contextWindows: Record<string, number>;
 }
 
 /** Redact a stored custom-provider row for the client (key presence only). */
@@ -330,6 +333,7 @@ function toCustomProviderInfo(record: CustomProviderRecord): CustomProviderInfo 
     url: record.url,
     hasApiKey: Boolean(record.apiKey),
     models: record.models,
+    contextWindows: record.modelContextWindows, // fork(claude-agent)
   };
 }
 
@@ -379,7 +383,9 @@ async function resolveCustomProvidersContext({
 }
 
 /** Validate + coerce a request body into a CustomProviderSetting. */
-function parseCustomProviderBody(body: unknown): CustomProviderSetting | { error: string } {
+function parseCustomProviderBody(
+  body: unknown,
+): (CustomProviderSetting & { contextWindows: Record<string, number> }) | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Invalid JSON body' };
   const b = body as Record<string, unknown>;
   const name = typeof b.name === 'string' ? b.name.trim() : '';
@@ -398,7 +404,22 @@ function parseCustomProviderBody(body: unknown): CustomProviderSetting | { error
   const models = Array.isArray(b.models)
     ? b.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map(m => m.trim())
     : [];
-  return { name, url, apiKey, models };
+  // fork(claude-agent): a context window per model, in tokens, for the composer's context meter.
+  const contextWindows: Record<string, number> = {};
+  if (b.contextWindows !== undefined) {
+    if (!b.contextWindows || typeof b.contextWindows !== 'object' || Array.isArray(b.contextWindows)) {
+      return { error: 'contextWindows must map model names to token counts' };
+    }
+    for (const [model, tokens] of Object.entries(b.contextWindows as Record<string, unknown>)) {
+      if (tokens === null || tokens === undefined || tokens === '') continue;
+      const value = contextWindowValue(tokens);
+      if (value === undefined) {
+        return { error: `The context window for ${model} must be a whole number of tokens up to 10,000,000` };
+      }
+      if (models.includes(model.trim())) contextWindows[model.trim()] = value;
+    }
+  }
+  return { name, url, apiKey, models, contextWindows };
 }
 
 /**
@@ -1303,15 +1324,33 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
               ? ((body as Record<string, unknown>).previousId as string)
               : undefined;
           try {
+            // fork(claude-agent): an edit that sends no key keeps the stored one (the form says
+            // "leave blank to keep"); the stored row is the one being renamed, else the same id.
+            const providerId = getCustomProviderId(parsed.name);
+            const existing =
+              parsed.apiKey === undefined
+                ? (await ctx.storage.list({ orgId: ctx.orgId })).find(
+                    record => record.providerId === (previousId ?? providerId),
+                  )
+                : undefined;
+            const apiKey = parsed.apiKey ?? existing?.apiKey ?? undefined;
+            // fork(claude-agent): a model with no window set takes the one the provider reports.
+            const unset = parsed.models.filter(model => parsed.contextWindows[model] === undefined);
+            const reported = await readProviderContextWindows({
+              url: parsed.url,
+              ...(apiKey ? { apiKey } : {}),
+              models: unset,
+            });
             const record = await ctx.storage.upsert({
               orgId: ctx.orgId,
               userId: ctx.userId,
               input: {
-                providerId: getCustomProviderId(parsed.name),
+                providerId,
                 name: parsed.name,
                 url: parsed.url,
-                apiKey: parsed.apiKey,
+                apiKey,
                 models: parsed.models,
+                modelContextWindows: { ...reported, ...parsed.contextWindows },
               },
               previousProviderId: previousId,
             });

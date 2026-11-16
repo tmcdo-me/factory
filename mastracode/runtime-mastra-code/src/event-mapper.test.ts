@@ -409,3 +409,31 @@ describe('mirrorSessionEvents', () => {
     expect(listener).toBeUndefined();
   });
 });
+
+describe('MastraCodeEventMapper context window', () => {
+  const step: AgentControllerEvent = {
+    type: 'usage_update',
+    usage: { promptTokens: 4096, completionTokens: 8, totalTokens: 4104 },
+  };
+
+  it("reports the host's window for the model the session runs at each step, and none when it knows none", () => {
+    let window: number | undefined = 131072;
+    const mapper = new MastraCodeEventMapper({ sessionId: 's', contextWindow: () => window });
+    expect(mapper.map(step)).toEqual([
+      { type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096, contextWindow: 131072 },
+    ]);
+    // A model switch to one with no known window.
+    window = undefined;
+    expect(mapper.map(step)[0]).not.toHaveProperty('contextWindow');
+  });
+
+  it('keeps the usage when the lookup fails', () => {
+    const mapper = new MastraCodeEventMapper({
+      sessionId: 's',
+      contextWindow: () => {
+        throw new Error('storage down');
+      },
+    });
+    expect(mapper.map(step)).toEqual([{ type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096 }]);
+  });
+});

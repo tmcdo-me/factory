@@ -174,6 +174,8 @@ export interface SaveCustomProviderBody {
   url: string;
   apiKey?: string;
   models: string[];
+  /** fork(claude-agent): a model's context window in tokens, for the context meter; unset models take the provider's. */
+  contextWindows?: Record<string, number>;
   /** When editing, the id of the provider being replaced. */
   previousId?: string;
 }

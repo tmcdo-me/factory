@@ -19,6 +19,8 @@ export interface CustomProviderRecord {
   url: string;
   apiKey: string | null;
   models: string[];
+  /** fork(claude-agent): each model's context window in tokens, where known (set by hand, or read from the provider). */
+  modelContextWindows: Record<string, number>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +31,8 @@ export interface UpsertCustomProviderInput {
   url: string;
   apiKey?: string;
   models: string[];
+  /** fork(claude-agent): replaces the stored windows; absent clears them, as an absent key does. */
+  modelContextWindows?: Record<string, number>;
 }
 
 export const CUSTOM_PROVIDERS_SCHEMA: CollectionSchema = {
@@ -42,6 +46,8 @@ export const CUSTOM_PROVIDERS_SCHEMA: CollectionSchema = {
     url: { type: 'text' },
     api_key: { type: 'text', nullable: true },
     models: { type: 'json' },
+    // fork(claude-agent): additive, so rows from before it read as no windows.
+    model_context_windows: { type: 'json', nullable: true },
     created_at: { type: 'timestamp' },
     updated_at: { type: 'timestamp' },
   },
@@ -57,8 +63,19 @@ interface CustomProviderDbRow extends Record<string, unknown> {
   url: string;
   api_key: string | null;
   models: string[];
+  model_context_windows?: Record<string, number> | null; // fork(claude-agent)
   created_at: Date;
   updated_at: Date;
+}
+
+/** fork(claude-agent): a stored windows column, keeping only positive whole token counts. */
+function contextWindowsOf(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const windows: Record<string, number> = {};
+  for (const [model, tokens] of Object.entries(value)) {
+    if (typeof tokens === 'number' && Number.isInteger(tokens) && tokens > 0) windows[model] = tokens;
+  }
+  return windows;
 }
 
 export class CustomProvidersStorage extends FactoryStorageDomain {
@@ -91,6 +108,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
       url: row.url,
       apiKey,
       models: Array.isArray(row.models) ? row.models : [],
+      modelContextWindows: contextWindowsOf(row.model_context_windows), // fork(claude-agent)
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -164,6 +182,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
             url: input.url,
             api_key: encryptedApiKey,
             models: input.models,
+            model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
             updated_at: now,
           }),
         );
@@ -210,6 +229,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
           url: input.url,
           api_key: encryptedApiKey,
           models: input.models,
+          model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
           updated_at: now,
         }),
       );
@@ -226,6 +246,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
         url: input.url,
         api_key: encryptedApiKey,
         models: input.models,
+        model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
         created_at: now,
         updated_at: now,
       });

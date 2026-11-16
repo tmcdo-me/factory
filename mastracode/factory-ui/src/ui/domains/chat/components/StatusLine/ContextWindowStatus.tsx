@@ -20,7 +20,8 @@ const DESCRIPTION = "The prompt of the model's latest call";
 /**
  * Tokens in the model's context against its context window. The numbers come from the latest model
  * call (see `ContextUsage`), so they move when the agent compacts or a new session starts. Without a
- * known window (a custom provider, or Mastra's catalog, which carries no windows) it shows the tokens
+ * known window (Mastra's catalog carries none; a custom provider's model has one only when set in
+ * Settings or reported by the provider) it shows the tokens
  * alone rather than an invented limit.
  */
 export function ContextWindowStatus() {
@@ -48,7 +49,8 @@ export function ContextWindowStatus() {
             Context: {used}k tokens
           </Txt>
           <Txt variant="meta" tone="faint">
-            {DESCRIPTION}. This model&apos;s context window isn&apos;t known, so there is no limit to show.
+            {DESCRIPTION}. This model&apos;s context window isn&apos;t known, so there is no limit to show. For a custom
+            provider&apos;s model, set it in Settings with the provider&apos;s models.
           </Txt>
         </PopoverContent>
       </Popover>

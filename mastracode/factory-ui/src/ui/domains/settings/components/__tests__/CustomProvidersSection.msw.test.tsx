@@ -1,3 +1,4 @@
+// fork(claude-agent): also each model's context window, for the context meter.
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
@@ -21,6 +22,7 @@ const myLlm: CustomProviderInfo = {
   url: 'https://api.example.com/v1',
   hasApiKey: true,
   models: ['model-a', 'model-b'],
+  contextWindows: {},
 };
 
 describe('CustomProvidersSection', () => {
@@ -98,6 +100,66 @@ describe('CustomProvidersSection', () => {
         }),
       );
       expect(await screen.findByText('my-llm')).toBeInTheDocument();
+    });
+  });
+
+  describe("when a model's context window is set", () => {
+    it('sends it with the models, leaves blank ones for the provider to report, and shows what was stored', async () => {
+      const stored: CustomProviderInfo = { ...myLlm, contextWindows: { 'model-a': 131072, 'model-b': 32768 } };
+      let providers: CustomProviderInfo[] = [myLlm];
+      let postBody: unknown;
+      server.use(
+        http.get(LIST_URL, () => listResponse(providers)),
+        http.post(LIST_URL, async ({ request }) => {
+          postBody = await request.json();
+          // The server read model-b's window from the provider's model list.
+          providers = [stored];
+          return HttpResponse.json({ ok: true, provider: stored });
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<CustomProvidersSection />);
+
+      await user.click(await screen.findByRole('button', { name: 'Edit' }));
+      await user.type(screen.getByRole('textbox', { name: 'model-a context window' }), '131,072');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() =>
+        expect(postBody).toEqual({
+          name: 'my-llm',
+          url: 'https://api.example.com/v1',
+          models: ['model-a', 'model-b'],
+          contextWindows: { 'model-a': 131072 },
+          previousId: 'my-llm',
+        }),
+      );
+
+      await user.click(await screen.findByRole('button', { name: 'Edit' }));
+      expect(screen.getByRole('textbox', { name: 'model-b context window' })).toHaveValue('32768');
+    });
+
+    it('refuses a window that is not a whole number of tokens, sending nothing', async () => {
+      let posted = false;
+      server.use(
+        http.get(LIST_URL, () => listResponse([myLlm])),
+        http.post(LIST_URL, () => {
+          posted = true;
+          return HttpResponse.json({ ok: true, provider: myLlm });
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<CustomProvidersSection />);
+
+      await user.click(await screen.findByRole('button', { name: 'Edit' }));
+      await user.type(screen.getByRole('textbox', { name: 'model-a context window' }), '128k');
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      expect(
+        await screen.findByText('The context window for model-a must be a whole number of tokens.'),
+      ).toBeInTheDocument();
+      expect(posted).toBe(false);
     });
   });
 
