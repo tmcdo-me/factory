@@ -1,4 +1,4 @@
-import type { PlanResume } from '@mastra/client-js';
+import type { PlanResume } from '../services/factorySessionCommands';
 import * as AskUser from '@mastra/playground-ui/components/ai/ask-user';
 import type { AskUserAnswer, AskUserPayload } from '@mastra/playground-ui/components/ai/ask-user';
 import { ToolApproval } from '@mastra/playground-ui/components/ai/tool-approval';

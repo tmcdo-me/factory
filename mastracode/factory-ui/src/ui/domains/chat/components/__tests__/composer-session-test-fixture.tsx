@@ -25,6 +25,8 @@ if (typeof globalThis.Element !== 'undefined' && !Element.prototype.scrollIntoVi
 }
 
 const API = `${TEST_BASE_URL}/api/agent-controller/code`;
+/** fork(claude-agent): the session's writes go to Factory's session API. */
+const FACTORY_SESSIONS = `${TEST_BASE_URL}/web/factory/sessions`;
 export const FACTORY_ID = 'fp-preparing';
 export const PROJECT_REPOSITORY_ID = 'repo-preparing';
 export const SESSION_ID = '20000000-0000-4000-8000-000000000003';
@@ -57,7 +59,7 @@ export interface StubPreparingSessionOptions {
 
 function readSentMessage(body: unknown): string {
   if (typeof body !== 'object' || body === null) return '';
-  if ('message' in body && typeof body.message === 'string') return body.message;
+  if ('text' in body && typeof body.text === 'string') return body.text;
   return '';
 }
 
@@ -222,12 +224,12 @@ export function stubPreparingSession({
       result.operations.push(`mode:${body.modeId}`);
       return HttpResponse.json({ ok: true });
     }),
-    http.post(`${API}/sessions/:resourceId/model`, async ({ request }) => {
+    http.put(`${FACTORY_SESSIONS}/:sessionId/model`, async ({ request }) => {
       const body = (await request.json()) as { modelId?: string };
       result.operations.push(`model:${body.modelId}`);
       return HttpResponse.json({ ok: true });
     }),
-    http.post(`${API}/sessions/:resourceId/messages`, async ({ request }) => {
+    http.post(`${FACTORY_SESSIONS}/:sessionId/messages`, async ({ request }) => {
       const body = await request.json();
       result.operations.push('message');
       result.posted.push(readSentMessage(body));
@@ -243,7 +245,7 @@ export function stubPreparingSession({
       result.steerAttempts += 1;
       return HttpResponse.json({ ok: true });
     }),
-    http.post(`${API}/sessions/:resourceId/abort`, () => {
+    http.post(`${FACTORY_SESSIONS}/:sessionId/abort`, () => {
       result.abortRequests += 1;
       return HttpResponse.json({ ok: true });
     }),

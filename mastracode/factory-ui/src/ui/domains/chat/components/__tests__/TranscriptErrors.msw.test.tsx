@@ -183,13 +183,10 @@ describe('chat run errors', () => {
   it('quotes a refused model and switches the session to another one from the card', async () => {
     const modelSwitches: unknown[] = [];
     server.use(
-      http.post(
-        `${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/model`,
-        async ({ request }) => {
-          modelSwitches.push(await request.json());
-          return HttpResponse.json({ ok: true });
-        },
-      ),
+      http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
+        modelSwitches.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
       http.get(`${TEST_BASE_URL}/web/config/models`, () =>
         HttpResponse.json({
           models: [
@@ -254,13 +251,10 @@ describe('chat run errors', () => {
     async ({ title, model, reply }) => {
       const modelSwitches: unknown[] = [];
       server.use(
-        http.post(
-          `${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/model`,
-          async ({ request }) => {
-            modelSwitches.push(await request.json());
-            return HttpResponse.json({ ok: true });
-          },
-        ),
+        http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
+          modelSwitches.push(await request.json());
+          return HttpResponse.json({ ok: true });
+        }),
         http.get(`${TEST_BASE_URL}/web/config/models`, () =>
           HttpResponse.json({
             models: [
@@ -322,13 +316,10 @@ describe('chat run errors', () => {
   it('continues a timed-out run from the card', async () => {
     const sentMessages: unknown[] = [];
     server.use(
-      http.post(
-        `${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/messages`,
-        async ({ request }) => {
-          sentMessages.push(await request.json());
-          return HttpResponse.json({ ok: true });
-        },
-      ),
+      http.post(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/messages`, async ({ request }) => {
+        sentMessages.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
     );
     const user = userEvent.setup();
     renderWithProviders(<ErrorSession messages={[failedReply('Request timed out.')]} />);
@@ -336,7 +327,7 @@ describe('chat run errors', () => {
     expect(screen.getByText('Request timed out')).toBeVisible();
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
-    await waitFor(() => expect(sentMessages).toMatchObject([{ message: 'Continue from where you stopped.' }]));
+    await waitFor(() => expect(sentMessages).toMatchObject([{ text: 'Continue from where you stopped.' }]));
   });
 
   it.each([
@@ -348,7 +339,7 @@ describe('chat run errors', () => {
     },
   ])('offers Continue again on a $source when sending it fails', async ({ messages, liveEvent }) => {
     server.use(
-      http.post(`${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/messages`, () =>
+      http.post(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/messages`, () =>
         HttpResponse.json({ error: 'Session is busy' }, { status: 409 }),
       ),
     );
@@ -514,13 +505,10 @@ describe('chat run errors on an account limit', () => {
     const modelSwitches: unknown[] = [];
     stubCredential('organization');
     server.use(
-      http.post(
-        `${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/model`,
-        async ({ request }) => {
-          modelSwitches.push(await request.json());
-          return HttpResponse.json({ ok: true });
-        },
-      ),
+      http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
+        modelSwitches.push(await request.json());
+        return HttpResponse.json({ ok: true });
+      }),
     );
     const user = userEvent.setup();
     const { rerender } = renderWithProviders(

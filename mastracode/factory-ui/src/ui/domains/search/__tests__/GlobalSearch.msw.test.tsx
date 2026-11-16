@@ -317,7 +317,8 @@ function stubSearchApi(options: StubSearchOptions = {}): SearchRequestState {
         }),
     ),
     http.post(`${AGENT_CONTROLLER_API}/sessions/:resourceId/thread`, () => HttpResponse.json({ ok: true })),
-    http.post(`${AGENT_CONTROLLER_API}/sessions/:resourceId/abort`, () => {
+    // fork(claude-agent): a stop goes to Factory's session API.
+    http.post(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/abort`, () => {
       state.abortRequests += 1;
       return HttpResponse.json({});
     }),

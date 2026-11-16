@@ -213,7 +213,8 @@ describe('Composer annotations', () => {
     beforeEach(async () => {
       resumed = [];
       server.use(
-        http.post(`${API}/sessions/:resourceId/tool-suspension`, async ({ request }) => {
+        // fork(claude-agent): plan feedback goes to Factory's session API.
+        http.post(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/interactions`, async ({ request }) => {
           resumed.push(await request.json());
           return HttpResponse.json({ ok: true });
         }),
@@ -238,7 +239,7 @@ describe('Composer annotations', () => {
       await waitFor(() =>
         expect(resumed).toEqual([
           expect.objectContaining({
-            resumeData: expect.objectContaining({ feedback: '1. > Open rows\n\n/tmp is the wrong place' }),
+            response: expect.objectContaining({ feedback: '1. > Open rows\n\n/tmp is the wrong place' }),
           }),
         ]),
       );

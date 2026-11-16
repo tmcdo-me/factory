@@ -6,7 +6,6 @@ import { describe, expect, it, vi } from 'vitest';
 import { server } from '../../../e2e/ui/msw-server';
 import { renderHookWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../e2e/ui/render';
 import { useSetAgentControllerGoalMutation } from '../useAgentControllerGoalMutations';
-import { useSendAgentControllerMessageMutation } from '../useAgentControllerRunMutations';
 import { useAgentControllerSettings } from '../useAgentControllerSettings';
 import { useSetAgentControllerStateMutation } from '../useAgentControllerStateMutations';
 import { useCreateAgentControllerThreadMutation } from '../useAgentControllerThreadMutations';
@@ -32,37 +31,6 @@ function initialSettings(): AgentControllerSessionSettings {
 }
 
 describe('agent-controller mutation hooks cache behavior', () => {
-  it('does not refresh settings after sending a message', async () => {
-    let settings = initialSettings();
-    const onReadState = vi.fn();
-    const onSendMessage = vi.fn();
-
-    server.use(
-      http.get(sessionUrl, () => {
-        onReadState();
-        return HttpResponse.json({ threadId: 'thread-one', settings });
-      }),
-      http.post(`${sessionUrl}/messages`, async ({ request }) => {
-        onSendMessage(await request.json());
-        settings = { ...settings, notifications: 'bell' };
-        return HttpResponse.json({ ok: true });
-      }),
-    );
-
-    const { result, client } = renderHookWithProviders(() => ({
-      settingsQuery: useAgentControllerSettings(hookArgs),
-      sendMessage: useSendAgentControllerMessageMutation(hookArgs),
-    }));
-
-    await waitFor(() => expect(result.current.settingsQuery.data?.notifications).toBe('off'));
-    await act(async () => result.current.sendMessage.mutateAsync('hello'));
-    await waitForMutationsIdle(client);
-
-    expect(result.current.settingsQuery.data?.notifications).toBe('off');
-    expect(onReadState).toHaveBeenCalledTimes(1);
-    expect(onSendMessage).toHaveBeenCalledWith({ message: 'hello' });
-  });
-
   it('does not refresh settings after goal changes', async () => {
     let settings = initialSettings();
     const onReadState = vi.fn();

@@ -7,7 +7,8 @@ import { server } from '../../../../../../e2e/ui/msw-server';
 import { TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/render';
 import { SESSION_ID, releaseSession, renderThread, stubPreparingSession } from './composer-session-test-fixture';
 
-const agentControllerBaseUrl = `${TEST_BASE_URL}/api/agent-controller/code`;
+// fork(claude-agent): answers go to Factory's session API.
+const interactionsUrl = `${TEST_BASE_URL}/web/factory/sessions/:sessionId/interactions`;
 const toolCallId = 'call-move';
 const args = { stage: 'done', expectedRevision: 3, rationale: 'Fixed on main.' };
 const suspendPayload = {
@@ -25,8 +26,8 @@ describe('a tool that pauses with a question', () => {
   it('shows the question on its tool row and resumes the call with the answer', async () => {
     const captureToolResume = vi.fn();
     server.use(
-      http.post(`${agentControllerBaseUrl}/sessions/:resourceId/tool-suspension`, async ({ request, params }) => {
-        captureToolResume(params.resourceId, await request.json());
+      http.post(interactionsUrl, async ({ request, params }) => {
+        captureToolResume(params.sessionId, await request.json());
         return HttpResponse.json({ ok: true });
       }),
     );
@@ -69,7 +70,10 @@ describe('a tool that pauses with a question', () => {
     await waitForMutationsIdle(queryClient);
 
     await waitFor(() =>
-      expect(captureToolResume).toHaveBeenCalledExactlyOnceWith(SESSION_ID, { toolCallId, resumeData: 'Approve' }),
+      expect(captureToolResume).toHaveBeenCalledExactlyOnceWith(SESSION_ID, {
+        callId: toolCallId,
+        response: { kind: 'question', answer: 'Approve' },
+      }),
     );
     expect(sessionFixture.posted).toEqual([]);
   });

@@ -4,8 +4,7 @@ import { useState } from 'react';
 import { useDefaultModelQuery } from '../../../../hooks/use-default-model';
 import { useFallbackModelQuery } from '../../../../hooks/useAvailableModels';
 import { useChatModelScope } from './useChatModelScope';
-import { useSwitchAgentControllerModelMutation } from '../../../../hooks/useAgentControllerStateMutations';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
+import { useSwitchSessionModelMutation } from '../../../../hooks/useSessionCommandMutations';
 import { routedDefaultModelId } from './chatDefaultModel';
 import { ChatModelsContext } from './ChatModelsContext';
 import type { ChatModelsApi } from './ChatModelsContext';
@@ -62,7 +61,7 @@ function DraftChatModelsProvider({ children, initialModelId }: ChatModelsProvide
 }
 
 function LiveChatModelsProvider({ children }: ChatModelsProviderProps) {
-  const { sessionId, baseUrl, sessionEnabled } = useChatSessionContext();
+  const { sessionId, baseUrl } = useChatSessionContext();
   const { state } = useChatConnection();
   const { projectQuery, modelScope, sessionModelsQuery } = useChatModelScope();
   const defaultModelQuery = useDefaultModelQuery();
@@ -78,12 +77,7 @@ function LiveChatModelsProvider({ children }: ChatModelsProviderProps) {
     mutateAsync: switchModel,
     isPending: switching,
     variables: switchingTo,
-  } = useSwitchAgentControllerModelMutation({
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  });
+  } = useSwitchSessionModelMutation({ sessionId, baseUrl });
   const value: ChatModelsApi = {
     activeModelId: state?.modelId,
     defaultModelId,

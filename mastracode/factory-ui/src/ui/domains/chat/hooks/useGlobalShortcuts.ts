@@ -4,21 +4,15 @@ import { useParams } from 'react-router';
 import { useChatTranscript } from '../context/useChatTranscript';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import { useGlobalSearchControls } from '../../search/hooks/useGlobalSearchControls';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
-import { useAbortAgentControllerMutation } from '../../../../hooks/useAgentControllerRunMutations';
+import { useAbortSessionMutation } from '../../../../hooks/useSessionCommandMutations';
 
 export function useGlobalShortcuts() {
   const overlays = useOverlays();
   const { factoryId } = useParams<{ factoryId: string }>();
-  const { sessionId, sessionEnabled, baseUrl } = useChatSessionContext();
+  const { sessionId, baseUrl } = useChatSessionContext();
   const { busy } = useChatTranscript();
   const { closeSearch } = useGlobalSearchControls();
-  const abortMutation = useAbortAgentControllerMutation({
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  });
+  const abortMutation = useAbortSessionMutation({ sessionId, baseUrl });
 
   function escapeAction() {
     if (!factoryId) return undefined;

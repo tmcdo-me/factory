@@ -99,7 +99,7 @@ describe('Composer on a lazy user-session draft', () => {
   });
 
   describe('when the first send fails', () => {
-    const MESSAGES = `${TEST_BASE_URL}/api/agent-controller/code/sessions/:resourceId/messages`;
+    const MESSAGES = `${TEST_BASE_URL}/web/factory/sessions/:sessionId/messages`;
 
     async function sendFirstPrompt(text: string, failure: () => Response) {
       const preparation = stubPreparingSession({ createdSessionTitle: text });
@@ -181,7 +181,7 @@ describe('Composer on a lazy user-session draft', () => {
       http.post(`${TEST_BASE_URL}/web/source-control/projects/${PROJECT_REPOSITORY_ID}/sessions`, () =>
         HttpResponse.json({ session: createdDraftSession('keep my prompt') }),
       ),
-      http.post(`${TEST_BASE_URL}/api/agent-controller/code/sessions/${SESSION_ID}/model`, () =>
+      http.put(`${TEST_BASE_URL}/web/factory/sessions/${SESSION_ID}/model`, () =>
         HttpResponse.json({ error: 'Model unavailable' }, { status: 500 }),
       ),
     );

@@ -11,6 +11,8 @@ export const DRAFT_SESSION_ID = '30000000-0000-4000-8000-000000000001';
 export const OTHER_DRAFT_SESSION_ID = '30000000-0000-4000-8000-000000000002';
 const REPOSITORY_ID = 'repository-draft-handoff';
 const AGENT_CONTROLLER_API = `${TEST_BASE_URL}/api/agent-controller/code`;
+/** fork(claude-agent): the session's writes go to Factory's session API. */
+const FACTORY_SESSIONS = `${TEST_BASE_URL}/web/factory/sessions`;
 
 const createdSession: FactoryUserSession = {
   id: 'row-draft',
@@ -98,8 +100,8 @@ function stubActivity(cards: CardTimes[]) {
 }
 
 function readSentMessage(body: unknown): string {
-  if (typeof body !== 'object' || body === null || !('message' in body)) return '';
-  return typeof body.message === 'string' ? body.message : '';
+  if (typeof body !== 'object' || body === null || !('text' in body)) return '';
+  return typeof body.text === 'string' ? body.text : '';
 }
 
 export function stubDraftRoute({
@@ -227,7 +229,7 @@ export function stubDraftRoute({
           headers: { 'content-type': 'text/event-stream' },
         }),
     ),
-    http.post(`${AGENT_CONTROLLER_API}/sessions/:resourceId/model`, async ({ request }) => {
+    http.put(`${FACTORY_SESSIONS}/:sessionId/model`, async ({ request }) => {
       const body = await request.json();
       const thinkingLevel = readBody(body, 'thinkingLevel');
       const thinkingSuffix = thinkingLevel ? ` thinking:${thinkingLevel}` : '';
@@ -236,7 +238,7 @@ export function stubDraftRoute({
       route.bindings.push(`model:${readBody(body, 'modelId')}${thinkingSuffix}`);
       return HttpResponse.json({ ok: true });
     }),
-    http.post(`${AGENT_CONTROLLER_API}/sessions/:resourceId/messages`, async ({ request }) => {
+    http.post(`${FACTORY_SESSIONS}/:sessionId/messages`, async ({ request }) => {
       route.bindingsBeforePrompt = [...route.bindings];
       route.posted.push(readSentMessage(await request.json()));
       await workspaceReady;

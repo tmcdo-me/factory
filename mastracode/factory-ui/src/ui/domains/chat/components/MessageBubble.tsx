@@ -1,5 +1,5 @@
 import { Metadata } from '@mastra/playground-ui/components/Metadata';
-import type { PlanResume } from '@mastra/client-js';
+import type { PlanResume } from '../services/factorySessionCommands';
 import { MarkdownRenderer } from '@mastra/playground-ui/components/MarkdownRenderer';
 import { useRevealedParts } from '@mastra/playground-ui/components/ai/message-reveal';
 import { Notice } from '@mastra/playground-ui/components/Notice';

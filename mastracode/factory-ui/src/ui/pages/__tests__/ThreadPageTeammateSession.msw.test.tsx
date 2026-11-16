@@ -173,7 +173,8 @@ describe("a teammate's Factory session", () => {
     it('names the owner inside the composer region', async () => {
       openWardSessionAs('user-damien');
 
-      const composer = await screen.findByRole('region', { name: 'Thread composer' });
+      // The first test in the file pays for loading the thread page's code, slow on a CI runner.
+      const composer = await screen.findByRole('region', { name: 'Thread composer' }, { timeout: 10_000 });
       expect(await within(composer).findByText('You’re steering Ward Peeters’s session')).toBeInTheDocument();
     });
 
@@ -183,6 +184,8 @@ describe("a teammate's Factory session", () => {
       expect(await screen.findByText('You’re steering Ward Peeters’s session')).toBeInTheDocument();
     });
 
+    // fork(claude-agent): the empty thread's "Working in" details used to list the session's memory
+    // Resource ID, which for a private resource is the owner's user id.
     it('says "a teammate" when the owner has no profile, never the raw user id', async () => {
       openWardSessionAs('user-damien', { session: wardSessionWithoutProfile });
 
@@ -244,7 +247,8 @@ describe("a teammate's Factory session", () => {
       serveModelCatalogs({ sessionScope: 'user', viewerModels: [openAIKeyModel] });
       openWardSessionAs('user-damien');
       server.use(
-        http.post(`${AC}/sessions/:resourceId/model`, async ({ request }) => {
+        // fork(claude-agent): a model switch would go to Factory's session API.
+        http.put(`${TEST_BASE_URL}/web/factory/sessions/:sessionId/model`, async ({ request }) => {
           modelSwitches.push(await request.json());
           return HttpResponse.json({ ok: true });
         }),

@@ -1,12 +1,10 @@
-import type { PlanResume } from '@mastra/client-js';
-
 import { isPlanReadablePath, usePlanFile } from '../../../../hooks/use-fs';
-import { useRespondAgentControllerSuspensionMutation } from '../../../../hooks/useAgentControllerRunMutations';
+import { useRespondSessionPromptMutation } from '../../../../hooks/useSessionCommandMutations';
 import { useThreadWorkspacePath } from '../../workspace-viewer/hooks/useThreadWorkspacePath';
 import { parsePlanMarkdown, resolveInlinePlan } from '../components/submit-plan-source';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import { useChatTranscript } from '../context/useChatTranscript';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
+import type { PlanResume } from '../services/factorySessionCommands';
 import type { TimelineEntry } from '../services/transcript';
 
 function pendingSubmitPlan(entries: TimelineEntry[]) {
@@ -18,7 +16,7 @@ function pendingSubmitPlan(entries: TimelineEntry[]) {
 }
 
 export function usePendingPlanFeedback() {
-  const { sessionId, sessionEnabled, baseUrl } = useChatSessionContext();
+  const { sessionId, baseUrl } = useChatSessionContext();
   const { transcript, resolvePrompt } = useChatTranscript();
   const prompt = pendingSubmitPlan(transcript.entries);
   const inline = resolveInlinePlan(prompt?.suspendPayload, undefined);
@@ -34,12 +32,7 @@ export function usePendingPlanFeedback() {
     !fetched &&
     !file.isError &&
     (workspace.isPending || (Boolean(workspace.workspacePath) && file.isPending));
-  const respondMutation = useRespondAgentControllerSuspensionMutation({
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  });
+  const respondMutation = useRespondSessionPromptMutation({ sessionId, baseUrl });
 
   const submitFeedback = async (feedback: string) => {
     if (!prompt || !feedback.trim()) return;

@@ -77,48 +77,48 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 
 ## UI — `mastracode/factory-ui/src` (slice 3 unless noted)
 
-| Done | File                                                                 |  LOC | Note                   |
-| ---- | -------------------------------------------------------------------- | ---: | ---------------------- |
-| [ ]  | `hooks/useActiveRunResources.ts`                                     |   49 |                        |
-| [ ]  | `hooks/useAgentControllerGoalMutations.ts`                           |   40 | goals UI dropped       |
-| [ ]  | `hooks/useAgentControllerPermissionMutations.ts`                     |   70 | permissions UI dropped |
-| [ ]  | `hooks/useAgentControllerPermissions.ts`                             |   31 | permissions UI dropped |
-| [ ]  | `hooks/useAgentControllerRunMutations.ts`                            |  115 |                        |
-| [ ]  | `hooks/useAgentControllerSessionInit.ts`                             |   80 |                        |
-| [ ]  | `hooks/useAgentControllerSessionSync.ts`                             |   79 |                        |
-| [ ]  | `hooks/useAgentControllerSettings.ts`                                |   38 |                        |
-| [ ]  | `hooks/useAgentControllerStateMutations.ts`                          |   61 |                        |
-| [ ]  | `hooks/useAgentControllerThreadMessages.ts`                          |  141 |                        |
-| [ ]  | `hooks/useAgentControllerThreadMutations.ts`                         |   54 |                        |
-| [ ]  | `hooks/useAgentControllerThreads.ts`                                 |   44 |                        |
-| [ ]  | `hooks/useRouteThreadSync.ts`                                        |  102 |                        |
-| [ ]  | `hooks/useUpdateAgentControllerSettingsMutation.ts`                  |  106 |                        |
-| [ ]  | `ui/domains/chat/components/activity/activity-plan.ts`               |  208 |                        |
-| [ ]  | `ui/domains/chat/components/activity/HostedStretch.tsx`              |   69 |                        |
-| [ ]  | `ui/domains/chat/components/Composer.tsx`                            |  367 |                        |
-| [ ]  | `ui/domains/chat/components/MessageBubble.tsx`                       |  315 |                        |
-| [ ]  | `ui/domains/chat/components/SubmitPlanCard.tsx`                      |  165 |                        |
-| [ ]  | `ui/domains/chat/components/ToolFactory.tsx`                         |  159 |                        |
-| [ ]  | `ui/domains/chat/components/transcript-parts.ts`                     |  131 |                        |
-| [ ]  | `ui/domains/chat/components/Transcript.tsx`                          |  337 |                        |
-| [ ]  | `ui/domains/chat/components/TranscriptPromptCards.tsx`               |  203 |                        |
-| [ ]  | `ui/domains/chat/components/turn-gaps.ts`                            |   86 |                        |
-| [ ]  | `ui/domains/chat/context/ChatConnectionProvider.tsx`                 |   49 |                        |
-| [ ]  | `ui/domains/chat/context/ChatPermissionsContext.ts`                  |   10 | permissions UI dropped |
-| [ ]  | `ui/domains/chat/context/ChatPermissionsProvider.tsx`                |   54 | permissions UI dropped |
-| [ ]  | `ui/domains/chat/context/ChatTranscriptProvider.tsx`                 |  171 |                        |
-| [ ]  | `ui/domains/chat/context/useChatCommandRegistry.ts`                  |  323 |                        |
-| [ ]  | `ui/domains/chat/hooks/useAgentControllerConnection.ts`              |  208 |                        |
-| [ ]  | `ui/domains/chat/hooks/useAgentControllerEvents.ts`                  |  151 |                        |
-| [ ]  | `ui/domains/chat/hooks/useAgentControllerTranscript.ts`              |   80 |                        |
-| [ ]  | `ui/domains/chat/hooks/useCreateUserSessionFromDraft.ts`             |   90 |                        |
-| [ ]  | `ui/domains/chat/hooks/usePendingPlanFeedback.ts`                    |   65 |                        |
-| [ ]  | `ui/domains/chat/services/agentControllerClient.ts`                  |  126 |                        |
-| [ ]  | `ui/domains/chat/services/message-author.ts`                         |   81 |                        |
-| [ ]  | `ui/domains/chat/services/om.ts`                                     |   35 | OM UI dropped          |
-| [ ]  | `ui/domains/chat/services/run-activity.ts`                           |   92 |                        |
-| [ ]  | `ui/domains/chat/services/runtime.ts`                                |  217 |                        |
-| [ ]  | `ui/domains/chat/services/transcript.ts`                             | 1428 |                        |
-| [ ]  | `ui/domains/settings/components/SettingsPanel.parts.tsx`             |  166 |                        |
-| [ ]  | `ui/domains/settings/components/SettingsPanel.tsx`                   |   91 |                        |
-| [ ]  | `ui/domains/workspace-viewer/useRefreshWorkspaceFilesOnToolCalls.ts` |   70 |                        |
+| Done | File                                                                 |  LOC | Note                                          |
+| ---- | -------------------------------------------------------------------- | ---: | --------------------------------------------- |
+| [ ]  | `hooks/useActiveRunResources.ts`                                     |   49 |                                               |
+| [ ]  | `hooks/useAgentControllerGoalMutations.ts`                           |   40 | goals UI dropped                              |
+| [ ]  | `hooks/useAgentControllerPermissionMutations.ts`                     |   70 | permissions UI dropped                        |
+| [ ]  | `hooks/useAgentControllerPermissions.ts`                             |   31 | permissions UI dropped                        |
+| [x]  | `hooks/useAgentControllerRunMutations.ts`                            |  115 | deleted: `useSessionCommandMutations.ts` (3d) |
+| [ ]  | `hooks/useAgentControllerSessionInit.ts`                             |   80 |                                               |
+| [ ]  | `hooks/useAgentControllerSessionSync.ts`                             |   79 |                                               |
+| [ ]  | `hooks/useAgentControllerSettings.ts`                                |   38 |                                               |
+| [ ]  | `hooks/useAgentControllerStateMutations.ts`                          |   61 |                                               |
+| [ ]  | `hooks/useAgentControllerThreadMessages.ts`                          |  141 |                                               |
+| [ ]  | `hooks/useAgentControllerThreadMutations.ts`                         |   54 |                                               |
+| [ ]  | `hooks/useAgentControllerThreads.ts`                                 |   44 |                                               |
+| [ ]  | `hooks/useRouteThreadSync.ts`                                        |  102 |                                               |
+| [ ]  | `hooks/useUpdateAgentControllerSettingsMutation.ts`                  |  106 |                                               |
+| [ ]  | `ui/domains/chat/components/activity/activity-plan.ts`               |  208 |                                               |
+| [ ]  | `ui/domains/chat/components/activity/HostedStretch.tsx`              |   69 |                                               |
+| [ ]  | `ui/domains/chat/components/Composer.tsx`                            |  367 |                                               |
+| [ ]  | `ui/domains/chat/components/MessageBubble.tsx`                       |  315 |                                               |
+| [ ]  | `ui/domains/chat/components/SubmitPlanCard.tsx`                      |  165 |                                               |
+| [ ]  | `ui/domains/chat/components/ToolFactory.tsx`                         |  159 |                                               |
+| [ ]  | `ui/domains/chat/components/transcript-parts.ts`                     |  131 |                                               |
+| [ ]  | `ui/domains/chat/components/Transcript.tsx`                          |  337 |                                               |
+| [ ]  | `ui/domains/chat/components/TranscriptPromptCards.tsx`               |  203 |                                               |
+| [ ]  | `ui/domains/chat/components/turn-gaps.ts`                            |   86 |                                               |
+| [ ]  | `ui/domains/chat/context/ChatConnectionProvider.tsx`                 |   49 |                                               |
+| [ ]  | `ui/domains/chat/context/ChatPermissionsContext.ts`                  |   10 | permissions UI dropped                        |
+| [ ]  | `ui/domains/chat/context/ChatPermissionsProvider.tsx`                |   54 | permissions UI dropped                        |
+| [ ]  | `ui/domains/chat/context/ChatTranscriptProvider.tsx`                 |  171 |                                               |
+| [ ]  | `ui/domains/chat/context/useChatCommandRegistry.ts`                  |  323 |                                               |
+| [ ]  | `ui/domains/chat/hooks/useAgentControllerConnection.ts`              |  208 |                                               |
+| [ ]  | `ui/domains/chat/hooks/useAgentControllerEvents.ts`                  |  151 |                                               |
+| [ ]  | `ui/domains/chat/hooks/useAgentControllerTranscript.ts`              |   80 |                                               |
+| [ ]  | `ui/domains/chat/hooks/useCreateUserSessionFromDraft.ts`             |   90 |                                               |
+| [ ]  | `ui/domains/chat/hooks/usePendingPlanFeedback.ts`                    |   65 |                                               |
+| [ ]  | `ui/domains/chat/services/agentControllerClient.ts`                  |  126 |                                               |
+| [ ]  | `ui/domains/chat/services/message-author.ts`                         |   81 |                                               |
+| [ ]  | `ui/domains/chat/services/om.ts`                                     |   35 | OM UI dropped                                 |
+| [ ]  | `ui/domains/chat/services/run-activity.ts`                           |   92 |                                               |
+| [ ]  | `ui/domains/chat/services/runtime.ts`                                |  217 |                                               |
+| [ ]  | `ui/domains/chat/services/transcript.ts`                             | 1428 |                                               |
+| [ ]  | `ui/domains/settings/components/SettingsPanel.parts.tsx`             |  166 |                                               |
+| [ ]  | `ui/domains/settings/components/SettingsPanel.tsx`                   |   91 |                                               |
+| [ ]  | `ui/domains/workspace-viewer/useRefreshWorkspaceFilesOnToolCalls.ts` |   70 |                                               |
