@@ -6,6 +6,7 @@ import { textStyle } from '@mastra/playground-ui/primitives/text';
 import { cn } from '@mastra/playground-ui/utils/cn';
 import { useParams } from 'react-router';
 import { useFactoryQuery } from '../../../../hooks/useFactories';
+import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { useChatCommands } from '../context/ChatCommandsProvider';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import { Txt } from '@mastra/playground-ui/components/Txt';
@@ -25,8 +26,11 @@ function FactoryMetadata({ label, value, font = 'mono' }: { label: string; value
 export function EmptyThreadState() {
   const { factoryId } = useParams<{ factoryId: string }>();
   const { data: activeFactory } = useFactoryQuery(factoryId);
-  const { sessionId, resourceId, factorySessionState } = useChatSessionContext();
+  const { sessionId, resourceId, factorySessionState, owner } = useChatSessionContext();
+  const viewerId = useFactoryAuth().data?.user?.userId;
   const { prefillComposer } = useChatCommands();
+  // fork(claude-agent): a private memory resource is its owner's user id; only the owner sees it.
+  const showResourceId = Boolean(resourceId) && (resourceId !== owner?.id || viewerId === owner?.id);
   if (!activeFactory) return null;
 
   const repository = activeFactory.repositories.find(
@@ -81,7 +85,7 @@ export function EmptyThreadState() {
         </summary>
         <dl className="mx-auto mt-3 grid w-full min-w-0 gap-1 text-left">
           <FactoryMetadata label="Factory" value={activeFactory.name} font="body" />
-          {resourceId && <FactoryMetadata label="Resource ID" value={resourceId} />}
+          {showResourceId && resourceId && <FactoryMetadata label="Resource ID" value={resourceId} />}
           {gitBranch && <FactoryMetadata label="Branch" value={gitBranch} />}
           {sessionId && sessionId !== resourceId && <FactoryMetadata label="Session ID" value={sessionId} />}
         </dl>
