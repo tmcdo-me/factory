@@ -21,7 +21,7 @@
 
 import { existsSync } from 'node:fs';
 
-import { SessionEventHub } from '@factory/agent-runtime';
+import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
 import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code';
 import { MastraAuthStudio } from '@mastra/auth-studio';
@@ -950,9 +950,10 @@ export class MastraFactory {
     // sessions are mirrored into the log (shadow write) until the UI and board rules read from it.
     const agentEventHub = new SessionEventHub(storage.registerDomain(new AgentEventsStorage()));
     const agentSessionsStorage = storage.registerDomain(new AgentSessionsStorage());
+    const agentInteractionsStorage = storage.registerDomain(new AgentInteractionsStorage());
     this.#agentSeam = {
       events: agentEventHub,
-      interactions: storage.registerDomain(new AgentInteractionsStorage()),
+      interactions: agentInteractionsStorage,
       sessions: agentSessionsStorage,
     };
     // Generic integration storage (connections/subscriptions/settings) — the
@@ -1795,6 +1796,9 @@ export class MastraFactory {
       ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
       workspaceRegistry,
     });
+    // fork(claude-agent): Factory's session tools, built per turn for Mastra Code (`extraTools`
+    // below assigns it) and Claude Agent alike.
+    let factorySessionTools: ((context: { requestContext: RequestContext }) => Promise<IntegrationTools>) | undefined;
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
@@ -1803,6 +1807,8 @@ export class MastraFactory {
         getMastra: () => this.#prepared?.base.controller.getMastra(),
       }),
       home: claudeAgentHome(),
+      tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
+      interactions: new InteractionBroker({ store: agentInteractionsStorage, hub: agentEventHub }),
     });
     this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>
@@ -2004,7 +2010,8 @@ export class MastraFactory {
           new FactoryReplyCredentialProcessor(),
         ],
         ...(vector ? { vector } : {}),
-        extraTools: async ({ requestContext }: { requestContext: RequestContext }) => {
+        extraTools: (factorySessionTools = async ({ requestContext }: { requestContext: RequestContext }) => {
+          // fork(claude-agent)
           const tools: IntegrationTools = {};
           const toolOwners = new Map<string, string>();
           const mergeTools = (ownerId: string, contributed: IntegrationTools) => {
@@ -2150,7 +2157,7 @@ export class MastraFactory {
             }
           }
           return tools;
-        },
+        }),
         postToolObserver: async (toolContext: IntegrationPostToolContext) => {
           const requestContext = (toolContext.context as { requestContext?: RequestContext } | undefined)
             ?.requestContext;

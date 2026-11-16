@@ -4,7 +4,12 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runtime';
 
+import { CLAUDE_AGENT_BUILTIN_TOOLS, CLAUDE_AGENT_DISALLOWED_TOOLS, SKILL_TOOL } from './builtin-tools';
 import { ClaudeAgentEventMapper } from './event-mapper';
+import { FACTORY_TOOLS_INSTRUCTIONS, createFactoryMcpServer } from './factory-tools';
+import type { ClaudeAgentFactoryTools } from './factory-tools';
+import type { ClaudeAgentSkills } from './skills';
+import { FACTORY_MCP_SERVER } from './tool-classification';
 
 /**
  * Instruction files Claude Code would pick up from the folders above the session's checkout. It
@@ -30,6 +35,10 @@ export const CLAUDE_AGENT_ISOLATION = {
   autoMemoryEnabled: false,
 } as const;
 
+/** Appended to the system prompt when the session has Factory's skills. */
+export const SKILLS_INSTRUCTIONS =
+  "Factory's skills are the `factory:*` skills (`factory-plan` is `factory:factory-plan`). When a skill says to read one of its files with `skill_read`, read that file from the skill's folder with Read.";
+
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
 export interface ClaudeAgentSessionOptions {
@@ -40,6 +49,10 @@ export interface ClaudeAgentSessionOptions {
   model?: string;
   /** Factory's instructions, appended to Claude Code's own system prompt. */
   instructions?: string;
+  /** Factory's tools, served to Claude as the in-process MCP server `factory`. */
+  factoryTools?: ClaudeAgentFactoryTools;
+  /** Factory's skills for this session (see `writeSkillsPlugin`); no others are enabled. */
+  skills?: ClaudeAgentSkills;
   /** Claude Code session id to resume (from `runtimeState()`). */
   resume?: string;
   /** Subprocess environment; build it with `claudeProcessEnv`. */
@@ -168,6 +181,15 @@ export class ClaudeAgentSession {
     const input = new InputQueue();
     this.#input = input;
     const options = this.#options;
+    const factoryTools = options.factoryTools?.defs.length ? options.factoryTools : undefined;
+    const skills = options.skills?.names.length ? options.skills : undefined;
+    const instructions = [
+      options.instructions,
+      factoryTools ? FACTORY_TOOLS_INSTRUCTIONS : undefined,
+      skills ? SKILLS_INSTRUCTIONS : undefined,
+    ]
+      .filter(Boolean)
+      .join('\n\n');
     const query = (options.query ?? (sdkQuery as QueryFn))({
       prompt: input,
       options: {
@@ -183,19 +205,31 @@ export class ClaudeAgentSession {
         // The repository's CLAUDE.md and .claude/ apply; the operator's personal ~/.claude does not.
         settingSources: ['project'],
         // Isolation: nothing of the operator's Claude account or install reaches the session beyond
-        // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but the ones
-        // Factory passes, no skills (bundled or the repository's), no auto-memory across sessions.
+        // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but Factory's,
+        // no skills but Factory's (bundled and repository skills stay off), no auto-memory.
         settings: { ...CLAUDE_AGENT_ISOLATION, claudeMdExcludes: instructionFilesAbove(options.cwd) },
         strictMcpConfig: true,
-        skills: [],
+        ...(factoryTools
+          ? {
+              mcpServers: {
+                [FACTORY_MCP_SERVER]: createFactoryMcpServer(factoryTools, {
+                  currentRunId: () => this.#runs[0],
+                  newId: this.#newId,
+                }),
+              },
+            }
+          : {}),
+        // Factory's skills come as one local plugin; `skills` enables exactly those.
+        ...(skills ? { plugins: [skills.plugin] } : {}),
+        skills: skills ? skills.names : [],
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
-          ...(options.instructions ? { append: options.instructions } : {}),
+          ...(instructions ? { append: instructions } : {}),
         },
-        // Claude Code's own question tool has no human on the other end yet; Factory's lands later.
-        // Skills are off; the Skill tool goes too so nothing can invoke one.
-        disallowedTools: ['AskUserQuestion', 'Skill'],
+        // An allow-list of built-in tools (see builtin-tools.ts); the Skill tool only with skills.
+        tools: [...CLAUDE_AGENT_BUILTIN_TOOLS, ...(skills ? [SKILL_TOOL] : [])],
+        disallowedTools: [...CLAUDE_AGENT_DISALLOWED_TOOLS, ...(skills ? [] : [SKILL_TOOL])],
         ...(options.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: options.spawnClaudeCodeProcess } : {}),
         ...(options.pathToClaudeCodeExecutable
           ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable }

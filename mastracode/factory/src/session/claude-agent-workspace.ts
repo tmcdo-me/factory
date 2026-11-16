@@ -4,7 +4,7 @@ import { stat } from 'node:fs/promises';
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
-import type { Workspace } from '@mastra/core/workspace';
+import type { Workspace, WorkspaceSkills } from '@mastra/core/workspace';
 
 import { findSessionSandboxEntry, sessionLayout } from '../sandbox/session-sandbox.js';
 
@@ -13,6 +13,24 @@ type ResolveWorkspace = (context: {
   requestContext: RequestContext<any>;
   mastra?: Mastra;
 }) => Promise<Workspace | undefined>;
+
+/** What a Claude Agent session runs in, resolved from the workspace a Mastra Code session would get. */
+export interface ClaudeAgentWorkspace {
+  /** The session's checkout. */
+  cwd: string;
+  /** The sandbox's environment (git credentials for the checkout). */
+  env: Record<string, string>;
+  /** The session's skills, chosen as for a Mastra Code session (role, project edits). */
+  skills?: WorkspaceSkills;
+  /** The sandbox the checkout lives in. */
+  sandbox?: unknown;
+  /**
+   * The request context Factory's tools run with for a turn the host sent with `hostContext`: the
+   * host's entries (the signed-in caller) plus this session's controller context, as Mastra Code's
+   * tools see it. The controller state is shared across turns, so what one tool heals stays healed.
+   */
+  requestContext(hostContext: unknown): RequestContext;
+}
 
 /**
  * Resolve a session's workspace exactly as a Mastra Code session would (same factory instance, same
@@ -26,23 +44,9 @@ export function createClaudeAgentWorkspaceResolver(options: {
   resolveWorkspace: ResolveWorkspace;
   getMastra: () => Mastra | undefined;
 }) {
-  return async (sessionId: string, requestContext: unknown): Promise<{ cwd: string; env: Record<string, string> }> => {
-    // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's request context, keys and all.
-    const context = new RequestContext<any>(contextEntries(requestContext));
-    // The resolver reads the session from the controller context and records the checkout in its state.
-    const state: Record<string, unknown> = {};
-    context.set('controller', {
-      controllerId: 'claude-agent',
-      sessionId,
-      threadId: sessionId,
-      resourceId: sessionId,
-      state,
-      getState: () => state,
-      setState: async (updates: Record<string, unknown>) => {
-        Object.assign(state, updates);
-      },
-    } as unknown as AgentControllerRequestContext);
-
+  return async (sessionId: string, requestContext: unknown): Promise<ClaudeAgentWorkspace> => {
+    const contextFor = claudeAgentRequestContext(sessionId);
+    const context = contextFor(requestContext);
     const workspace = await options.resolveWorkspace({ requestContext: context, mastra: options.getMastra() });
     const sandbox = workspace?.sandbox;
     if (!sandbox) throw new Error(`Session ${sessionId} has no workspace to run Claude Agent in`);
@@ -71,7 +75,37 @@ export function createClaudeAgentWorkspaceResolver(options: {
       env: Object.fromEntries(
         Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       ),
+      ...(workspace?.skills ? { skills: workspace.skills } : {}),
+      sandbox,
+      requestContext: contextFor,
     };
+  };
+}
+
+/**
+ * Request contexts for one Claude Agent session: a copy of the host's (identity, tenant, the
+ * interactive marker) with the session's controller context, which Factory's workspace and tools
+ * read the session from. One controller per session, so its state carries across turns.
+ */
+export function claudeAgentRequestContext(sessionId: string): (hostContext: unknown) => RequestContext {
+  // The resolver reads the session from the controller context and records the checkout in its state.
+  const state: Record<string, unknown> = {};
+  const controller = {
+    controllerId: 'claude-agent',
+    sessionId,
+    threadId: sessionId,
+    resourceId: sessionId,
+    state,
+    getState: () => state,
+    setState: async (updates: Record<string, unknown>) => {
+      Object.assign(state, updates);
+    },
+  } as unknown as AgentControllerRequestContext;
+  return hostContext => {
+    // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's request context, keys and all.
+    const context = new RequestContext<any>(contextEntries(hostContext));
+    context.set('controller', controller);
+    return context;
   };
 }
 

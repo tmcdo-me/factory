@@ -1,11 +1,14 @@
-import type { Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
-import { buildTranscript } from '@factory/agent-runtime';
-import type { EventEnvelope, FactoryEvent } from '@factory/agent-runtime';
+import type { McpSdkServerConfigWithInstance, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
+import { buildTranscript, defineFactoryTool } from '@factory/agent-runtime';
+import type { EventEnvelope, FactoryEvent, FactoryToolContext } from '@factory/agent-runtime';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 import { claudeProcessEnv } from './env';
-import { ClaudeAgentSession, instructionFilesAbove } from './session';
+import type { FactoryToolCall } from './factory-tools';
+import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
 import type { QueryFn } from './session';
+import { mcpClient } from './test-utils';
 
 const base = { session_id: 'claude-1', uuid: '00000000-0000-0000-0000-000000000000' } as const;
 const ev = (event: Record<string, unknown>, parent: string | null = null) =>
@@ -218,8 +221,151 @@ describe('ClaudeAgentSession', () => {
       allowDangerouslySkipPermissions: true,
       settingSources: ['project'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: 'You are working on a Factory card.' },
-      disallowedTools: ['AskUserQuestion', 'Skill'],
     });
+  });
+
+  it("allows only Claude Code's coding tools, and nothing that acts outside the session", async () => {
+    const { session, events, fake } = setup();
+    await session.send({ text: 'hi' });
+    await settled(events);
+    const options = fake.calls[0]!.options as { tools: string[]; disallowedTools: string[] };
+    expect(options.tools).toEqual([
+      'Bash',
+      'Read',
+      'Write',
+      'Edit',
+      'Glob',
+      'Grep',
+      'NotebookEdit',
+      'TaskStop',
+      'Agent',
+      'TodoWrite',
+      'WebSearch',
+      'WebFetch',
+      'ToolSearch',
+    ]);
+    for (const outside of [
+      'RemoteTrigger',
+      'PushNotification',
+      'SendMessage',
+      'CronCreate',
+      'CronDelete',
+      'CronList',
+      'ScheduleWakeup',
+      'DesignSync',
+      'EnterWorktree',
+      'ExitWorktree',
+      'Workflow',
+      'Monitor',
+      'ReportFindings',
+      'AskUserQuestion',
+      'ExitPlanMode',
+      'Skill',
+    ]) {
+      expect(options.tools).not.toContain(outside);
+      expect(options.disallowedTools).toContain(outside);
+    }
+    // No Factory tools given: no MCP server at all.
+    expect(options).not.toHaveProperty('mcpServers');
+  });
+
+  it("serves Factory's tools as the `factory` MCP server, each call bound to Claude's tool_use and run", async () => {
+    const context = vi.fn((call: FactoryToolCall) => ({
+      sessionId: 's1',
+      callId: call.callId,
+      orgId: 'org-1',
+      userId: 'user-1',
+      workspace: {} as FactoryToolContext['workspace'],
+      signal: call.signal,
+      interact: async () => {
+        throw new Error('unused');
+      },
+    }));
+    const execute = vi.fn(async (input: { stage: string }, ctx: FactoryToolContext) => ({
+      moved: input.stage,
+      by: ctx.userId,
+    }));
+    let release!: () => void;
+    const held = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const events: FactoryEvent[] = [];
+    let options: Record<string, unknown> | undefined;
+    const query: QueryFn = ({ prompt, options: opts }) => {
+      options = opts as Record<string, unknown>;
+      const iterator = (async function* () {
+        for await (const _message of prompt) {
+          await held; // the turn is running while Claude calls the tool
+          yield result();
+        }
+      })();
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as unknown as Query;
+    };
+    let n = 0;
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/work/s1',
+      env: {},
+      emit: event => events.push(event),
+      query,
+      newId: () => `id-${++n}`,
+      factoryTools: {
+        defs: [
+          defineFactoryTool({
+            name: 'factory_transition_work_item',
+            description: 'Move the card',
+            input: z.object({ stage: z.string() }),
+            execute,
+          }),
+        ],
+        context,
+      },
+    });
+    const { runId } = await session.send({ text: 'move it' });
+    await vi.waitFor(() => expect(options).toBeDefined());
+
+    const servers = options!.mcpServers as Record<string, McpSdkServerConfigWithInstance>;
+    expect(Object.keys(servers)).toEqual(['factory']);
+    expect(options).toMatchObject({ strictMcpConfig: true });
+    expect((options!.systemPrompt as { append: string }).append).toContain('mcp__factory__submit_plan');
+    const client = await mcpClient(servers.factory!);
+    expect((await client.listTools()).map(tool => tool.name)).toEqual(['factory_transition_work_item']);
+    const reply = await client.call('factory_transition_work_item', { stage: 'build' }, 'toolu_move');
+
+    expect(context).toHaveBeenCalledWith(expect.objectContaining({ callId: 'toolu_move', runId }));
+    expect(execute).toHaveBeenCalledWith({ stage: 'build' }, expect.objectContaining({ callId: 'toolu_move' }));
+    expect(JSON.parse(reply.content[0]!.text)).toEqual({ moved: 'build', by: 'user-1' });
+    release();
+    await settled(events);
+    await session.close();
+  });
+
+  it("enables Factory's skills, and only those, through their plugin", async () => {
+    const events: FactoryEvent[] = [];
+    const fake = fakeQuery([[result()]]);
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/work/s1',
+      env: {},
+      emit: event => events.push(event),
+      query: fake.fn,
+      skills: {
+        plugin: { type: 'local', path: '/home/claude/factory-skills/s1', skipMcpDiscovery: true },
+        names: ['factory:factory-plan', 'factory:factory-build'],
+      },
+    });
+    await session.send({ text: 'plan it' });
+    await settled(events);
+    const options = fake.calls[0]!.options as Record<string, unknown> & { tools: string[]; disallowedTools: string[] };
+    expect(options).toMatchObject({
+      plugins: [{ type: 'local', path: '/home/claude/factory-skills/s1', skipMcpDiscovery: true }],
+      skills: ['factory:factory-plan', 'factory:factory-build'],
+      settings: { disableBundledSkills: true },
+      settingSources: ['project'],
+    });
+    expect(options.tools).toContain('Skill');
+    expect(options.disallowedTools).not.toContain('Skill');
+    expect((options.systemPrompt as { append: string }).append).toBe(SKILLS_INSTRUCTIONS);
   });
 
   it("keeps the session apart from the operator's Claude setup: no connectors, skills, MCP or memory", async () => {

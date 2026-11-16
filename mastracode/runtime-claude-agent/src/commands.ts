@@ -27,7 +27,8 @@ export function createClaudeAgentSessionCommands(sessions: {
       await session.abort();
       return { ok: true };
     },
-    // Claude Agent sessions ask nothing of the human yet; Factory's interactions land with its tools.
+    // Questions and plan approvals wait in the host's InteractionBroker; a host that has one (Factory)
+    // answers through it. This plain helper has none.
     answer: async sessionId =>
       (await live(sessionId)) ? { ok: false, reason: 'not_pending', message: 'no_pending_interaction' } : notFound,
     setModel: async (sessionId, model) => {
