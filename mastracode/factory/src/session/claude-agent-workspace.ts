@@ -1,6 +1,11 @@
 // fork(claude-agent): a Claude Agent session's checkout, from Factory's own workspace factory.
 import type { SandboxProcesses, SessionWorkspace } from '@factory/agent-runtime';
-import { ensureClaudeCode, runInProcesses, sandboxClaudeCodeLaunch } from '@factory/runtime-claude-agent';
+import {
+  ensureBashSandbox,
+  ensureClaudeCode,
+  runInProcesses,
+  sandboxClaudeCodeLaunch,
+} from '@factory/runtime-claude-agent';
 import type { ClaudeCodeLaunch, InstalledClaudeCode, RunInSandbox } from '@factory/runtime-claude-agent';
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { Mastra } from '@mastra/core/mastra';
@@ -72,18 +77,26 @@ export function createClaudeAgentWorkspaceResolver(options: {
   modelIdOf?: (sessionId: string) => Promise<string | undefined>;
   /** Installs Claude Code in a sandbox that runs it remotely; injected for tests. */
   installClaudeCode?: (run: RunInSandbox) => Promise<InstalledClaudeCode>;
+  /** Installs what Claude Code's Bash sandbox needs in such a sandbox; injected for tests. */
+  installBashSandbox?: (run: RunInSandbox) => Promise<void>;
 }) {
   /**
    * On every open, never remembered: the sandbox may have been reset (a new VM behind the same
    * object) or its binary changed since. A verified sandbox answers with one checksum. Run through
    * the sandbox's own processes with no environment, so no credential is near it or its errors.
+   * With Claude Code's Bash sandbox, what it needs (bubblewrap, socat) is installed the same way,
+   * and every launch checks that it can run (`sandboxClaudeCodeLaunch`).
    */
-  const claudeCodeIn = async (processes: SandboxProcesses): Promise<ClaudeCodeLaunch> =>
-    sandboxClaudeCodeLaunch(
-      processes,
-      await (options.installClaudeCode ?? ensureClaudeCode)(runInProcesses(processes)),
-    );
-  return async (sessionId: string, requestContext: unknown): Promise<ClaudeAgentWorkspace> => {
+  const claudeCodeIn = async (processes: SandboxProcesses, bashSandbox: boolean): Promise<ClaudeCodeLaunch> => {
+    const installed = await (options.installClaudeCode ?? ensureClaudeCode)(runInProcesses(processes));
+    if (bashSandbox) await (options.installBashSandbox ?? ensureBashSandbox)(runInProcesses(processes));
+    return sandboxClaudeCodeLaunch(processes, installed, { bashSandbox });
+  };
+  return async (
+    sessionId: string,
+    requestContext: unknown,
+    open: { bashSandbox?: boolean } = {},
+  ): Promise<ClaudeAgentWorkspace> => {
     const [resourceId, modelId] = await Promise.all([
       options.resourceIdOf?.(sessionId),
       options.modelIdOf?.(sessionId),
@@ -124,7 +137,7 @@ export function createClaudeAgentWorkspaceResolver(options: {
         ).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       );
     const env = currentEnv();
-    const launch = processes.kind === 'local' ? undefined : await claudeCodeIn(processes);
+    const launch = processes.kind === 'local' ? undefined : await claudeCodeIn(processes, open.bashSandbox === true);
     // Factory re-mints a stale GitHub token before any sandbox command; a no-op command triggers it.
     const freshEnv = async () => {
       await sandbox.executeCommand?.('true').catch(() => undefined);

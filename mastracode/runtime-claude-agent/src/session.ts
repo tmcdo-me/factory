@@ -4,6 +4,8 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runtime';
 
+import { claudeAgentBashSandbox } from './bash-sandbox';
+import type { ClaudeAgentBashSandboxOptions } from './bash-sandbox';
 import { CLAUDE_AGENT_BUILTIN_TOOLS, CLAUDE_AGENT_DISALLOWED_TOOLS, SKILL_TOOL } from './builtin-tools';
 import { ClaudeAgentEventMapper } from './event-mapper';
 import { FACTORY_TOOLS_INSTRUCTIONS, createFactoryMcpServer } from './factory-tools';
@@ -34,24 +36,6 @@ export const CLAUDE_AGENT_ISOLATION = {
   disableBundledSkills: true,
   autoMemoryEnabled: false,
 } as const;
-
-/** Claude's own credentials: what the Bash sandbox keeps from the commands Claude runs. */
-const CLAUDE_CREDENTIAL_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
-
-/**
- * Claude Code's Bash sandbox as Factory runs it (`bashSandbox`): every Bash command sandboxed (no
- * `dangerouslyDisableSandbox` escape), approved without a prompt as `bypassPermissions` approves
- * everything else, with Claude's credentials unset inside (`deny`; `mask` would need TLS
- * termination to work over HTTPS). Fail closed: if the sandbox can't start, Claude Code doesn't.
- * The session's git credentials (`GH_TOKEN*`) stay: git and `gh` need them.
- */
-export const CLAUDE_AGENT_BASH_SANDBOX = {
-  enabled: true,
-  failIfUnavailable: true,
-  allowUnsandboxedCommands: false,
-  autoAllowBashIfSandboxed: true,
-  credentials: { envVars: CLAUDE_CREDENTIAL_ENV.map(name => ({ name, mode: 'deny' as const })) },
-};
 
 /** Appended to the system prompt when the session has Factory's skills. */
 export const SKILLS_INSTRUCTIONS =
@@ -88,12 +72,12 @@ export interface ClaudeAgentSessionOptions {
    */
   untrustedCheckout?: boolean;
   /**
-   * Run Claude Code's Bash tool inside Claude Code's own sandbox (`CLAUDE_AGENT_BASH_SANDBOX`), so
-   * the commands it runs (a repository's tests, scripts) don't see Claude's credential. Needs the
-   * sandbox's dependencies (bubblewrap and socat on Linux); without them Claude Code refuses to
-   * start rather than run unsandboxed.
+   * Run Claude Code's Bash tool inside Claude Code's own sandbox (`claudeAgentBashSandbox`), so
+   * the commands it runs (a repository's tests, scripts) can't get at Claude's credential. Needs
+   * the sandbox's dependencies (bubblewrap and socat on Linux); without them Claude Code refuses to
+   * start rather than run unsandboxed. `true` or the sandbox's options.
    */
-  bashSandbox?: boolean;
+  bashSandbox?: boolean | ClaudeAgentBashSandboxOptions;
   /**
    * Subprocess environment; build it with `claudeProcessEnv`. A function is asked again each time
    * Claude Code starts (after an idle close or a recycle), so credentials refreshed since (a
@@ -473,7 +457,9 @@ export class ClaudeAgentSession {
         settings: {
           ...CLAUDE_AGENT_ISOLATION,
           claudeMdExcludes: instructionFilesAbove(options.cwd),
-          ...(options.bashSandbox ? { sandbox: CLAUDE_AGENT_BASH_SANDBOX } : {}),
+          ...(options.bashSandbox
+            ? { sandbox: claudeAgentBashSandbox(options.bashSandbox === true ? {} : options.bashSandbox) }
+            : {}),
         },
         strictMcpConfig: true,
         ...(factoryTools

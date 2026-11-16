@@ -1,8 +1,9 @@
 // fork(claude-agent): Factory's live Claude Agent sessions.
 import { randomUUID } from 'node:crypto';
+import { readdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, isAbsolute, join } from 'node:path';
 
 import { SessionPublisher } from '@factory/agent-runtime';
 import type {
@@ -17,6 +18,7 @@ import type {
   SendInput,
 } from '@factory/agent-runtime';
 import {
+  BASH_SANDBOX_WRITABLE_HOME_DIRS,
   CLAUDE_AGENT_RUNTIME_ID,
   ClaudeAgentSession,
   FACTORY_SKILLS_PLUGIN,
@@ -72,6 +74,8 @@ export interface ClaudeAgentSessionsDeps {
   workspace(
     sessionId: string,
     requestContext: unknown,
+    /** fork(claude-agent): Claude Code's Bash sandbox is on, so a remote sandbox must be ready for it. */
+    open?: { bashSandbox?: boolean },
   ): Promise<Pick<ClaudeAgentWorkspace, 'cwd' | 'env'> & Partial<ClaudeAgentWorkspace>>;
   /**
    * Factory's tools for one turn, exactly as a Mastra Code session gets them (`extraTools`), built
@@ -120,7 +124,10 @@ export interface ClaudeAgentSessionsDeps {
   query?: QueryFn;
   /** fork(claude-agent): stop an idle Claude Code after this long (see `claudeAgentIdleCloseMs`). */
   idleCloseMs?: number;
-  /** fork(claude-agent): run Claude's Bash in Claude Code's own sandbox (see `claudeAgentBashSandbox`). */
+  /**
+   * fork(claude-agent): run trusted sessions' Bash in Claude Code's own sandbox (see
+   * `claudeAgentBashSandbox`); untrusted sessions always do.
+   */
   bashSandbox?: boolean;
   /** fork(claude-agent): how long background work alone may keep Claude Code running (see `claudeAgentBackgroundMaxMs`). */
   backgroundMaxMs?: number;
@@ -146,12 +153,47 @@ const CLAUDE_AGENT_PROCESS_DEADLINE_MS = 45 * 60_000;
 
 /**
  * fork(claude-agent): whether Claude Agent sessions run their Bash commands in Claude Code's own
- * sandbox, which keeps Claude's credential from them: `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1`. Off by
- * default: it needs the sandbox's dependencies (bubblewrap and socat on Linux) and confines what
- * commands may write and reach (see `CLAUDE_AGENT_BASH_SANDBOX`).
+ * sandbox, which keeps Claude's credential from them. On by default; `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=0`
+ * (or `false`, `off`, `no`) turns it off for trusted sessions. An untrusted checkout (a pull
+ * request under review) always runs sandboxed. It needs the sandbox's dependencies (bubblewrap
+ * and socat on Linux; a Sprite gets them installed) and confines what commands may write (see
+ * `claudeAgentBashSandbox` in `@factory/runtime-claude-agent`).
  */
 export function claudeAgentBashSandbox(env: Record<string, string | undefined> = process.env): boolean {
-  return /^(1|true|on|yes)$/i.test(env.FACTORY_CLAUDE_AGENT_BASH_SANDBOX?.trim() ?? '');
+  return !/^(0|false|off|no)$/i.test(env.FACTORY_CLAUDE_AGENT_BASH_SANDBOX?.trim() ?? '');
+}
+
+/**
+ * fork(claude-agent): files on this host that a Claude Agent session's commands must not read,
+ * because they hold Claude's credential: the env files Factory's server was started with (varlock
+ * loads `mastracode/web/.env`, which is where `CLAUDE_CODE_OAUTH_TOKEN` usually lives), found
+ * from the server's entry point and working directory upwards; the operator's own Claude login
+ * (`~/.claude/.credentials.json` on Linux); and `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`
+ * (comma-separated paths) for anywhere else the operator keeps it. The sandbox lets commands read
+ * everything else on this machine.
+ */
+export function claudeAgentHostSecretFiles(
+  env: Record<string, string | undefined> = process.env,
+  from: readonly (string | undefined)[] = [process.argv[1] ? dirname(process.argv[1]) : undefined, process.cwd()],
+): string[] {
+  const files = new Set<string>([join(homedir(), '.claude', '.credentials.json')]);
+  for (const start of from) {
+    if (!start || !isAbsolute(start)) continue;
+    for (let dir = start; ; dir = dirname(dir)) {
+      let names: string[] = [];
+      try {
+        names = readdirSync(dir);
+      } catch {
+        // Unreadable: nothing to deny there.
+      }
+      for (const name of names) if (/^\.env(\..+)?$/.test(name)) files.add(join(dir, name));
+      if (dirname(dir) === dir) break;
+    }
+  }
+  for (const path of env.FACTORY_CLAUDE_AGENT_BASH_DENY_READ?.split(',') ?? []) {
+    if (isAbsolute(path.trim())) files.add(path.trim());
+  }
+  return [...files];
 }
 
 /**
@@ -254,18 +296,26 @@ export class ClaudeAgentSessions {
         `Session ${sessionId} runs on Claude Agent, which another Factory process sharing this database runs.`,
       );
     }
-    const workspace = await this.#deps.workspace(sessionId, requestContext);
+    // An untrusted checkout always runs Claude's Bash sandboxed; a trusted one unless turned off.
+    const untrusted = (await this.#posture(sessionId)) === 'untrusted';
+    const bashSandbox = untrusted || (this.#deps.bashSandbox ?? claudeAgentBashSandbox());
+    const workspace = await this.#deps.workspace(sessionId, requestContext, { bashSandbox });
     const { cwd, env, launch } = workspace;
     // fork(claude-agent): Claude Code runs on this host, or inside the session's sandbox (`launch`).
     const home = launch ? launch.home : this.#deps.home;
-    if (home && !launch) await mkdir(home, { recursive: true, mode: 0o700 });
+    if (home && !launch) {
+      await mkdir(home, { recursive: true, mode: 0o700 });
+      // On Linux a sandbox rule for a missing path has no effect; in a sandbox the launch makes them.
+      if (bashSandbox) {
+        await Promise.all(BASH_SANDBOX_WRITABLE_HOME_DIRS.map(dir => mkdir(join(home, dir), { recursive: true })));
+      }
+    }
     const watchShell = this.#shellWatcher(sessionId, workspace);
     const publisher = new SessionPublisher(this.#deps.hub, sessionId, {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
     });
     const factoryTools = await this.#factoryTools(sessionId, workspace, requestContext);
     const skills = await this.#skills(sessionId, workspace, requestContext);
-    const untrusted = (await this.#posture(sessionId)) === 'untrusted';
     // A restart carries the state of the Claude Code it replaces: saving it is fire-and-forget.
     const runtimeState = this.#resume.get(sessionId) ?? (record.runtimeState as ClaudeAgentRuntimeState | undefined);
     this.#resume.delete(sessionId);
@@ -283,7 +333,8 @@ export class ClaudeAgentSessions {
         ? async () => claudeProcessEnv(hostEnv, await freshEnv(), envOptions)
         : claudeProcessEnv(hostEnv, env, envOptions),
       idleCloseMs: this.#deps.idleCloseMs ?? claudeAgentIdleCloseMs(),
-      ...((this.#deps.bashSandbox ?? claudeAgentBashSandbox()) ? { bashSandbox: true } : {}),
+      // On this host its commands must not read the files holding Claude's credential either.
+      ...(bashSandbox ? { bashSandbox: launch ? true : { denyRead: claudeAgentHostSecretFiles(hostEnv) } } : {}),
       recycleAfterMs: CLAUDE_AGENT_RECYCLE_AFTER_MS,
       processDeadlineMs: CLAUDE_AGENT_PROCESS_DEADLINE_MS,
       backgroundMaxMs: this.#deps.backgroundMaxMs ?? claudeAgentBackgroundMaxMs(),

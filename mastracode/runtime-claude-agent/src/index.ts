@@ -1,11 +1,16 @@
 export { CLAUDE_AGENT_RUNTIME_ID, ClaudeAgentEventMapper } from './event-mapper';
 export {
+  BASH_SANDBOX_PACKAGES,
+  BASH_SANDBOX_WRITABLE_HOME_DIRS,
   CLAUDE_AGENT_BASH_SANDBOX,
-  CLAUDE_AGENT_ISOLATION,
-  ClaudeAgentSession,
-  SKILLS_INSTRUCTIONS,
-  instructionFilesAbove,
-} from './session';
+  bashSandboxInstallScript,
+  claudeAgentBashSandbox,
+  ensureBashSandbox,
+} from './bash-sandbox';
+export type { ClaudeAgentBashSandboxOptions } from './bash-sandbox';
+export { bashSandboxProbeScript, parseBashSandboxProbe } from './bash-sandbox-probe';
+export type { BashSandboxProbeOptions } from './bash-sandbox-probe';
+export { CLAUDE_AGENT_ISOLATION, ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
 export type {
   ClaudeAgentRuntimeState,
   ClaudeAgentSessionOptions,
@@ -36,6 +41,7 @@ export {
 } from './install';
 export type { InstalledClaudeCode, RunInSandbox } from './install';
 export {
+  LAUNCH_BASH_SANDBOX_UNAVAILABLE,
   LAUNCH_BINARY_MISMATCH,
   LAUNCH_MANAGED_SETTINGS,
   claudeCodeLaunchScript,

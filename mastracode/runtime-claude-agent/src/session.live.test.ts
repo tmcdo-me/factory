@@ -2,9 +2,14 @@
  * Live check against the real, unmodified Claude Code binary bundled with the Agent SDK, using the
  * machine's own Claude login. Opt-in: `CLAUDE_AGENT_LIVE=1 pnpm test src/session.live.test.ts`.
  * It sends two small prompts, so it costs a few cents of ordinary usage on whatever account the
- * `claude` binary is signed in to.
+ * `claude` binary is signed in to. With `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) it
+ * also runs one turn in Claude Code's Bash sandbox, as Factory runs it on this host (a home of its
+ * own, the token in the environment), and checks with a probe that no command gets at the token.
+ * On macOS that adds a throwaway keychain item for the turn (standing in for a saved login).
  */
-import { mkdirSync, mkdtempSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -16,6 +21,8 @@ import type { EventEnvelope, FactoryEvent, FactoryToolContext, ToolItem } from '
 import { describe, expect, it } from 'vitest';
 import { z } from 'zod';
 
+import { BASH_SANDBOX_WRITABLE_HOME_DIRS } from './bash-sandbox';
+import { bashSandboxProbeScript, parseBashSandboxProbe } from './bash-sandbox-probe';
 import { claudeProcessEnv } from './env';
 import { ClaudeAgentSession } from './session';
 import type { QueryFn } from './session';
@@ -175,6 +182,85 @@ describe.skipIf(!process.env.CLAUDE_AGENT_LIVE)('ClaudeAgentSession (live Claude
       } finally {
         await session.close();
         await rm(plugin, { recursive: true, force: true });
+      }
+    },
+  );
+
+  // 9c: Claude's Bash commands (a repository's tests) must not get at Claude's credential: not in
+  // their environment, not in Claude Code's (`ps eww` / `/proc`), not in a file (the server's env
+  // file, Claude's config dir) or the keychain. Ordinary work must still go.
+  it.skipIf(!process.env.CLAUDE_CODE_OAUTH_TOKEN)(
+    "keeps Claude's credential from its Bash commands on this host, and ordinary work still goes",
+    { timeout: 240_000 },
+    async () => {
+      const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'factory-claude-sandbox-'));
+      const cwd = join(root, 'repo');
+      const home = join(root, 'home');
+      const secretFile = join(root, 'server', '.env');
+      mkdirSync(cwd, { recursive: true });
+      mkdirSync(join(root, 'server'));
+      for (const dir of BASH_SANDBOX_WRITABLE_HOME_DIRS) mkdirSync(join(home, dir), { recursive: true });
+      writeFileSync(secretFile, 'CLAUDE_CODE_OAUTH_TOKEN=stand-in\n');
+      execFileSync('git', ['init', '-q'], { cwd });
+      const keychainService = process.platform === 'darwin' ? `factory-live-probe-${randomUUID()}` : undefined;
+      if (keychainService) {
+        execFileSync('security', ['add-generic-password', '-s', keychainService, '-a', 'factory', '-w', randomUUID()]);
+      }
+      writeFileSync(
+        join(cwd, 'probe.sh'),
+        bashSandboxProbeScript({ secretFile, ...(keychainService ? { keychainService } : {}) }),
+      );
+      const events: FactoryEvent[] = [];
+      const session = new ClaudeAgentSession({
+        sessionId: 'live-sandbox',
+        cwd,
+        // A stand-in for the session's GitHub token: git and gh must still get it.
+        env: claudeProcessEnv(process.env, { GH_TOKEN: 'ghs_factorylive000000000000000000000000' }, { home }),
+        model: process.env.CLAUDE_AGENT_LIVE_MODEL ?? 'claude-haiku-5-5',
+        bashSandbox: { denyRead: [secretFile] },
+        emit: event => events.push(event),
+      });
+      try {
+        await session.send({
+          text: 'Use your Bash tool to run exactly `sh ./probe.sh` (one call), then reply with only: done',
+        });
+        const deadline = Date.now() + 230_000;
+        while (!events.some(e => e.type === 'run.ended') && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        await session.close();
+        const output = events.flatMap(e => (e.type === 'tool.output' ? [e.chunk] : [])).join('');
+        console.log('[live] sandbox probe:\n' + output);
+        const probe = parseBashSandboxProbe(output);
+        expect(probe).toMatchObject({
+          'env.CLAUDE_CODE_OAUTH_TOKEN': 'absent',
+          'env.GH_TOKEN': 'present',
+          'ps.token_in_env': '0',
+          'files.token_like': '0',
+          'files.secret': 'denied',
+          'net.npm_registry': '200',
+          'git.public': 'ok',
+          'write.checkout': 'ok',
+          'write.tmpdir': 'ok',
+          'write.home_cache': 'ok',
+          'write.home_npm': 'ok',
+          'write.claude_config': 'denied',
+          'write.checkout_claude_settings': 'denied',
+          'write.git_hooks': 'denied',
+          'npm.install': 'ok',
+          'git.commit': 'ok',
+          'git.push': 'ok',
+          probe: 'done',
+        });
+        if (probe['proc.token_in_environ'] !== undefined) expect(probe['proc.token_in_environ']).toBe('0');
+        if (keychainService) expect(probe['keychain.item']).toBe('denied');
+        if (probe['gh.api'] !== 'not-installed') {
+          expect(probe).toMatchObject({ 'git.credential_helper': 'sent', 'gh.api': 'reached' });
+        }
+      } finally {
+        await session.close();
+        if (keychainService) execFileSync('security', ['delete-generic-password', '-s', keychainService]);
+        await rm(root, { recursive: true, force: true });
       }
     },
   );

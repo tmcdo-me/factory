@@ -152,6 +152,35 @@ describe('Claude Agent workspace', () => {
     expect(install).toHaveBeenCalledTimes(2);
   });
 
+  it("with Claude Code's Bash sandbox, makes the Sprite ready for it and launches behind its check", async () => {
+    const { sandbox, spawn } = spriteSandbox();
+    const order: string[] = [];
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: async () => {
+        order.push('claude-code');
+        return installed;
+      },
+      installBashSandbox: async () => {
+        order.push('bash-sandbox');
+      },
+    });
+    const launchScript = async (bashSandbox: boolean | undefined) => {
+      spawn.mockClear();
+      const workspace = await resolve('agent-session-1', undefined, bashSandbox === undefined ? {} : { bashSandbox });
+      workspace.launch!.spawnClaudeCodeProcess!({ command: installed.executable, args: [], env: {} });
+      return spawn.mock.calls[0]![1][1] as string;
+    };
+    expect(await launchScript(true)).toMatch(/Bash sandbox can't run in this sandbox/);
+    expect(order).toEqual(['claude-code', 'bash-sandbox']);
+    // Off (a trusted session opted out): neither the install nor the check.
+    order.length = 0;
+    expect(await launchScript(false)).not.toMatch(/Bash sandbox/);
+    expect(await launchScript(undefined)).not.toMatch(/Bash sandbox/);
+    expect(order).toEqual(['claude-code', 'claude-code']);
+  });
+
   it('installs through the sandbox processes with no environment, never through a command with the sandbox env', async () => {
     const { sandbox, spawn } = spriteSandbox();
     const resolve = createClaudeAgentWorkspaceResolver({

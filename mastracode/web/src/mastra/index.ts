@@ -30,7 +30,7 @@ import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { OidcAuth } from '@factory/auth-oidc';
 // fork(claude-agent)
-import { ensureClaudeCode, runInProcesses } from '@factory/runtime-claude-agent';
+import { ensureBashSandbox, ensureClaudeCode, runInProcesses } from '@factory/runtime-claude-agent';
 import { SpritesFactorySandbox } from '@factory/sandbox-sprites';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
@@ -445,8 +445,13 @@ const sandbox = useSpritesSandbox // fork(claude-agent)
       namePrefix: process.env.FACTORY_SPRITES_PREFIX?.trim() || 'factory',
       // Claude Code (pinned, checksum-verified) goes in before the clone and the repository's setup
       // command run, so nothing of the repository shapes it. Each Claude Agent open verifies it again.
+      // What Claude Code's Bash sandbox needs (bubblewrap, socat) comes from the image's own packages;
+      // each open that runs sandboxed installs it again if missing, and fails there if it can't.
       prepare: async processes => {
         await ensureClaudeCode(runInProcesses(processes));
+        await ensureBashSandbox(runInProcesses(processes)).catch(error =>
+          console.warn("[factory] Could not prepare Claude Code's Bash sandbox in a new Sprite:", error),
+        );
       },
       ...(process.env.FACTORY_SPRITES_REGION?.trim()
         ? { spriteConfig: { region: process.env.FACTORY_SPRITES_REGION.trim() } }
