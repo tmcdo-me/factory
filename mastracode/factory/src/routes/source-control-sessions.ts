@@ -35,6 +35,7 @@ import type {
 } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { answerParkedCall } from '../tools/approval-tools.js';
+import type { FactoryRuntimeDelivery } from '../tools/deliver.js'; // fork(claude-agent)
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
 import { canReadSessionResource, canSwitchSessionModel, canViewSourceControlSession } from './session-access.js';
@@ -81,6 +82,8 @@ export interface SourceControlSessionRoutesOptions {
     >;
   /** Moves a thread, with everything keyed by its resource, when a session's visibility changes. */
   moveThread?: (input: { threadId: string; resourceId: string }) => Promise<unknown>;
+  /** fork(claude-agent): sessions on another agent runtime, whose approvals are answered through it. */
+  runtimeSessions?: FactoryRuntimeDelivery;
 }
 
 const ABORT_SETTLE_TIMEOUT_MS = 5_000;
@@ -653,15 +656,18 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
         const controller = options.controller;
         if (!controller) return c.json({ error: 'Sessions are not available on this server.' }, 503);
         const { decision, reason } = body.data;
+        // fork(claude-agent): a Claude Agent session's approvals are answered through its runtime.
+        const runtime = options.runtimeSessions;
         let answered: { toolCallId: string; toolName: string };
         try {
           answered = await answerParkedCall(
-            { messaging: async () => ({ controller }) as never },
+            { messaging: async () => ({ controller, ...(runtime ? { runtime } : {}) }) as never },
             {
               session,
               ...(body.data.toolCallId ? { toolCallId: body.data.toolCallId } : {}),
               decision,
               declineReason: reason ?? 'Declined from the card.',
+              answeredBy: resolved.tenant.userId, // fork(claude-agent)
             },
           );
         } catch (error) {

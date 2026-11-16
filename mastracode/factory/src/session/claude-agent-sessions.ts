@@ -49,6 +49,7 @@ import {
 } from './claude-agent-tools.js';
 import type { MastraTools } from './claude-agent-tools.js';
 import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
+import { answersWithDecision, interactionToolName } from './pending-interactions.js';
 
 /** A session id usable as one folder name: no separators, no `.`/`..`. */
 const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
@@ -607,7 +608,56 @@ export class ClaudeAgentSessions {
       abort: async (sessionId, requestContext) => {
         await this.commands().abort(sessionId, { context: requestContext });
       },
+      approvals: {
+        waiting: async sessionId =>
+          (await this.#decisions(sessionId)).map(record => ({
+            toolCallId: record.callId!,
+            toolName: interactionToolName(record.request),
+          })),
+        answer: async (sessionId, toolCallId, { decision, reason, answeredBy }, requestContext) => {
+          // Looked up first: a stale button never starts Claude Code or its workspace.
+          const pending = (await this.#decisions(sessionId)).find(record => record.callId === toolCallId);
+          if (!pending) return 'not_pending';
+          const session = await this.open(sessionId, requestContext);
+          if (!session) return 'not_pending';
+          const approved = decision === 'approve';
+          const response: InteractionResponse =
+            pending.request.kind === 'plan_approval'
+              ? approved
+                ? { kind: 'plan_approval', action: 'approved' }
+                : { kind: 'plan_approval', action: 'rejected', ...(reason ? { feedback: reason } : {}) }
+              : { kind: 'tool_approval', approved, ...(!approved && reason ? { reason } : {}) };
+          const result = await this.#resolve(session, pending, response, requestContext, answeredBy);
+          return result.ok ? 'answered' : 'not_pending';
+        },
+      },
     };
+  }
+
+  /** The calls a session waits on that a yes or no answers (a plan, a gated tool), oldest first. */
+  async #decisions(sessionId: string): Promise<InteractionRecord[]> {
+    const pending = (await this.#deps.interactions?.listPending({ sessionId })) ?? [];
+    return pending.filter(record => record.callId !== undefined && answersWithDecision(record.request));
+  }
+
+  /**
+   * Answer what the session waits on. When nobody waits any more (the server restarted while the
+   * human decided), Claude Code's call is gone, so the answer reaches the conversation as a message.
+   */
+  async #resolve(
+    session: ClaudeAgentSession,
+    pending: InteractionRecord,
+    response: InteractionResponse,
+    context: unknown,
+    resolvedBy: string | undefined,
+  ): Promise<CommandResult> {
+    const broker = this.#deps.interactions;
+    if (!broker) return { ok: false, reason: 'not_pending', message: 'no_pending_interaction' };
+    const outcome = await broker.resolve(pending.id, response, resolvedBy ? { resolvedBy } : {});
+    if (outcome.status === 'not_pending')
+      return { ok: false, reason: 'not_pending', message: 'no_pending_interaction' };
+    if (outcome.status === 'queued') await this.#send(session, { text: lateAnswer(pending, response) }, context);
+    return { ok: true };
   }
 
   commands(): SessionCommands {
@@ -640,15 +690,13 @@ export class ClaudeAgentSessions {
         if (pending.request.kind !== response.kind) {
           return { ok: false, reason: 'invalid', message: `expected a ${pending.request.kind} answer` };
         }
-        const outcome = await broker.resolve(pending.id, response, {
-          resolvedBy: toolIdentity(contextOf(request.context)).userId,
-        });
-        if (outcome.status === 'not_pending') return notPending;
-        // Nobody waits any more (the server restarted while the human decided): Claude Code's call
-        // is gone, so the answer reaches the conversation as a message instead.
-        if (outcome.status === 'queued')
-          await this.#send(session, { text: lateAnswer(pending, response) }, request.context);
-        return { ok: true };
+        return this.#resolve(
+          session,
+          pending,
+          response,
+          request.context,
+          toolIdentity(contextOf(request.context)).userId,
+        );
       },
       setModel: async (sessionId, model, request) => {
         const session = await this.open(sessionId, request.context);

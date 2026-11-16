@@ -171,6 +171,8 @@ import { liveSessionsTouchingTheFeed } from './session/live-sessions.js';
 import type { LiveSessions } from './session/live-sessions.js';
 import { hydrateSessionMemorySettings } from './session/memory-settings-hydration.js';
 import { hasResolvedOrg } from './session/org-seed.js';
+// fork(claude-agent)
+import { PendingInteractions, alsoParked, waitingReport } from './session/pending-interactions.js';
 import { FactoryReplyCredentialProcessor } from './session/reply-credential-processor.js';
 import { migrateSessionResources, privatizeOwnerResourceSessions } from './session/resource-migration.js';
 import { observeSessionRunEnd } from './session/run-audit.js';
@@ -1845,13 +1847,30 @@ export class MastraFactory {
         (await this.#prepared?.base.controller.queryThreadById({ threadId: sessionId }))?.resourceId,
       modelIdOf: async sessionId => (await agentSessionsStorage.get(sessionId))?.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL,
     });
+    // fork(claude-agent): what Claude Agent sessions wait on a person for, read by the inbox, boards and
+    // session lists as Mastra Code's parked runs are. A session that starts waiting tells its followers,
+    // as a Mastra Code run that parks does when it ends.
+    const pendingInteractions = new PendingInteractions({
+      store: agentInteractionsStorage,
+      projectOf: sessionId => sourceControlSessions.getBySessionId(sessionId),
+      onChanged: (_sessionId, project) => touchFeed(eventBus, project),
+      onRequested: record => {
+        void reportSessionRunEnd(waitingReport(record)).catch(error =>
+          console.warn(`[factory] Unable to report that session ${record.sessionId} waits.`, error),
+        );
+      },
+    });
+    void agentInteractionsStorage
+      .ensureReady()
+      .then(() => pendingInteractions.load())
+      .catch(error => console.warn('[factory] Unable to read the questions Claude Agent sessions wait on.', error));
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
       workspace: claudeAgentWorkspace,
       home: claudeAgentHome(),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
-      interactions: new InteractionBroker({ store: agentInteractionsStorage, hub: agentEventHub }),
+      interactions: new InteractionBroker({ store: pendingInteractions, hub: agentEventHub }),
       // A review session, or one on a pull request card, loads none of its checkout's own settings.
       ...(workItemsReady
         ? { checkout: claudeAgentCheckoutPosture({ sessions: sourceControlSessions, workItems: workItemsStorage }) }
@@ -2289,7 +2308,11 @@ export class MastraFactory {
             controllerId: CONTROLLER_ID,
             controller,
             runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
-            liveSessions: (liveSessions = liveSessionsTouchingTheFeed(controller, eventBus, sourceControlSessions)),
+            // fork(claude-agent): Claude Agent sessions parked on a person count as parked runs.
+            liveSessions: (liveSessions = alsoParked(
+              liveSessionsTouchingTheFeed(controller, eventBus, sourceControlSessions),
+              pendingInteractions,
+            )),
             auth: routeAuth,
             ...(auth && isUserProvider(auth) ? { users: auth } : {}),
             authStorage,

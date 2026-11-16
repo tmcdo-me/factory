@@ -60,7 +60,7 @@ function rememberRuntimeDelivery(
 }
 
 /** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
-export type FactoryRuntimeDelivery = Pick<FactoryRuntimeSessions, 'runs' | 'isRunning' | 'message'>;
+export type FactoryRuntimeDelivery = Pick<FactoryRuntimeSessions, 'runs' | 'isRunning' | 'message' | 'approvals'>;
 
 export interface FactoryDeliveryTarget {
   /** The target's source-control session id. */

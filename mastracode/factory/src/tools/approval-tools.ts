@@ -64,6 +64,28 @@ function waitingApprovals(live: ApprovalGateSession): WaitingApproval[] {
   ];
 }
 
+// fork(claude-agent): shared by Mastra Code's live sessions and Claude Agent's broker.
+const NOTHING_WAITING_ON_CALL =
+  'Nothing is waiting on that tool call any more: the run that asked has ended or it was already answered. ' +
+  'Message the session with factory_signal_session if it should try again.';
+const NOTHING_WAITING = 'This session is not waiting on an approval. Open it to see what it needs.';
+
+/** The call an answer is for: the one named, else the session's only waiting call. */
+function theWaitingCall<Call extends { toolCallId: string; toolName: string }>(
+  waiting: Call[],
+  toolCallId: string | undefined,
+): Call {
+  const matches = toolCallId ? waiting.filter(call => call.toolCallId === toolCallId) : waiting;
+  const [call] = matches;
+  if (!call) throw new Error(toolCallId ? NOTHING_WAITING_ON_CALL : NOTHING_WAITING);
+  if (matches.length > 1) {
+    throw new Error(
+      `This session waits on ${matches.length} approvals (${matches.map(match => `${match.toolName}: ${match.toolCallId}`).join(', ')}). Name the toolCallId to answer.`,
+    );
+  }
+  return call;
+}
+
 /**
  * Approve or decline a tool call a live session waits on, for a caller already allowed
  * to. Any tool can wait this way; with no `toolCallId` the session's only waiting call
@@ -78,31 +100,36 @@ export async function answerParkedCall(
     toolCallId?: string;
     decision: 'approve' | 'decline';
     declineReason: string;
+    /** fork(claude-agent): who decided, recorded with the answer. */
+    answeredBy?: string;
   },
 ): Promise<{ toolCallId: string; toolName: string }> {
   const { session, decision, declineReason } = input;
   const messaging = await deps.messaging();
   if (!messaging) throw new Error('Answering approvals is not available on this server.');
-  const live = (await messaging.controller.getSession(session.sessionId)) as ApprovalGateSession | null;
-  const waiting = live ? waitingApprovals(live) : [];
-  const matches = input.toolCallId ? waiting.filter(call => call.toolCallId === input.toolCallId) : waiting;
-  const [call] = matches;
-  if (!live || !call) {
-    throw new Error(
-      input.toolCallId
-        ? 'Nothing is waiting on that tool call any more: the run that asked has ended or it was already answered. ' +
-            'Message the session with factory_signal_session if it should try again.'
-        : 'This session is not waiting on an approval. Open it to see what it needs.',
-    );
-  }
-  if (matches.length > 1) {
-    throw new Error(
-      `This session waits on ${matches.length} approvals (${matches.map(match => `${match.toolName}: ${match.toolCallId}`).join(', ')}). Name the toolCallId to answer.`,
-    );
-  }
-  const { toolCallId, toolName } = call;
   const requestContext = new RequestContext();
   requestContext.set('user', { workosId: session.userId, organizationId: session.orgId });
+  // fork(claude-agent): a Claude Agent session's calls wait in Factory's interaction broker.
+  const approvals = messaging.runtime?.approvals;
+  if (approvals && (await messaging.runtime!.runs(session.sessionId))) {
+    const { toolCallId, toolName } = theWaitingCall(await approvals.waiting(session.sessionId), input.toolCallId);
+    const answered = await approvals.answer(
+      session.sessionId,
+      toolCallId,
+      {
+        decision,
+        ...(decision === 'decline' ? { reason: declineReason } : {}),
+        ...(input.answeredBy ? { answeredBy: input.answeredBy } : {}),
+      },
+      requestContext,
+    );
+    if (answered === 'not_pending') throw new Error(ALREADY_ANSWERED);
+    return { toolCallId, toolName };
+  }
+  const live = (await messaging.controller.getSession(session.sessionId)) as ApprovalGateSession | null;
+  const call = theWaitingCall(live ? waitingApprovals(live) : [], input.toolCallId);
+  if (!live) throw new Error(NOTHING_WAITING);
+  const { toolCallId, toolName } = call;
   if (call.channel === 'resume') {
     // Claimed before anything is awaited: of two answers arriving together, one resumes the call.
     const claim = live.claimToolSuspension(toolCallId);
@@ -197,6 +224,7 @@ export function createFactoryApprovalTools(
         toolCallId,
         decision,
         declineReason: reason ?? 'Declined by a session following it.',
+        answeredBy: scope.userId, // fork(claude-agent)
       });
 
       deps.auditRecorder.record({

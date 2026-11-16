@@ -339,6 +339,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
      pull request subscriptions go through the runtime instead of waking the controller
      session; the integrations' post-tool observers (subscribe to the PR a session opened, Slack
      announcements) see Claude Agent's Factory tools and `Bash`.
+   - **6d** ✅ Claude Agent approvals outside the session: a session waiting on a person (its
+     `ask_user` question or `submit_plan` plan, pending in the broker) counts as a parked run
+     (`session/pending-interactions.ts`), so it shows in the inbox (`agent-waiting`),
+     `factory_list_attention`, the board and the session lists, and its followers get the
+     `blocked` notice naming the call; a plan is answered from the card or inbox button or
+     `factory_answer_approval` through the broker, the run carrying on as the session's owner.
+     A question still takes its typed answer in the session, as in Mastra Code.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

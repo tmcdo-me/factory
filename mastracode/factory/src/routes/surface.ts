@@ -876,6 +876,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           ...(deps.factoryReady ? { workItems: deps.domains.workItems } : {}),
           ...(deps.moveThread ? { moveThread: deps.moveThread } : {}),
           ...(githubStorage ? { githubRepositories: githubStorage.repositories } : {}),
+          ...(deps.runtimeSessions ? { runtimeSessions: deps.runtimeSessions } : {}), // fork(claude-agent)
         });
   // Absent known integrations still get their disabled-status stub.
   const absentStubs = ['github', 'linear', 'jira']
