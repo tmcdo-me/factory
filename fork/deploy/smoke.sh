@@ -131,8 +131,13 @@ docker run -d --name "$name-snapshot" -e TZ=America/Chicago -v "$volume:/data" "
 sleep 3
 docker logs "$name-snapshot" 2>&1 | sed 's/^/  /'
 docker stop -t 30 "$name-snapshot" >/dev/null
-[ "$(docker inspect -f '{{.State.ExitCode}}' "$name-snapshot")" = 0 ] && say "sidecar stopped cleanly" ||
-  fail "the sidecar did not stop cleanly"
+sidecar_exit=$(docker inspect -f '{{.State.ExitCode}}' "$name-snapshot")
+if [ "$sidecar_exit" = 0 ]; then
+  say "sidecar stopped cleanly"
+else
+  fail "the sidecar exited $sidecar_exit on SIGTERM"
+  docker logs "$name-snapshot" 2>&1 | tail -20 >&2
+fi
 
 # --- the guard -----------------------------------------------------------------------------------
 if out=$(docker run --rm --env-file "$env_file" -e FACTORY_SANDBOX_PROVIDER=local --tmpfs /data \
@@ -157,14 +162,19 @@ fi
 docker rm -f "$name-fresh" >/dev/null
 
 # --- shutdown ------------------------------------------------------------------------------------
+say "before the stop: $(docker inspect -f '{{.State.Status}} (exit {{.State.ExitCode}}, started {{.State.StartedAt}})' "$name")"
 stop_started=$SECONDS
 docker stop -t 60 "$name" >/dev/null
 took=$((SECONDS - stop_started))
 exit_code=$(docker inspect -f '{{.State.ExitCode}}' "$name")
 docker logs "$name" 2>&1 | grep -q '\[factory\] the server is shutting down; stopping Factory first' &&
   say "shutdown: Factory stopped first" || fail "no Factory shutdown line in the log"
-[ "$exit_code" = 0 ] && [ "$took" -lt 60 ] && say "docker stop: exit 0 after $took s" ||
+if [ "$exit_code" = 0 ] && [ "$took" -lt 60 ]; then
+  say "docker stop: exit 0 after $took s"
+else
   fail "docker stop: exit $exit_code after $took s"
+  docker logs "$name" 2>&1 | tail -40 >&2
+fi
 
 if [ "$failed" = 0 ]; then say "all checks passed"; else say "some checks failed"; fi
 exit "$failed"
