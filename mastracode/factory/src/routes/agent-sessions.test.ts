@@ -1,6 +1,7 @@
 // fork(claude-agent)
 import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
 import type { CommandResult, EventEnvelope, SessionCommands, Transcript } from '@factory/agent-runtime';
+import { RequestContext } from '@mastra/core/request-context';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +15,7 @@ function buildApp(options: { user?: typeof alice; authEnabled?: boolean; command
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (options.user) c.set('factoryAuthUser' as never, options.user as never);
-    c.set('requestContext' as never, 'host-request-context' as never);
+    c.set('requestContext' as never, new RequestContext([['host-key', 'host-value']]) as never);
     await next();
   });
   mountApiRoutes(
@@ -180,7 +181,6 @@ describe('Factory session commands', () => {
   it('passes parsed commands and the host request context to the runtime', async () => {
     const { commands, calls } = fakeCommands();
     const { app } = buildApp({ user: alice, commands });
-    const ctx = { context: 'host-request-context' };
 
     expect(
       (
@@ -198,12 +198,21 @@ describe('Factory session commands', () => {
         .status,
     ).toBe(200);
 
+    const ctx = expect.objectContaining({ context: expect.any(RequestContext) });
     expect(calls).toEqual([
       ['send', 's1', { text: 'Hi', files: [{ data: 'aGk=', mediaType: 'text/plain' }] }, ctx],
       ['abort', 's1', ctx],
       ['answer', 's1', { interactionId: undefined, callId: 'c1' }, answer.response, ctx],
       ['setModel', 's1', { modelId: 'm', thinkingLevel: 'high' }, ctx],
     ]);
+    // The host's context is carried over, and the signed-in user is added: these routes check the
+    // viewer themselves, so the server's auth layer never put `user` there (regression: Claude Agent
+    // sessions failed with "resolved without a caller identity").
+    for (const call of calls) {
+      const context = (call.at(-1) as { context: RequestContext }).context;
+      expect(context.get('host-key')).toBe('host-value');
+      expect(context.get('user')).toEqual(alice);
+    }
   });
 
   it('rejects malformed bodies before reaching the runtime', async () => {
