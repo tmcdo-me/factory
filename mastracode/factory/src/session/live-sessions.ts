@@ -29,6 +29,12 @@ export interface ParkedRun {
   suspendedAt: number;
 }
 
+/** fork(claude-agent): sessions parked outside the agent controller (Claude Agent's questions and plans). */
+export interface ParkedRunSource {
+  parked(sessionId: string): ParkedRun | undefined;
+  parkedIn(factoryProjectId: string): Array<{ sessionId: string; run: ParkedRun }>;
+}
+
 interface TrackedSession {
   session: LiveSession;
   seenAt: number;
@@ -63,6 +69,8 @@ const RUN_MAY_HAVE_CHANGED = new Set<AgentControllerEvent['type']>([
 export class LiveSessions {
   readonly #byId = new Map<string, TrackedSession>();
   readonly #runListeners = new Set<(session: LiveSession) => void>();
+  /** fork(claude-agent): parked sessions this registry reads from elsewhere. */
+  readonly #parkedSources: ParkedRunSource[] = [];
   /** A park stamp doubles as the receipt key, so two suspensions in one millisecond must not share one. */
   #lastParkStamp = 0;
 
@@ -99,8 +107,18 @@ export class LiveSessions {
     return this.#byId.get(sessionId)?.session.run.isRunning() ?? false;
   }
 
+  /** fork(claude-agent): also report the sessions `source` says are parked. */
+  addParkedSource(source: ParkedRunSource): void {
+    this.#parkedSources.push(source);
+  }
+
   /** The tool the session is parked on, oldest first, or nothing when no answer is owed. */
   parked(sessionId: string): ParkedRun | undefined {
+    // fork(claude-agent): a session the controller doesn't hold may be parked elsewhere.
+    return this.#parkedOnController(sessionId) ?? this.#parkedElsewhere(sessionId);
+  }
+
+  #parkedOnController(sessionId: string): ParkedRun | undefined {
     const tracked = this.#byId.get(sessionId);
     if (!tracked) return undefined;
     let oldest: ParkedRun | undefined;
@@ -111,6 +129,15 @@ export class LiveSessions {
     return oldest;
   }
 
+  /** fork(claude-agent) */
+  #parkedElsewhere(sessionId: string): ParkedRun | undefined {
+    for (const source of this.#parkedSources) {
+      const run = source.parked(sessionId);
+      if (run) return run;
+    }
+    return undefined;
+  }
+
   /** Every parked session of a project, so the inbox reads no card when nothing waits. */
   parkedIn(factoryProjectId: string): Array<{ sessionId: string; run: ParkedRun }> {
     const parked: Array<{ sessionId: string; run: ParkedRun }> = [];
@@ -118,6 +145,12 @@ export class LiveSessions {
       if (tracked.session.state.get().factoryProjectId !== factoryProjectId) continue;
       const run = this.parked(sessionId);
       if (run) parked.push({ sessionId, run });
+    }
+    // fork(claude-agent)
+    for (const source of this.#parkedSources) {
+      for (const entry of source.parkedIn(factoryProjectId)) {
+        if (!parked.some(known => known.sessionId === entry.sessionId)) parked.push(entry);
+      }
     }
     return parked;
   }

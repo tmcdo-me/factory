@@ -346,3 +346,83 @@ describe('answering without naming the tool call', () => {
     await expect(answerOnly(live)).rejects.toThrow('This session is not waiting on an approval. Open it');
   });
 });
+
+// fork(claude-agent)
+describe('answering a Claude Agent session', () => {
+  const session = { sessionId: WORKER, userId: 'someone-else', orgId: 'org-1' };
+  function onRuntime(waiting: Array<{ toolCallId: string; toolName: string }>, runs = true) {
+    const getSession = vi.fn(async () => null);
+    const answer = vi.fn(async () => 'answered' as const);
+    const runtime = {
+      runs: vi.fn(async () => runs),
+      isRunning: () => false,
+      message: vi.fn(),
+      approvals: { waiting: async () => waiting, answer },
+    };
+    const messaging = async () => ({ controller: { getSession }, runtime }) as never;
+    return { messaging, getSession, answer, runtime };
+  }
+
+  it("answers through its runtime as the session's owner, never through the controller", async () => {
+    const { messaging, getSession, answer } = onRuntime([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }]);
+
+    await expect(
+      answerParkedCall(
+        { messaging },
+        { session, decision: 'decline', declineReason: 'Split it in two.', answeredBy: 'user-1' },
+      ),
+    ).resolves.toEqual({ toolCallId: 'toolu_plan', toolName: 'submit_plan' });
+
+    expect(answer).toHaveBeenCalledWith(
+      WORKER,
+      'toolu_plan',
+      { decision: 'decline', reason: 'Split it in two.', answeredBy: 'user-1' },
+      expect.anything(),
+    );
+    const requestContext = (answer.mock.calls[0] as unknown[])[3] as { get(key: string): unknown };
+    expect(requestContext.get('user')).toEqual({ workosId: 'someone-else', organizationId: 'org-1' });
+    expect(getSession).not.toHaveBeenCalled();
+  });
+
+  it('says what Mastra Code sessions say when nothing, or more than one call, waits', async () => {
+    await expect(
+      answerParkedCall({ messaging: onRuntime([]).messaging }, { session, decision: 'approve', declineReason: 'No.' }),
+    ).rejects.toThrow('This session is not waiting on an approval. Open it');
+    await expect(
+      answerParkedCall(
+        { messaging: onRuntime([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }]).messaging },
+        { session, toolCallId: 'toolu_gone', decision: 'approve', declineReason: 'No.' },
+      ),
+    ).rejects.toThrow('Nothing is waiting on that tool call any more');
+    const two = onRuntime([
+      { toolCallId: 'toolu_1', toolName: 'submit_plan' },
+      { toolCallId: 'toolu_2', toolName: 'factory_delete' },
+    ]);
+    await expect(
+      answerParkedCall({ messaging: two.messaging }, { session, decision: 'approve', declineReason: 'No.' }),
+    ).rejects.toThrow('This session waits on 2 approvals (submit_plan: toolu_1, factory_delete: toolu_2).');
+    expect(two.answer).not.toHaveBeenCalled();
+  });
+
+  it('tells a second answer that the call was already answered', async () => {
+    const { messaging, answer } = onRuntime([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }]);
+    answer.mockResolvedValueOnce('not_pending' as never);
+    await expect(
+      answerParkedCall({ messaging }, { session, decision: 'approve', declineReason: 'No.' }),
+    ).rejects.toThrow('That call was already answered');
+  });
+
+  it('leaves a Mastra Code session to the controller, as before', async () => {
+    const { session: live, respondToToolApproval } = setup();
+    const { runtime, answer } = onRuntime([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }], false);
+
+    await expect(
+      answerParkedCall(
+        { messaging: async () => ({ controller: { getSession: async () => live }, runtime }) as never },
+        { session, decision: 'approve', declineReason: 'No.' },
+      ),
+    ).resolves.toEqual({ toolCallId: 'call-1', toolName: 'factory_transition_work_item' });
+    expect(respondToToolApproval).toHaveBeenCalledOnce();
+    expect(answer).not.toHaveBeenCalled();
+  });
+});

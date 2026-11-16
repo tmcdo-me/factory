@@ -72,4 +72,25 @@ export interface FactoryRuntimeSessions {
     requestContext: RequestContext,
   ): Promise<{ runId?: string }>;
   abort(sessionId: string, requestContext: RequestContext): Promise<void>;
+  /**
+   * The calls a session waits on for a yes or no (a plan to approve, a gated tool), as a suspended
+   * Mastra Code run's approvals are answered from the inbox, the card, or `factory_answer_approval`.
+   */
+  approvals?: RuntimeApprovals;
+}
+
+/** A session's calls that wait on a person's yes or no, and how each is answered. */
+export interface RuntimeApprovals {
+  /** Oldest first, each named by the tool call that asked. */
+  waiting(sessionId: string): Promise<Array<{ toolCallId: string; toolName: string }>>;
+  /**
+   * Answer one. The run carries on as `requestContext` (the session's owner); `answeredBy` is who
+   * decided. `not_pending` when nothing waits on that call any more.
+   */
+  answer(
+    sessionId: string,
+    toolCallId: string,
+    answer: { decision: 'approve' | 'decline'; reason?: string; answeredBy?: string },
+    requestContext: RequestContext,
+  ): Promise<'answered' | 'not_pending'>;
 }

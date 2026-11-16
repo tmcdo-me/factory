@@ -16,6 +16,7 @@ import { z } from 'zod';
 
 import { FACTORY_INTERACTIVE_KEY } from '../auth.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
+import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
 import { ClaudeAgentSessions, claudeAgentHome, lateAnswer, routeSessionCommands } from './claude-agent-sessions.js';
 import type { ClaudeAgentSessionsDeps } from './claude-agent-sessions.js';
@@ -898,5 +899,119 @@ describe('routeSessionCommands', () => {
       reason: 'unavailable',
     });
     expect(calls).toEqual([]);
+  });
+});
+
+describe('ClaudeAgentSessions approvals from outside the session', () => {
+  const owner = () => hostContext('user-a', false);
+
+  function planning() {
+    const replies: { isError?: boolean; content: { text: string }[] }[] = [];
+    const fake = toolCallingQuery(async client => {
+      replies.push(await client.call('ask_user', { question: 'Which database?' }, 'toolu_ask'));
+      replies.push(await client.call('submit_plan', { path: 'plan.md' }, 'toolu_plan'));
+    });
+    return { fake, replies, ...toolSetup(fake.fn) };
+  }
+
+  it('lists only the calls a yes or no answers, and answers one as the session owner, recording who decided', async () => {
+    const { sessions, store, replies } = planning();
+    const runs = sessions.runtimeSessions();
+    await sessions.commands().send('s1', { text: 'plan it' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+
+    // A question needs a typed answer, as Mastra Code's ask_user does: none is listed.
+    expect(await runs.approvals!.waiting('s1')).toEqual([]);
+    const [asked] = await store.listPending({ sessionId: 's1' });
+    await sessions.commands().answer(
+      's1',
+      { callId: 'toolu_ask' },
+      { kind: 'question', answer: 'Postgres' },
+      {
+        context: hostContext('user-a'),
+      },
+    );
+    await vi.waitFor(async () => expect(await runs.approvals!.waiting('s1')).toHaveLength(1));
+    expect(await runs.approvals!.waiting('s1')).toEqual([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }]);
+    expect(await store.get(asked!.id)).toMatchObject({ status: 'resolved' });
+    const [plan] = await store.listPending({ sessionId: 's1' });
+
+    expect(await runs.approvals!.answer('s1', 'toolu_ask', { decision: 'approve' }, owner())).toBe('not_pending');
+    expect(
+      await runs.approvals!.answer(
+        's1',
+        'toolu_plan',
+        { decision: 'decline', reason: 'Split it in two.', answeredBy: 'user-b' },
+        owner(),
+      ),
+    ).toBe('answered');
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    expect(replies[1]!.content[0]!.text).toContain('Split it in two.');
+    expect(await store.get(plan!.id)).toMatchObject({
+      status: 'resolved',
+      resolvedBy: 'user-b',
+      response: { kind: 'plan_approval', action: 'rejected', feedback: 'Split it in two.' },
+    });
+    expect(await runs.approvals!.answer('s1', 'toolu_plan', { decision: 'approve' }, owner())).toBe('not_pending');
+  });
+
+  it("answers through factory_answer_approval's path without touching the controller, and Claude carries on", async () => {
+    const { sessions, store, replies } = planning();
+    await sessions.commands().send('s1', { text: 'plan it' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    await sessions.commands().answer(
+      's1',
+      { callId: 'toolu_ask' },
+      { kind: 'question', answer: 'Postgres' },
+      {
+        context: hostContext('user-a'),
+      },
+    );
+    await vi.waitFor(async () => expect(await sessions.runtimeSessions().approvals!.waiting('s1')).toHaveLength(1));
+
+    const getSession = vi.fn(async () => null);
+    await expect(
+      answerParkedCall(
+        { messaging: async () => ({ controller: { getSession }, runtime: sessions.runtimeSessions() }) as never },
+        {
+          session: { sessionId: 's1', userId: 'user-a', orgId: 'org-1' },
+          decision: 'approve',
+          declineReason: 'No.',
+          answeredBy: 'user-b',
+        },
+      ),
+    ).resolves.toEqual({ toolCallId: 'toolu_plan', toolName: 'submit_plan' });
+
+    await vi.waitFor(() => expect(replies).toHaveLength(2));
+    expect(replies[1]!.isError).toBeFalsy();
+    expect(getSession).not.toHaveBeenCalled();
+    expect(await store.listPending({ sessionId: 's1' })).toEqual([]);
+  });
+
+  it('delivers an approval nobody waits for any more (a restart) to the conversation as a message', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, store, log } = toolSetup(fake.fn);
+    const record: InteractionRecord = {
+      id: 'int-1',
+      sessionId: 's1',
+      callId: 'toolu_old',
+      request: { kind: 'plan_approval', planPath: '.artifacts/plans/a.md' },
+      requestedAt: new Date(0).toISOString(),
+      status: 'pending',
+    };
+    await store.create(record);
+    const runs = sessions.runtimeSessions();
+
+    expect(await runs.approvals!.waiting('s1')).toEqual([{ toolCallId: 'toolu_old', toolName: 'submit_plan' }]);
+    expect(
+      await runs.approvals!.answer('s1', 'toolu_old', { decision: 'approve', answeredBy: 'user-b' }, owner()),
+    ).toBe('answered');
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(1),
+    );
+    expect(fake.seen).toMatchObject([
+      { message: { content: lateAnswer(record, { kind: 'plan_approval', action: 'approved' }) } },
+    ]);
+    expect(await store.get('int-1')).toMatchObject({ status: 'resolved', resolvedBy: 'user-b' });
   });
 });
