@@ -174,14 +174,21 @@ export function runInProcesses(
   return script =>
     new Promise(resolve => {
       const abort = new AbortController();
-      const timer = setTimeout(() => abort.abort(), options.timeoutMs ?? INSTALL_TIMEOUT_MS);
-      timer.unref?.();
       let stdout = '';
       let stderr = '';
+      let done = false;
       const finish = (exitCode: number, error?: string) => {
+        if (done) return;
+        done = true;
         clearTimeout(timer);
         resolve({ exitCode, stdout, stderr: error ? `${stderr}${error}` : stderr });
       };
+      // Killed on timeout; the result doesn't wait for a child it left behind to close stdout.
+      const timer = setTimeout(() => {
+        abort.abort();
+        finish(124, 'timed out\n');
+      }, options.timeoutMs ?? INSTALL_TIMEOUT_MS);
+      timer.unref?.();
       let process: ReturnType<SandboxProcesses['spawn']>;
       try {
         process = processes.spawn('sh', ['-c', script], { cwd: '/', env: {}, signal: abort.signal });

@@ -202,7 +202,10 @@ describe('runInProcesses', () => {
   });
 
   it('gives up on a script that runs too long', async () => {
-    const result = await runInProcesses(local(), { timeoutMs: 100 })('sleep 5');
+    const started = Date.now();
+    // `sleep` runs as a child of `sh`, and keeps stdout open after `sh` is killed.
+    const result = await runInProcesses(local(), { timeoutMs: 100 })('sleep 5; echo never');
     expect(result.exitCode).toBe(124);
+    expect(Date.now() - started).toBeLessThan(2_000);
   });
 });
