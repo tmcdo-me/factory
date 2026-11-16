@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template: a daily snapshot of the Factory server's data (fork/ops/backup.sh, placed at
+  ~/.local/libexec/factory-backup) on mac-mini, at 03:30, before the 04:15 housekeeping sweep.
+  Paths are mac-mini's; see fork/ops/README.md ("Backups").
+
+  The snapshots land on this machine (FACTORY_BACKUP_DIR), which protects against a bad deploy or
+  a corrupted database, not against losing the disk: copying the newest snapshot off the machine
+  is the operator's step. A missed run (the machine asleep or off) runs at the next wake. No
+  KeepAlive: a failed run is not retried until the next day, and its log says why.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>homelab.factory-backup</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/homelab/.local/libexec/factory-backup</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>TMPDIR</key>
+		<string>/Volumes/Dev/tmp/</string>
+		<key>FACTORY_ROOT</key>
+		<string>/Volumes/Dev/factory-app</string>
+		<key>FACTORY_BACKUP_DIR</key>
+		<string>/Volumes/Dev/factory-backups</string>
+		<key>FACTORY_BACKUP_KEEP_DAYS</key>
+		<string>14</string>
+	</dict>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Hour</key>
+		<integer>3</integer>
+		<key>Minute</key>
+		<integer>30</integer>
+	</dict>
+	<key>LowPriorityIO</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/Users/homelab/Library/Logs/factory/backup.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/homelab/Library/Logs/factory/backup.log</string>
+</dict>
+</plist>

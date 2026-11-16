@@ -641,6 +641,8 @@ export class MastraFactory {
   #factoryProcessor: FactoryPhaseStateProcessor | undefined;
   #channelShutdowns: Array<() => Promise<void>> = [];
   #shutdownPromise: Promise<void> | undefined;
+  /** fork(claude-agent): the Mastra instances whose shutdown runs this factory's first. */
+  readonly #shutsDownWithMastra = new WeakSet<object>();
   readonly #metrics: FactoryMetrics;
   #stopMetrics: (() => Promise<void>) | undefined;
   /** Environment builds through the sandbox's `builds`; undefined when the sandbox has none. */
@@ -2785,6 +2787,7 @@ export class MastraFactory {
       throw new Error('MastraFactory.finalize() called before prepare()');
     }
     await timedPhase('finalize.controller', () => this.#prepared!.finalize());
+    this.#shutDownWithMastra();
     await this.#environmentBuilds?.probeSchedules();
     // Results written while no process was watching are caught up by the
     // dispatcher's first tick, in the background. Awaiting that walk here held
@@ -2820,6 +2823,27 @@ export class MastraFactory {
         integrationIds: this.#integrations.map(integration => integration.id),
       },
     );
+  }
+
+  /**
+   * fork(claude-agent): the server stops on SIGTERM/SIGINT by calling `mastra.shutdown()`, which knows
+   * nothing of Factory, and no host called `shutdown()` below. So a restart killed Claude Code, the
+   * dispatcher and channel transports (Slack's socket) with the process: runs in flight were never
+   * ended as stopped, and the Claude Agent host lease was never released. Factory's shutdown now runs
+   * first inside Mastra's, while storage and pubsub are still open.
+   */
+  #shutDownWithMastra(): void {
+    const mastra = this.#prepared?.base.controller.getMastra();
+    if (!mastra || this.#shutsDownWithMastra.has(mastra)) return;
+    this.#shutsDownWithMastra.add(mastra);
+    const shutdownMastra = mastra.shutdown.bind(mastra);
+    mastra.shutdown = async (...args: Parameters<typeof shutdownMastra>) => {
+      console.log('[factory] the server is shutting down; stopping Factory first');
+      await this.shutdown().catch(error =>
+        console.warn(`[factory] shutting down Factory failed: ${error instanceof Error ? error.message : error}`),
+      );
+      return shutdownMastra(...args);
+    };
   }
 
   /** Stop Factory-owned background work and channel transports before the host process shuts down. */

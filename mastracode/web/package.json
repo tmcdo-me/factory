@@ -13,9 +13,10 @@
     "dev": "rm -rf .mastra/output && PORT=${PORT:-5873} MASTRA_SKIP_PEERDEP_CHECK=1 varlock run -- sh -c 'MASTRACODE_PUBLIC_URL=${MASTRACODE_PUBLIC_URL:-http://localhost:$PORT} exec node ../../packages/cli/dist/index.js factory dev --dir src/mastra'",
     "dev:ui": "pnpm db:up && pnpm prebuild && cd ../.. && pnpm turbo run dev dev:api --filter ./mastracode/factory-ui --filter ./packages/playground-ui --filter ./client-sdks/react --env-mode=loose",
     "dev:github": "pnpm db:up && pnpm dev",
-    "build": "node scripts/monorepo-deps.mjs run -- mastra build --dir src/mastra",
-    "deploy": "pnpm run build && node scripts/validate-output.mjs && mastra deploy --skip-build",
-    "start": "varlock run -- mastra start",
+    "build": "MASTRA_BUILD_SKIP_INSTALL=1 MASTRA_SKIP_PEERDEP_CHECK=1 mastra build --dir src/mastra",
+    "build:platform": "node scripts/monorepo-deps.mjs run -- mastra build --dir src/mastra",
+    "deploy": "pnpm run build:platform && node scripts/validate-output.mjs && mastra deploy --skip-build",
+    "start": "PORT=${PORT:-5873} MASTRA_SKIP_DOTENV=1 varlock run -- sh -c 'MASTRACODE_PUBLIC_URL=${MASTRACODE_PUBLIC_URL:-http://localhost:$PORT} exec mastra start'",
     "test": "vitest run",
     "slack:manifest": "node scripts/slack-manifest.mjs"
   },

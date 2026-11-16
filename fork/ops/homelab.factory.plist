@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Template: the Factory server (tmcdo-me/factory, fork/ops/README.md) as a user LaunchAgent on
+  mac-mini, replacing the hand-started `pnpm dev`. Paths are mac-mini's (user homelab); change
+  them for another machine. The start script is fork/ops/factory-start.sh, placed at
+  ~/.local/libexec/factory-start.
+
+  A user LaunchAgent in the auto-logged-in session, like the runners and the Omnigent host: the
+  server, and the Claude Code its Claude Agent sessions run, are homelab, as `pnpm dev` is today.
+
+  RunAtLoad starts it at login. KeepAlive {SuccessfulExit: false} restarts a crash or a kill by
+  signal, but not a clean exit: the server exits 0 after a graceful SIGTERM, and the start script
+  exits 0 when there is no release or .env yet, so neither loops. ThrottleInterval spaces
+  restarts of a crash loop. ExitTimeOut is how long launchd waits after SIGTERM before SIGKILL:
+  the server drains HTTP for up to 5 s, then stops Factory (Claude Code, the dispatcher, the
+  Claude Agent host lease) and Mastra for up to 6.5 s more. AbandonProcessGroup stays false, so
+  anything a session left running in the job's process group is killed when the job ends.
+  No ProcessType: the default keeps the server and its sessions out of the background QoS band.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>homelab.factory</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/homelab/.local/libexec/factory-start</string>
+	</array>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/Users/homelab/.local/share/mise/shims:/Users/homelab/.local/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+		<key>TMPDIR</key>
+		<string>/Volumes/Dev/tmp/</string>
+		<key>FACTORY_ROOT</key>
+		<string>/Volumes/Dev/factory-app</string>
+		<key>FACTORY_PORT</key>
+		<string>5873</string>
+		<key>FACTORY_HOST</key>
+		<string>127.0.0.1</string>
+	</dict>
+	<key>WorkingDirectory</key>
+	<string>/Users/homelab</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>30</integer>
+	<key>ExitTimeOut</key>
+	<integer>30</integer>
+	<key>StandardOutPath</key>
+	<string>/Users/homelab/Library/Logs/factory/factory.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/homelab/Library/Logs/factory/factory.log</string>
+</dict>
+</plist>

@@ -451,6 +451,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
     `anthropic` OAuth creds). Can land any time; scheduled early if convenient.
 13. **Concurrency cap + docs.**
+14. **Production service** ✅ (`fork/ops/`): `pnpm --dir mastracode/web build` bundles the server
+    without installing its dependencies from npm (the fork's `@factory/*` packages are not
+    published, and npm's `@mastra/*` lack the fork's changes), so the bundle loads the monorepo's
+    built packages through the host's `link:` dependencies; `pnpm start` runs it with
+    `NODE_ENV=production` through varlock on `PORT` (default 5873). Production keeps the local
+    libSQL file with `FACTORY_DATABASE=libsql` (it refused to start without `DATABASE_URL`). The
+    server's SIGTERM handler calls only `mastra.shutdown()`, and nothing called Factory's own
+    `shutdown()`, so a restart never stopped Claude Code cleanly, ended runs in flight or released
+    the Claude Agent host lease; `finalize()` now runs Factory's shutdown first inside Mastra's.
+    `fork/ops/` has the LaunchAgent template and start script (`homelab.factory`), a deploy script
+    building each release beside the running one with automatic switch-back, and an online SQLite
+    backup (database and the Claude Agent home's transcripts; not sandbox checkouts, which are
+    cloned again; not `.env`, which belongs in the owner's vault) with a restore script.
+    Checked by running the build on another port with a throwaway database and env. The
+    LaunchAgent itself is the homelab repository's to install.
 
 Inventory to migrate (non-test): **67** files in `mastracode/factory/src` import
 `@mastra/core/agent-controller` or `@mastra/code-sdk` (heaviest: `factory.ts`, `rules/dispatcher.ts`,
@@ -481,6 +496,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`     | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
 | `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` | 60 minutes     | Stop a Claude Code kept running only by background work after this long       |
 | `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | off            | Run Claude's Bash in Claude Code's sandbox, without Claude's credential (9c)  |
+| `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)   |
 
 ## 9. Upstream
 
