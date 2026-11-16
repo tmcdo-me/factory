@@ -179,9 +179,11 @@ and `GET /connect/slack/*`.
 ## Fly.io (untested)
 
 An option the owner keeps open, not exercised: nothing here has run on Fly. `fly.toml` passes
-`fly config validate`; the image it would build is the one the workflow checks. `fly.toml` is one Machine (the database is a file one process opens), a volume `factory_data` at
-`/data`, `kill_timeout = 60`, an HTTP service on 5873 checked on `/auth/me`, and auto-stop off: the
-dispatcher, Slack's socket and live Claude Code sessions work with no request in flight.
+`fly config validate`; the image it would build is the one the workflow checks. It is one Machine
+(the database is a file one process opens), a volume `factory_data` at `/data` (root's when new; the
+entrypoint gives it to node), `kill_timeout = 60`, an HTTP service on 5873 checked on `/auth/me`, and
+auto-stop off: the dispatcher, Slack's socket and live Claude Code sessions work with no request in
+flight.
 
 ```sh
 fly apps create <app>                                   # once; set `app` in fly.toml

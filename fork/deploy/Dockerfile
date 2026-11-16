@@ -70,7 +70,12 @@ RUN --mount=type=bind,target=/context \
     store=/src/.pnpm-store; \
     pnpm install --frozen-lockfile --store-dir "$store" --package-import-method hardlink ${WORKSPACE_FILTER}; \
     pnpm --dir mastracode/web install --frozen-lockfile --store-dir "$store" --package-import-method hardlink; \
+    TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web run prebuild; \
+    # Again, now that the workspace packages are built: pnpm links a package's bin only when the file
+    # exists, and `mastra` (packages/cli's dist) did not before the build.
+    pnpm --dir mastracode/web install --frozen-lockfile --store-dir "$store" --package-import-method hardlink; \
     rm -rf "$store" /root/.cache /root/.local/share/pnpm; \
+    test -x mastracode/web/node_modules/.bin/mastra; \
     TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web build; \
     test -f mastracode/web/.mastra/output/index.mjs; \
     test -f mastracode/web/.mastra/output/factory/index.html; \
