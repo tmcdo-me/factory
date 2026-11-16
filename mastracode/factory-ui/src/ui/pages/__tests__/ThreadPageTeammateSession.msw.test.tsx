@@ -173,7 +173,8 @@ describe("a teammate's Factory session", () => {
     it('names the owner inside the composer region', async () => {
       openWardSessionAs('user-damien');
 
-      const composer = await screen.findByRole('region', { name: 'Thread composer' });
+      // The first test in the file pays for loading the thread page's code, slow on a CI runner.
+      const composer = await screen.findByRole('region', { name: 'Thread composer' }, { timeout: 10_000 });
       expect(await within(composer).findByText('You’re steering Ward Peeters’s session')).toBeInTheDocument();
     });
 
