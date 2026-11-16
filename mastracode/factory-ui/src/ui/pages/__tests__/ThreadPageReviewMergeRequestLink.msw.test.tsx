@@ -182,7 +182,8 @@ function renderThreadRoute() {
 }
 
 async function findSessionPanel() {
-  const panel = await screen.findByTestId('workspace-files-card');
+  // The first test in the file pays for loading the thread page's code, slow on a CI runner.
+  const panel = await screen.findByTestId('workspace-files-card', {}, { timeout: 10_000 });
   await within(panel).findByRole('region', { name: 'Card' });
   return panel;
 }
