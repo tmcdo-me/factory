@@ -751,6 +751,8 @@ function toSource(source: WorkItemSourceDbRecord): WorkItemSourceRow {
     labels: source.labels,
     author: source.author,
     metadata: source.metadata,
+    // fork(claude-agent): marks a record attached after the card was created; see `primarySource`.
+    ...(source.role === 'attached' ? { role: 'attached' as const } : {}),
     revision: source.revision,
     syncedAt: source.synced_at,
     createdAt: source.created_at,

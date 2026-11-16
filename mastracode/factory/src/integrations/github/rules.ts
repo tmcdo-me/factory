@@ -407,6 +407,8 @@ async function githubActor(
 interface FactoryPullRequestProvenanceData {
   kind: 'factory-pr-provenance';
   workItemId: string;
+  /** fork(claude-agent): the run binding whose session opened the pull request, when recorded. */
+  bindingId?: string;
 }
 
 function pullRequestProvenance(
@@ -420,7 +422,12 @@ function pullRequestProvenance(
   // Factory-authored in a project that never touched it, and auto-start a
   // review that checks out and executes the PR there.
   if (data.factoryProjectId !== factoryProjectId) return null;
-  return { kind: 'factory-pr-provenance', workItemId: data.workItemId };
+  return {
+    kind: 'factory-pr-provenance',
+    workItemId: data.workItemId,
+    // fork(claude-agent): kept so a pull request can be proved the card's own run's.
+    ...(typeof data.bindingId === 'string' ? { bindingId: data.bindingId } : {}),
+  };
 }
 
 export interface GithubRulesIntegration {
@@ -900,13 +907,16 @@ export class GithubRules {
             // Only the author's own trust lets a pull request join another card.
             authorTrusted: actor.type === 'github' && actor.trusted && login === pullRequestAuthor,
             body: string(pullRequest?.body),
+            // fork(claude-agent): what proves the pull request is the matched card's own.
+            provenance,
+            headBranch: sameRepositoryHeadBranch(pullRequest, repositoryId),
           })
         : undefined;
     // The card of an issue the pull request closes isn't the pull request's card yet: the
     // project's intake routes decide, when it is filed, whether it joins that card.
     const relatedItem = (home?.reason === 'authored' ? home.card : undefined) ?? matchedItem;
     const pullRequestHome: FactoryPullRequestHome | undefined = home
-      ? { workItemId: home.card.id, reason: home.reason }
+      ? { workItemId: home.card.id, reason: home.reason, ...(home.ownPullRequest ? { ownPullRequest: true } : {}) }
       : undefined;
     // One delivery can concern two cards — a merged pull request settles both
     // its own Review card and the Work item that authored it — and every
@@ -1403,7 +1413,9 @@ export class GithubRules {
     factoryAuthored: boolean;
     authorTrusted: boolean;
     body: string | undefined;
-  }): Promise<{ card: Card; reason: FactoryPullRequestHome['reason'] } | undefined> {
+    provenance: FactoryPullRequestProvenanceData | null;
+    headBranch: string | undefined;
+  }): Promise<{ card: Card; reason: FactoryPullRequestHome['reason']; ownPullRequest?: true } | undefined> {
     if (!input.factoryAuthored && !input.authorTrusted) return undefined;
     const items = await this.options.storage.listShared({
       orgId: input.orgId,
@@ -1426,6 +1438,21 @@ export class GithubRules {
       !isTerminalWorkItem(this.#boards(input), card) &&
       (card.externalSource.integrationId !== 'github' ||
         cardBelongsToRepository(card, input.repositoryId, input.repositoryName));
+    // fork(claude-agent): a pull request the card's own run opened is filed on that card even when
+    // the card has no source of its own (made on the board) or its board does not review pull
+    // requests: the card's handoff to review needs it there, and nobody else's work is at stake.
+    // A GitLab card still keeps only merge requests, and a GitHub card only its repository's.
+    if (
+      input.matchedItem &&
+      input.matchedItem.externalSource?.type !== 'pull-request' &&
+      input.matchedItem.externalSource?.integrationId !== 'gitlab' &&
+      !isTerminalWorkItem(this.#boards(input), input.matchedItem) &&
+      (input.matchedItem.externalSource?.integrationId !== 'github' ||
+        cardBelongsToRepository(input.matchedItem, input.repositoryId, input.repositoryName)) &&
+      (await this.#ownPullRequest(input, input.matchedItem))
+    ) {
+      return { card: input.matchedItem, reason: 'authored', ownPullRequest: true };
+    }
     if (
       input.matchedItem &&
       eligible(input.matchedItem) &&
@@ -1444,6 +1471,35 @@ export class GithubRules {
       if (card) return { card: structuredClone(card), reason: 'closes' };
     }
     return undefined;
+  }
+
+  /**
+   * fork(claude-agent): whether `card`'s own run opened the pull request. Provenance proves it when
+   * it names this card and was recorded from one of the card's run bindings (a row without a
+   * binding, or whose binding is gone or another card's, proves nothing). Failing that, the head
+   * being the card's own branch does: the branch Factory builds the card on, or one of its
+   * sessions' branches. Only a same-repository head counts, so a fork cannot claim a card.
+   */
+  async #ownPullRequest(
+    input: {
+      orgId: string;
+      factoryProjectId: string;
+      provenance: FactoryPullRequestProvenanceData | null;
+      headBranch: string | undefined;
+    },
+    card: Card,
+  ): Promise<boolean> {
+    if (input.provenance?.workItemId === card.id && input.provenance.bindingId) {
+      const binding = await this.options.storage
+        .findRunBindingById({
+          orgId: input.orgId,
+          factoryProjectId: input.factoryProjectId,
+          id: input.provenance.bindingId,
+        })
+        .catch(() => null);
+      if (binding?.workItemId === card.id) return true;
+    }
+    return cardOwnsBranch(card, input.headBranch);
   }
 
   async #relatedItem(

@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { createBoardRegistry } from '../../boards/index.js';
+import { FactoryTransitionService } from '../../rules/transition-service.js';
 import { createFactoryStorageForTests } from '../../storage/test-utils.js';
 import type { GithubIntegration } from './integration.js';
 import { recordFactoryPullRequestProvenance } from './provenance.js';
@@ -134,6 +136,8 @@ describe('recordFactoryPullRequestProvenance', () => {
     await recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, input);
 
     expect((await workItems.get({ orgId: 'org-1', id: review.item.id }))?.parentWorkItemId).toBe(input.item.id);
+    // fork(claude-agent): a pull request already on a card of its own is not filed a second time.
+    expect((await workItems.get({ orgId: 'org-1', id: input.item.id }))!.workItem.sources).toHaveLength(1);
   });
 
   it('ignores unrelated command results and API mismatches', async () => {
@@ -159,5 +163,114 @@ describe('recordFactoryPullRequestProvenance', () => {
       recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, input),
     ).resolves.toBeUndefined();
     expect(await integrationStorage.subscriptions.listByTarget('factory-pr-provenance:10:17')).toEqual([]);
+  });
+
+  // fork(claude-agent)
+  describe('files the pull request on the card whose run opened it', () => {
+    const agentMove = (
+      workItems: Awaited<ReturnType<typeof setup>>['workItems'],
+      input: Awaited<ReturnType<typeof setup>>['input'],
+      expectedRevision: number,
+    ) =>
+      new FactoryTransitionService({
+        storage: workItems,
+        configVersion: 'v1',
+        boards: createBoardRegistry(),
+      }).transition({
+        orgId: 'org-1',
+        factoryProjectId: input.binding.factoryProjectId,
+        workItemId: input.item.id,
+        board: 'work',
+        stage: 'pr-review',
+        expectedRevision,
+        actor: { type: 'agent', bindingId: input.binding.id, role: 'work' },
+        ingress: { type: 'agent', identity: `${input.binding.id}:move-${expectedRevision}` },
+        cause: 'Opened the pull request; out for review.',
+      });
+
+    it("so the agent's own move to PR review right after opening it goes through", async () => {
+      const { sourceControl, integrationStorage, workItems, github, input } = await setup();
+      const sourceControlInput = {
+        ...input,
+        toolName: 'source_control_create_change_request',
+        toolInput: { title: 'PR 17' },
+        toolResult: { url: 'https://github.com/acme/repo/pull/17', number: 17 },
+      };
+      // Before the pull request is on the card, the move is refused.
+      expect(await agentMove(workItems, input, input.item.revision)).toMatchObject({
+        status: 'rejected',
+        reason: expect.stringMatching(/holds only cards with a pull request/),
+      });
+
+      await expect(
+        recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, sourceControlInput),
+      ).resolves.toEqual({ attached: true });
+
+      const card = (await workItems.get({ orgId: 'org-1', id: input.item.id }))!;
+      expect(card.workItem.sources.map(source => source.sourceType)).toEqual(['issue', 'pull-request']);
+      expect(card.externalSource).toMatchObject({ type: 'issue' });
+      expect(await agentMove(workItems, input, card.revision)).toMatchObject({ status: 'accepted' });
+      expect(await workItems.get({ orgId: 'org-1', id: input.item.id })).toMatchObject({ stages: ['pr-review'] });
+    });
+
+    it('leaves it off a GitLab card, which keeps only merge requests', async () => {
+      const { sourceControl, integrationStorage, workItems, github, input, project } = await setup();
+      const gitlab = (
+        await workItems.upsert({
+          orgId: 'org-1',
+          userId: 'user-1',
+          factoryProjectId: project.id,
+          input: {
+            externalSource: {
+              integrationId: 'gitlab',
+              type: 'issue',
+              externalId: 'gitlab-issue:42',
+              url: 'https://gitlab.com/acme/repo/-/issues/42',
+            },
+            title: 'GitLab issue',
+            stages: ['execute'],
+            sessions: {},
+            metadata: {},
+          },
+        })
+      ).item;
+
+      await expect(
+        recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, {
+          ...input,
+          item: gitlab,
+          binding: { ...input.binding, workItemId: gitlab.id },
+        }),
+      ).resolves.toBeUndefined();
+      expect((await workItems.get({ orgId: 'org-1', id: gitlab.id }))!.workItem.sources).toHaveLength(1);
+    });
+
+    it('leaves it on the card an earlier "opened" already filed it on', async () => {
+      const { sourceControl, integrationStorage, workItems, github, input, project } = await setup();
+      const own = await workItems.upsert({
+        orgId: 'org-1',
+        userId: 'factory-rule-dispatcher',
+        factoryProjectId: project.id,
+        input: {
+          externalSource: {
+            integrationId: 'github',
+            type: 'pull-request',
+            externalId: 'github:10:pull-request:17',
+            url: 'https://github.com/acme/repo/pull/17',
+          },
+          title: 'PR 17',
+          stages: ['intake'],
+          sessions: {},
+          metadata: {},
+        },
+      });
+
+      await expect(
+        recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, input),
+      ).resolves.toBeUndefined();
+      expect((await workItems.get({ orgId: 'org-1', id: input.item.id }))!.workItem.sources).toHaveLength(1);
+      // That card is linked back to the one whose run opened it, as before.
+      expect((await workItems.get({ orgId: 'org-1', id: own.item.id }))?.parentWorkItemId).toBe(input.item.id);
+    });
   });
 });

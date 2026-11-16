@@ -140,6 +140,16 @@ export function isLegacyReviewPlacement(board: string | null, primarySourceType:
   return board === LEGACY_REVIEW_BOARD || (board === null && primarySourceType === 'pull-request');
 }
 
+/**
+ * fork(claude-agent): the type of the record a card was created from. A pull request attached to a
+ * card made on the board is not one, so it never makes that card read as a pull request's own.
+ */
+export function originSourceType(
+  sources: readonly { source_type: string; role?: string | null }[] | undefined,
+): string | undefined {
+  return sources?.find(source => source.role !== 'attached')?.source_type;
+}
+
 function workStage(stage: string): string {
   return stage === 'review' ? 'pr-review' : stage;
 }
@@ -159,7 +169,7 @@ function workStageHistory(history: readonly WorkItemStageEntry[] | null | undefi
 export function readLegacyReviewRow<
   Row extends Pick<WorkItemDbRow, 'board' | 'stages' | 'stage_history' | 'work_item_sources'>,
 >(row: Row, reviewInUse = false): Row {
-  if (!isLegacyReviewPlacement(row.board, row.work_item_sources?.[0]?.source_type)) return row;
+  if (!isLegacyReviewPlacement(row.board, originSourceType(row.work_item_sources))) return row;
   if (reviewInUse && row.board === LEGACY_REVIEW_BOARD) return row;
   return { ...row, board: 'work', stages: workStages(row.stages), stage_history: workStageHistory(row.stage_history) };
 }

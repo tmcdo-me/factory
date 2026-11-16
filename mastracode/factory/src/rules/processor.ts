@@ -19,10 +19,13 @@ import {
   workItemPhaseSemantics,
 } from '../boards/index.js';
 import type { BoardRegistry } from '../boards/index.js';
+import { routesHandleEvent } from '../boards/intake-routing.js';
+import type { IntakeRoutesReader } from '../boards/intake-routing.js';
 import { workStageCarries } from '../boards/legacy-plan-role.js';
 import { exitToolSucceeded, PHASE_EXIT_METADATA_KEY } from '../boards/phase-automation.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
+import { hasPullRequest } from '../boards/semantics.js';
 import { WorkItemUpdateConflictError } from '../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, WorkItemsStorage, Card } from '../storage/domains/work-items/base.js';
 import { findSessionRunBinding, getFactorySessionCoordinates } from './binding-context.js';
@@ -353,7 +356,10 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
         toolInput: FactoryRuleJsonValue;
         toolResult: FactoryRuleJsonValue;
         status: 'success' | 'error';
-      }) => Promise<void>;
+        // fork(claude-agent): `attached` when the call opened a pull request and it was filed on the card.
+      }) => Promise<{ attached?: boolean } | void>;
+      /** fork(claude-agent): the project's intake routes; a route on "pull request opened" moves the card instead. */
+      intakeRoutes?: IntakeRoutesReader;
     },
   ) {
     this.boards = toBoardSource(options.boards);
@@ -678,8 +684,40 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       status: result.status,
       value: result.status === 'error' ? boundedError(result.error) : boundedResult(result.value),
     };
+    await this.ingestToolResult(binding, await this.recordPullRequest(binding, item, toolResult), toolResult);
+  }
+
+  private async ingestMessages(
+    binding: FactoryRunBindingRecord,
+    messages: MastraDBMessage[],
+    toolCallIds?: ReadonlySet<string>,
+    preloadedItem?: Card,
+  ): Promise<void> {
+    const item = preloadedItem ?? (await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId }));
+    if (!itemInRuleStage(await this.boards.load(binding), item)) return;
+    let current = item;
+    for (const message of messages) {
+      for (const toolResult of completedToolResults(message)) {
+        if (toolCallIds && !toolCallIds.has(toolResult.toolCallId)) continue;
+        current = await this.recordPullRequest(binding, current, toolResult);
+        await this.ingestToolResult(binding, current, toolResult);
+      }
+    }
+  }
+
+  /**
+   * Records which card a pull request the call opened came from. fork(claude-agent): when that
+   * filed the pull request on the card, the card is handed to its board's pull request review at
+   * once (see {@link handOffOwnPullRequest}). Returns the card as the call left it.
+   */
+  private async recordPullRequest(
+    binding: FactoryRunBindingRecord,
+    item: Card,
+    toolResult: CompletedToolResult,
+  ): Promise<Card> {
+    let recorded: { attached?: boolean } | void = undefined;
     try {
-      await this.options.recordPullRequestProvenance?.({
+      recorded = await this.options.recordPullRequestProvenance?.({
         binding,
         item,
         assistantMessageId: toolResult.assistantMessageId,
@@ -692,36 +730,61 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     } catch {
       // Provenance is supporting evidence and must not block authoritative rule ingress.
     }
-    await this.ingestToolResult(binding, item, toolResult);
+    if (!recorded?.attached) return item;
+    try {
+      await this.handOffOwnPullRequest(binding, toolResult);
+    } catch (error) {
+      console.warn(`[factory] could not hand card ${item.id} to pull request review:`, error);
+    }
+    return (await this.options.storage.get({ orgId: binding.orgId, id: item.id })) ?? item;
   }
 
-  private async ingestMessages(
-    binding: FactoryRunBindingRecord,
-    messages: MastraDBMessage[],
-    toolCallIds?: ReadonlySet<string>,
-    preloadedItem?: Card,
-  ): Promise<void> {
-    const item = preloadedItem ?? (await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId }));
-    if (!itemInRuleStage(await this.boards.load(binding), item)) return;
-    for (const message of messages) {
-      for (const toolResult of completedToolResults(message)) {
-        if (toolCallIds && !toolCallIds.has(toolResult.toolCallId)) continue;
-        try {
-          await this.options.recordPullRequestProvenance?.({
-            binding,
-            item,
-            assistantMessageId: toolResult.assistantMessageId,
-            toolCallId: toolResult.toolCallId,
-            toolName: toolResult.toolName,
-            toolInput: toolResult.input,
-            toolResult: toolResult.value,
-            status: toolResult.status,
-          });
-        } catch {
-          // Provenance is supporting evidence and must not block authoritative rule ingress.
-        }
-        await this.ingestToolResult(binding, item, toolResult);
-      }
+  /**
+   * fork(claude-agent): the card's run just opened its pull request and it is filed on the card, so
+   * the build is out: the card moves from its board's build phase to its pull request review, as the
+   * build skill tells the agent to and as GitHub's "opened" would move it. It is the run's own move
+   * (an agent move, through the board's transition rules), made before the tool call's result reaches
+   * the agent, so the card is already in review when the agent reads it. Nothing moves when the
+   * card is elsewhere, the board has no such move, or the project's intake routes take "pull request
+   * opened" on that board: the event's route moves it then. Keyed by the tool call, so a result read
+   * again moves nothing twice.
+   */
+  private async handOffOwnPullRequest(binding: FactoryRunBindingRecord, toolResult: CompletedToolResult) {
+    const transitionService = this.options.transitionService;
+    if (!transitionService) return;
+    const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
+    if (!item || item.stages.length !== 1 || !hasPullRequest({ workItem: item.workItem })) return;
+    const boardId = boardForWorkItem(item);
+    const board = (await this.boards.load(binding)).get(boardId);
+    const { build, pullRequestReview } = boardFlow(board);
+    if (!board || !build || !pullRequestReview || item.stages[0] !== build) return;
+    if (!board.allowsTransition(build, pullRequestReview)) return;
+    const routes = this.options.intakeRoutes
+      ? await this.options.intakeRoutes.listIntakeRoutes({
+          orgId: binding.orgId,
+          factoryProjectId: binding.factoryProjectId,
+        })
+      : [];
+    if (routesHandleEvent(routes, { type: 'pull_request.opened' }, board)) return;
+    const result = await transitionService.transition({
+      orgId: binding.orgId,
+      factoryProjectId: binding.factoryProjectId,
+      workItemId: item.id,
+      board: boardId,
+      stage: pullRequestReview,
+      expectedRevision: item.revision,
+      actor: { type: 'agent', bindingId: binding.id, role: binding.role },
+      ingress: {
+        type: 'toolResult',
+        identity: JSON.stringify([binding.id, binding.threadId, toolResult.toolCallId, 'pull-request-handoff']),
+      },
+      cause: 'Opened its pull request; the build is out for review.',
+      completedTool: toolResult.toolName,
+    });
+    if (result.status === 'rejected') {
+      console.warn(
+        `[factory] attached a pull request to ${item.id} but could not move it to ${pullRequestReview}: ${result.code}: ${result.reason}`,
+      );
     }
   }
 

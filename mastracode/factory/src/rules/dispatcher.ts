@@ -1962,10 +1962,17 @@ export class FactoryDecisionDispatcher {
     if (!existing && requested.attachTo) {
       // A card takes a pull request when its board reviews pull requests; elsewhere the pull
       // request is filed as its own card.
+      // fork(claude-agent): ...or when the card's own run opened it, whatever its board: the card's
+      // handoff to review needs it there. Only the card the decision is committed against can
+      // claim a pull request as its own.
       const attachBoards = await this.#boards.load(record);
+      const ownPullRequest =
+        requested.attachTo.ownPullRequest === true && record.workItemId === requested.attachTo.workItemId;
       if (
         await this.#attachLinkedItem(record, requested, requested.attachTo.workItemId, causalChain, card =>
-          cardBoardFlow(attachBoards, card).pullRequestReview !== undefined ? { phase: null } : undefined,
+          ownPullRequest || cardBoardFlow(attachBoards, card).pullRequestReview !== undefined
+            ? { phase: null }
+            : undefined,
         )
       ) {
         return;

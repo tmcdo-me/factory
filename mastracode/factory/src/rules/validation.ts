@@ -114,14 +114,28 @@ function boardEvent(value: unknown, label: string): BoardEventFacts {
   return { type, ...(reason ? { reason } : {}) };
 }
 
-function linkedItemReference(value: unknown, field: 'attachTo' | 'closesIssue'): { workItemId: string } | undefined {
+function linkedItemReference(
+  value: unknown,
+  field: 'attachTo' | 'closesIssue',
+): { workItemId: string; ownPullRequest?: true } | undefined {
   if (value === undefined) return undefined;
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new FactoryRuleValidationError(`Factory linked work item ${field} must be an object.`);
   }
-  assertExactKeys(value as Record<string, unknown>, ['workItemId'], `Factory linked work item ${field}`);
-  const { workItemId } = value as Record<string, unknown>;
-  return { workItemId: boundedString(workItemId, `Factory linked work item ${field}.workItemId`, 128) };
+  // fork(claude-agent): `attachTo` can say the card's own run opened the pull request.
+  assertExactKeys(
+    value as Record<string, unknown>,
+    field === 'attachTo' ? ['workItemId', 'ownPullRequest'] : ['workItemId'],
+    `Factory linked work item ${field}`,
+  );
+  const { workItemId, ownPullRequest } = value as Record<string, unknown>;
+  if (ownPullRequest !== undefined && ownPullRequest !== true) {
+    throw new FactoryRuleValidationError(`Factory linked work item ${field}.ownPullRequest must be true when set.`);
+  }
+  return {
+    workItemId: boundedString(workItemId, `Factory linked work item ${field}.workItemId`, 128),
+    ...(ownPullRequest === true ? { ownPullRequest: true as const } : {}),
+  };
 }
 
 export function assertFactoryDecisionTarget(

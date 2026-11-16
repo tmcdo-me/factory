@@ -1697,6 +1697,8 @@ export class MastraFactory {
           defaultThinkingLevel: resolveDefaultThinkingLevel,
           onBoundThreadRun: () => this.#dispatcher?.noteBoundThreadRun(),
           ...(transitionService ? { transitionService } : {}),
+          // fork(claude-agent): a route on "pull request opened" moves a card whose run opened its PR.
+          ...(this.#projectBoards ? { intakeRoutes: storedBoardsStorage } : {}),
           ...(githubIntegration
             ? {
                 recordPullRequestProvenance: (input: Parameters<typeof recordFactoryPullRequestProvenance>[4]) =>

@@ -1,6 +1,8 @@
+import { externalSourceForWorkItem } from '../../rules/types.js';
 import type { FactoryRuleJsonValue } from '../../rules/types.js';
 import type { IntegrationStorageHandle } from '../../storage/domains/integrations/base.js';
 import type { SourceControlStorageHandle } from '../../storage/domains/source-control/base.js';
+import { WorkItemSourceConflictError } from '../../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, Card, WorkItemsStorage } from '../../storage/domains/work-items/base.js';
 import type { GithubIntegration } from './integration.js';
 import { cardBelongsToRepository } from './rules.js';
@@ -60,7 +62,9 @@ export async function recordFactoryPullRequestProvenance(
   >,
   workItems: WorkItemsStorage,
   input: RecordFactoryPullRequestProvenanceInput,
-): Promise<void> {
+  // fork(claude-agent): `attached` when the pull request was filed on the card that opened it.
+): Promise<{ attached?: boolean } | void> {
+  let attached = false;
   if (input.status !== 'success' || input.item.externalSource?.type === 'pull-request') return;
   const url = parseCreatedPullRequest({
     toolName: input.toolName,
@@ -163,7 +167,89 @@ export async function recordFactoryPullRequestProvenance(
         userId: 'factory-pr-provenance',
         parentWorkItemId: input.item.id,
       });
+    } else {
+      // fork(claude-agent): no card holds the pull request yet, so the card whose run opened it
+      // takes it now, from the tool result, rather than when GitHub's "opened" arrives (a webhook,
+      // or a reconcile minutes later): the card's handoff to its board's pull request review needs
+      // the pull request on it. The "opened" event later finds it filed there and files nothing.
+      attached = await attachOwnPullRequest(workItems, input, { repositoryId, repositorySlug, url, pullRequest: data });
     }
   } catch {
   }
+  return attached ? { attached } : undefined;
+}
+
+/**
+ * fork(claude-agent): files the pull request a card's own run just opened on that card, as an
+ * attached source keyed exactly as GitHub's "opened" files it (`github:<repo>:pull-request:<n>`),
+ * so that event finds it filed and attaches nothing again. Skipped for a card that keeps other
+ * records only (a GitLab card, a GitHub card from another repository), and when another card
+ * already holds the pull request (an "opened" that won the race filed it on a card of its own).
+ * Never throws: the event path still files the pull request when this could not.
+ */
+async function attachOwnPullRequest(
+  workItems: WorkItemsStorage,
+  input: RecordFactoryPullRequestProvenanceInput,
+  created: { repositoryId: number; repositorySlug: string; url: string; pullRequest: unknown },
+): Promise<boolean> {
+  const { item, binding } = input;
+  if (workItems.legacyMode || binding.workItemId !== item.id) return false;
+  const own = item.externalSource;
+  if (own?.integrationId === 'gitlab') return false;
+  if (own?.integrationId === 'github' && !cardBelongsToRepository(item, created.repositoryId, created.repositorySlug)) {
+    return false;
+  }
+  const pullRequest = record(created.pullRequest);
+  const number = pullRequest.number;
+  if (typeof number !== 'number') return false;
+  try {
+    // Already on the card (`attached: false`) counts: the card holds its pull request either way.
+    const result = await workItems.attachSource({
+      orgId: binding.orgId,
+      id: item.id,
+      source: externalSourceForWorkItem(
+        'github-pr',
+        `github:${created.repositoryId}:pull-request:${number}`,
+        created.url,
+      ),
+      metadata: pullRequestSourceFacts(created.repositoryId, pullRequest),
+    });
+    return result !== null;
+  } catch (error) {
+    if (!(error instanceof WorkItemSourceConflictError)) {
+      console.warn(`[factory] could not file pull request ${created.url} on card ${item.id}:`, error);
+    }
+    return false;
+  }
+}
+
+/** The provider facts GitHub's "opened" files a pull request with, read from the API's pull request. */
+function pullRequestSourceFacts(repositoryId: number, pullRequest: Record<string, unknown>): Record<string, unknown> {
+  const head = record(pullRequest.head);
+  const base = record(pullRequest.base);
+  const logins = (value: unknown) =>
+    Array.isArray(value)
+      ? value.map(entry => record(entry).login).filter((login): login is string => typeof login === 'string')
+      : [];
+  const author = record(pullRequest.user).login;
+  return {
+    githubRepositoryId: repositoryId,
+    githubPullRequestNumber: pullRequest.number,
+    ...(typeof pullRequest.created_at === 'string' ? { sourceCreatedAt: pullRequest.created_at } : {}),
+    state: pullRequest.state === 'closed' ? 'closed' : 'open',
+    draft: pullRequest.draft === true,
+    merged: pullRequest.merged === true,
+    assignees: logins(pullRequest.assignees),
+    requestedReviewers: logins(pullRequest.requested_reviewers),
+    labels: Array.isArray(pullRequest.labels)
+      ? pullRequest.labels.map(label => record(label).name).filter((name): name is string => typeof name === 'string')
+      : [],
+    headBranch: typeof head.ref === 'string' ? head.ref : '',
+    baseBranch: typeof base.ref === 'string' ? base.ref : '',
+    ...(typeof author === 'string' ? { author } : {}),
+  };
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
