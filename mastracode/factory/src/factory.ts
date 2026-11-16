@@ -20,6 +20,7 @@
  */
 
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
 
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
@@ -134,6 +135,7 @@ import type { FactoryRuleActor } from './rules/index.js';
 import { createPhaseGoalEnder } from './rules/phase-goal.js';
 import { FactoryPhaseStateProcessor, reportMemorySettingsUnavailable } from './rules/processor.js';
 import { createReviewSourceTool, resolveReviewSourceUiOrigin } from './rules/review-source-tool.js';
+import type { RuntimeThreadState } from './rules/runtime-sessions.js';
 import type { FactoryStartCoordinator } from './rules/start-coordinator.js';
 import { createTerminalStageCleanup } from './rules/terminal-cleanup.js';
 import { createFactoryTransitionTools } from './rules/tools.js';
@@ -156,6 +158,8 @@ import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
+import { claudeAgentHostLease } from './session/claude-agent-host.js';
+import type { ClaudeAgentHost } from './session/claude-agent-host.js';
 import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
 import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
 import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
@@ -623,6 +627,8 @@ export class MastraFactory {
     | undefined;
   /** fork(claude-agent): live Claude Agent sessions. */
   #claudeAgentSessions: ClaudeAgentSessions | undefined;
+  /** fork(claude-agent): whether this process runs Claude Agent sessions. */
+  #claudeAgentHost: ClaudeAgentHost | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -1864,11 +1870,20 @@ export class MastraFactory {
       .ensureReady()
       .then(() => pendingInteractions.load())
       .catch(error => console.warn('[factory] Unable to read the questions Claude Agent sessions wait on.', error));
+    // fork(claude-agent): named by host and Claude Agent home, so a restart takes over from itself.
+    const claudeAgentHost = claudeAgentHostLease({
+      store: async () =>
+        (await resolveGoalStore(this.#prepared?.base.controller.getMastra())) as RuntimeThreadState | undefined,
+      ownerId: `${hostname()}:${claudeAgentHome()}`,
+    });
+    this.#claudeAgentHost = claudeAgentHost;
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
       workspace: claudeAgentWorkspace,
       home: claudeAgentHome(),
+      // fork(claude-agent): one process sharing the database runs Claude Agent sessions.
+      host: claudeAgentHost,
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: pendingInteractions, hub: agentEventHub }),
       // A review session, or one on a pull request card, loads none of its checkout's own settings.
@@ -2393,6 +2408,12 @@ export class MastraFactory {
                 reconcileRunBinding: binding => factoryProcessor?.reconcileBinding(binding) ?? Promise.resolve(),
                 prepareBinding,
                 runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
+                // fork(claude-agent): their phase goals and run ledgers, in the store Mastra Code's goals use
+                // (generic per type; `resolveGoalStore` types it for goals only).
+                runtimeThreadState: async () =>
+                  (await resolveGoalStore(this.#prepared?.base.controller.getMastra())) as
+                    | RuntimeThreadState
+                    | undefined,
                 ...(githubIntegration
                   ? {
                       dismissStaleReviews: async decision => {
@@ -2797,6 +2818,7 @@ export class MastraFactory {
     const shutdownPromise = (async () => {
       // fork(claude-agent): stop live Claude Code processes.
       await this.#claudeAgentSessions?.shutdown().catch(() => undefined);
+      await this.#claudeAgentHost?.release().catch(() => undefined);
       const unsubscribeDispatchWakes = this.#unsubscribeDispatchWakes;
       this.#unsubscribeDispatchWakes = undefined;
       const unsubscribeSandboxEnvChanges = this.#unsubscribeSandboxEnvChanges;
