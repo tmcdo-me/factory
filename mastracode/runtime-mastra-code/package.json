@@ -25,7 +25,8 @@
   },
   "license": "Apache-2.0",
   "dependencies": {
-    "@factory/agent-runtime": "workspace:*"
+    "@factory/agent-runtime": "workspace:*",
+    "@mastra/server": "workspace:*"
   },
   "devDependencies": {
     "@internal/ai-sdk-v5": "workspace:*",

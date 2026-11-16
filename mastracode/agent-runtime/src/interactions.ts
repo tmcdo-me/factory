@@ -21,7 +21,13 @@ export type InteractionKind = InteractionRequest['kind'];
 
 export type InteractionResponse =
   | { kind: 'question'; answer: string | string[] }
-  | { kind: 'plan_approval'; action: 'approved' | 'rejected'; feedback?: string }
+  | {
+      kind: 'plan_approval';
+      action: 'approved' | 'rejected';
+      feedback?: string;
+      /** The plan as the human saw it, so the recorded result can replay it. */
+      plan?: { path?: string; title?: string; content?: string };
+    }
   | { kind: 'tool_approval'; approved: boolean; reason?: string };
 
 export type ResponseFor<K extends InteractionKind> = Extract<InteractionResponse, { kind: K }>;

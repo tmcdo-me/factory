@@ -7,6 +7,16 @@ import {
   createAgentControllerClient,
   requireAgentControllerSession,
 } from '../ui/domains/chat/services/agentControllerClient';
+// fork(claude-agent): with the Factory transcript source, commands go to Factory's session API.
+import {
+  abortFactorySession,
+  approveFactorySessionTool,
+  respondToFactorySessionPrompt,
+  sendFactorySessionMessage,
+} from '../ui/domains/chat/services/factorySessionCommands';
+import { transcriptSource } from '../ui/domains/chat/services/transcript-source';
+
+const viaFactory = transcriptSource === 'factory';
 
 interface AgentControllerRunMutationArgs {
   agentControllerId: string;
@@ -37,6 +47,7 @@ export function useSendAgentControllerMessageMutation(args: AgentControllerRunMu
   return useMutation({
     mutationFn: (input: SendAgentControllerMessageInput | string) => {
       const { text, files } = typeof input === 'string' ? { text: input, files: undefined } : input;
+      if (viaFactory) return sendFactorySessionMessage(args.baseUrl ?? '', args.sessionId, { text, files });
       return requireAgentControllerSession(session).sendMessage(
         files?.length ? { content: text, files } : { content: text },
       );
@@ -58,7 +69,10 @@ export function useAbortAgentControllerMutation(args: AgentControllerRunMutation
   const { session } = createAgentControllerClient(args);
   const invalidateSession = useSessionInvalidation(args);
   return useMutation({
-    mutationFn: () => requireAgentControllerSession(session).abort(),
+    mutationFn: () =>
+      viaFactory
+        ? abortFactorySession(args.baseUrl ?? '', args.sessionId)
+        : requireAgentControllerSession(session).abort(),
     onSuccess: invalidateSession,
   });
 }
@@ -68,7 +82,10 @@ export function useApproveAgentControllerToolMutation(args: AgentControllerRunMu
   const invalidateSession = useSessionInvalidation(args);
   return useMutation({
     mutationFn: ({ toolCallId, approved }: { toolCallId: string; approved: boolean }) =>
-      requireAgentControllerSession(session).approveTool(toolCallId, approved).then(requireAccepted),
+      (viaFactory
+        ? approveFactorySessionTool(args.baseUrl ?? '', args.sessionId, toolCallId, approved)
+        : requireAgentControllerSession(session).approveTool(toolCallId, approved)
+      ).then(requireAccepted),
     onSuccess: invalidateSession,
     onError: reportRejectedReply,
   });
@@ -79,7 +96,10 @@ export function useRespondAgentControllerSuspensionMutation(args: AgentControlle
   const invalidateSession = useSessionInvalidation(args);
   return useMutation({
     mutationFn: ({ toolCallId, resumeData }: { toolCallId: string; resumeData: string | string[] | PlanResume }) =>
-      requireAgentControllerSession(session).respondToToolSuspension(toolCallId, resumeData).then(requireAccepted),
+      (viaFactory
+        ? respondToFactorySessionPrompt(args.baseUrl ?? '', args.sessionId, toolCallId, resumeData)
+        : requireAgentControllerSession(session).respondToToolSuspension(toolCallId, resumeData)
+      ).then(requireAccepted),
     onSuccess: invalidateSession,
     onError: error => {
       reportRejectedReply(error);

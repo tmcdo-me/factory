@@ -22,6 +22,7 @@
 import { existsSync } from 'node:fs';
 
 import { SessionEventHub } from '@factory/agent-runtime';
+import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code';
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
 import type { MastraCodeConfig } from '@mastra/code-sdk';
@@ -2291,7 +2292,15 @@ export class MastraFactory {
             ...(environmentBuilds ? { onEnvironmentSaved: environmentBuilds.onEnvironmentSaved } : {}),
           }).routes(),
           ...buildFeedEventsRoutes({ auth: routeAuth, projects: factoryProjectsStorage, pubsub: eventBus }),
-          ...buildAgentSessionRoutes({ auth: routeAuth, events: agentEventHub }), // fork(claude-agent)
+          // fork(claude-agent): Factory's runtime-neutral session API.
+          ...buildAgentSessionRoutes({
+            auth: routeAuth,
+            events: agentEventHub,
+            commands: createMastraCodeSessionCommands({
+              mastra: () => this.#prepared?.base.controller.getMastra(),
+              controllerId: CONTROLLER_ID,
+            }),
+          }),
           ...auditDomain.routes(),
           // Connect/reconnect session minting for Platform-managed providers.
           // Server-side because only the deploy holds Platform machine
