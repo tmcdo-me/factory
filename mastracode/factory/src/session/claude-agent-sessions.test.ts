@@ -24,6 +24,7 @@ import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
 import {
   ClaudeAgentSessions,
+  claudeAgentBackgroundMaxMs,
   claudeAgentBashSandbox,
   claudeAgentHome,
   claudeAgentIdleCloseMs,
@@ -177,6 +178,13 @@ describe('ClaudeAgentSessions', () => {
     expect(fake.options[0]).toMatchObject({
       settings: { sandbox: { enabled: true, allowUnsandboxedCommands: false } },
     });
+  });
+
+  it('caps background work at FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS, and at the token deadline', async () => {
+    expect(claudeAgentBackgroundMaxMs({})).toBe(3_600_000);
+    expect(claudeAgentBackgroundMaxMs({ FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS: '900000' })).toBe(900_000);
+    expect(claudeAgentBackgroundMaxMs({ FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS: '0' })).toBe(3_600_000);
+    expect(claudeAgentBackgroundMaxMs({ FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS: 'never' })).toBe(3_600_000);
   });
 
   it('reads the idle timeout from FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS', () => {

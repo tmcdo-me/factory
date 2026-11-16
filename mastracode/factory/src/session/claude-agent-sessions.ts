@@ -122,7 +122,27 @@ export interface ClaudeAgentSessionsDeps {
   idleCloseMs?: number;
   /** fork(claude-agent): run Claude's Bash in Claude Code's own sandbox (see `claudeAgentBashSandbox`). */
   bashSandbox?: boolean;
+  /** fork(claude-agent): how long background work alone may keep Claude Code running (see `claudeAgentBackgroundMaxMs`). */
+  backgroundMaxMs?: number;
 }
+
+/**
+ * fork(claude-agent): how long background work (a dev server, a `--watch`, a stuck subagent) may keep
+ * an otherwise idle Claude Code running before it is stopped anyway.
+ * `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` overrides the default (60 minutes).
+ */
+export function claudeAgentBackgroundMaxMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS?.trim();
+  const value = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value > 0 ? value : 60 * 60_000;
+}
+
+/**
+ * fork(claude-agent): a Claude Code held by background work is stopped at this age regardless: the
+ * GitHub token it started with was at most 10 minutes old (Factory re-mints older ones) and lasts an
+ * hour, so this leaves a 5-minute margin.
+ */
+const CLAUDE_AGENT_PROCESS_DEADLINE_MS = 45 * 60_000;
 
 /**
  * fork(claude-agent): whether Claude Agent sessions run their Bash commands in Claude Code's own
@@ -265,6 +285,8 @@ export class ClaudeAgentSessions {
       idleCloseMs: this.#deps.idleCloseMs ?? claudeAgentIdleCloseMs(),
       ...((this.#deps.bashSandbox ?? claudeAgentBashSandbox()) ? { bashSandbox: true } : {}),
       recycleAfterMs: CLAUDE_AGENT_RECYCLE_AFTER_MS,
+      processDeadlineMs: CLAUDE_AGENT_PROCESS_DEADLINE_MS,
+      backgroundMaxMs: this.#deps.backgroundMaxMs ?? claudeAgentBackgroundMaxMs(),
       ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
       ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),

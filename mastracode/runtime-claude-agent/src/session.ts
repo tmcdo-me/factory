@@ -110,6 +110,15 @@ export interface ClaudeAgentSessionOptions {
    * fresh environment (short-lived credentials such as a GitHub installation token).
    */
   recycleAfterMs?: number;
+  /**
+   * Background work (a dev server, a `--watch`, a stuck subagent) holds the idle close and the
+   * recycle, but not forever: with no run open, Claude Code is stopped anyway once it has run this
+   * long (the deadline of the credentials it started with), or once background work has kept it
+   * idle this long (`backgroundMaxMs`), whichever comes first. A run in flight is never cut short:
+   * the stop waits for it to end. A notice in the transcript says what was stopped and why.
+   */
+  processDeadlineMs?: number;
+  backgroundMaxMs?: number;
   /** Launch Claude Code somewhere other than this host (e.g. inside a Sprite). */
   spawnClaudeCodeProcess?: Options['spawnClaudeCodeProcess'];
   /** An installed `claude` instead of the SDK's bundled one. */
@@ -205,6 +214,9 @@ export class ClaudeAgentSession {
    * `background_tasks_changed` level signal; the process is not stopped while there is any.
    */
   #background = new Set<string>();
+  /** Since when background work alone has kept Claude Code running (no run open). */
+  #backgroundIdleSince: number | undefined;
+  #capTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(options: ClaudeAgentSessionOptions) {
     this.id = options.sessionId;
@@ -251,6 +263,8 @@ export class ClaudeAgentSession {
       this.#options.emit({ type: 'message.ended', messageId });
     }
     this.#clearIdle();
+    // A turn: the background-work clock starts again when it ends.
+    this.#backgroundIdleSince = undefined;
     const env = this.#options.env;
     if (!this.#query && !this.#stopping && typeof env !== 'function') this.#start(env);
     else if (!this.#query || this.#starting) {
@@ -320,6 +334,59 @@ export class ClaudeAgentSession {
   #clearIdle(): void {
     if (this.#idleTimer) clearTimeout(this.#idleTimer);
     this.#idleTimer = undefined;
+    if (this.#capTimer) clearTimeout(this.#capTimer);
+    this.#capTimer = undefined;
+  }
+
+  /**
+   * With no run open and background work holding the stop: stop Claude Code anyway at its deadline,
+   * or once background work alone has kept it running `backgroundMaxMs`, whichever comes first.
+   */
+  #armBackgroundCap(): void {
+    const { processDeadlineMs, backgroundMaxMs } = this.#options;
+    const now = Date.now();
+    this.#backgroundIdleSince ??= now;
+    const caps: { at: number; reason: 'deadline' | 'background' }[] = [];
+    if (processDeadlineMs !== undefined && processDeadlineMs > 0) {
+      caps.push({ at: this.#startedAt + processDeadlineMs, reason: 'deadline' });
+    }
+    if (backgroundMaxMs !== undefined && backgroundMaxMs > 0) {
+      caps.push({ at: this.#backgroundIdleSince + backgroundMaxMs, reason: 'background' });
+    }
+    const cap = caps.sort((a, b) => a.at - b.at)[0];
+    if (!cap) return;
+    const fire = () => {
+      this.#capTimer = undefined;
+      if (this.#closed || this.#runs.length || !this.#query || !this.#background.size) return;
+      this.#stopBackground(cap.reason);
+    };
+    if (cap.at <= now) {
+      fire();
+      return;
+    }
+    this.#capTimer = setTimeout(fire, cap.at - now);
+    this.#capTimer.unref?.();
+  }
+
+  /** Stop Claude Code and the background work it holds, saying so in the transcript. */
+  #stopBackground(reason: 'deadline' | 'background'): void {
+    const count = this.#background.size;
+    const work = count === 1 ? 'one background task' : `${count} background tasks`;
+    const minutes = (ms: number) => Math.round(ms / 60_000);
+    const why =
+      reason === 'deadline'
+        ? `Claude Agent had run for ${minutes(Date.now() - this.#startedAt)} minutes, as long as the credentials it started with last`
+        : `background work kept it running for ${minutes(Date.now() - (this.#backgroundIdleSince ?? Date.now()))} minutes with no turn open`;
+    this.#options.emit({
+      type: 'notice',
+      noticeId: this.#newId(),
+      kind: 'system-reminder',
+      tag: 'background-stopped',
+      text: `Stopped ${work} (${[...this.#background].join(', ')}): ${why}. The next message resumes the conversation; restart the work if it is still needed.`,
+      attributes: { reason, tasks: count },
+    });
+    this.#backgroundIdleSince = undefined;
+    this.#stopProcess();
   }
 
   /**
@@ -329,7 +396,12 @@ export class ClaudeAgentSession {
    */
   #whenIdle(): void {
     this.#clearIdle();
-    if (this.#closed || this.#runs.length || !this.#query || this.#background.size) return;
+    if (this.#closed || this.#runs.length || !this.#query) return;
+    if (this.#background.size) {
+      this.#armBackgroundCap();
+      return;
+    }
+    this.#backgroundIdleSince = undefined;
     const { recycleAfterMs, idleCloseMs } = this.#options;
     if (recycleAfterMs !== undefined && Date.now() - this.#startedAt >= recycleAfterMs) {
       this.#stopProcess();
@@ -435,6 +507,7 @@ export class ClaudeAgentSession {
     this.#startedAt = Date.now();
     // The background-task level is per process: a new one starts with none.
     this.#background.clear();
+    this.#backgroundIdleSince = undefined;
     this.#pump = this.#drain(query);
   }
 
@@ -479,8 +552,9 @@ export class ClaudeAgentSession {
       // REPLACE semantics; ambient tasks (watchers, housekeeping) are not work.
       const had = this.#background.size;
       this.#background = new Set(message.tasks.filter(task => !task.ambient).map(task => task.task_id));
-      if (had && !this.#background.size && !this.#runs.length) this.#whenIdle();
-      else if (this.#background.size) this.#clearIdle();
+      if (this.#runs.length) this.#clearIdle();
+      // Arm what fits now: the idle close or recycle once the work ended, the cap while it runs.
+      else if (had || this.#background.size) this.#whenIdle();
     }
     const runId = this.#runs[0];
     const stopping = this.#aborting;
