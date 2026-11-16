@@ -10,6 +10,7 @@ import type { FactoryToolCall } from './factory-tools';
 import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
+import { ClaudeTurnLimiter } from './turn-slots';
 
 const base = { session_id: 'claude-1', uuid: '00000000-0000-0000-0000-000000000000' } as const;
 const ev = (event: Record<string, unknown>, parent: string | null = null) =>
@@ -913,6 +914,8 @@ describe('ClaudeAgentSession process lifetime', () => {
 function drivenQuery(turns: SDKMessage[][], options: { exitDelayMs?: number } = {}) {
   const calls: { startedAt: number }[] = [];
   const exits: number[] = [];
+  /** What each turn Claude Code read said, in the order it read them. */
+  const received: string[] = [];
   let push: ((message: SDKMessage) => void) | undefined;
   const fn: QueryFn = ({ prompt }) => {
     calls.push({ startedAt: Date.now() });
@@ -925,7 +928,10 @@ function drivenQuery(turns: SDKMessage[][], options: { exitDelayMs?: number } = 
     };
     void (async () => {
       let turn = 0;
-      for await (const _message of prompt) for (const out of turns[turn++] ?? [init, result()]) push!(out);
+      for await (const message of prompt) {
+        received.push(String((message as SDKUserMessage).message.content));
+        for (const out of turns[turn++] ?? [init, result()]) push!(out);
+      }
       await new Promise(resolve => setTimeout(resolve, options.exitDelayMs ?? 0));
       ended = true;
       exits.push(Date.now());
@@ -945,7 +951,7 @@ function drivenQuery(turns: SDKMessage[][], options: { exitDelayMs?: number } = 
     })();
     return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as unknown as Query;
   };
-  return { fn, calls, exits, emit: (message: SDKMessage) => push?.(message) };
+  return { fn, calls, exits, received, emit: (message: SDKMessage) => push?.(message) };
 }
 
 const backgroundTasks = (tasks: { task_id: string; ambient?: boolean }[]) =>
@@ -1115,5 +1121,250 @@ describe('ClaudeAgentSession background work cap', () => {
     await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
     expect(notices()).toHaveLength(1);
     await session.close();
+  });
+});
+
+// fork(claude-agent): the operator's cap on how many Claude Agent turns run at once (spec slice 13).
+describe('ClaudeAgentSession turn slots', () => {
+  function slotSetup(
+    cap: { value: number | undefined },
+    env: Record<string, string> | (() => Promise<Record<string, string>>) = { HOME: '/home/u' },
+  ) {
+    const changed: string[] = [];
+    const limiter = new ClaudeTurnLimiter({ cap: () => cap.value, onChanged: id => changed.push(id) });
+    const person = new Set<string>();
+    const open = (sessionId: string) => {
+      const events: FactoryEvent[] = [];
+      // Each turn stays open until the test ends it, as a turn Claude is still working on.
+      const fake = drivenQuery([[init], [init], [init]]);
+      let n = 0;
+      const session = new ClaudeAgentSession({
+        sessionId,
+        cwd: `/work/${sessionId}`,
+        env,
+        emit: event => events.push(event),
+        query: fake.fn,
+        newId: () => `${sessionId}-${++n}`,
+        turnSlots: limiter.slots(sessionId, runId => (person.has(runId) ? 'person' : 'factory')),
+      });
+      const queued = () =>
+        events.filter(
+          (event): event is Extract<FactoryEvent, { type: 'notice' }> =>
+            event.type === 'notice' && event.tag === 'turn-queued',
+        );
+      return { session, events, fake, queued };
+    };
+    return { limiter, open, person, changed };
+  }
+
+  it('holds a second session’s turn while the cap is reached, says so, and sends it once the first ends', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'build the card' });
+    await vi.waitFor(() => expect(a.fake.calls).toHaveLength(1));
+
+    const { runId } = await b.session.send({ text: 'review the other card' });
+    expect(b.session.status()).toBe('running');
+    expect(b.queued()).toHaveLength(1);
+    expect(b.queued()[0]).toMatchObject({ runId, text: expect.stringContaining('1 of 1 running') });
+    expect(limiter.snapshot()).toMatchObject({ cap: 1, running: 1, waiting: [{ sessionId: 'b', position: 1 }] });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    // Nothing reached Claude Code: no process was even started for it.
+    expect(b.fake.calls).toHaveLength(0);
+
+    a.fake.emit(result());
+    await settled(a.events);
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(limiter.snapshot()).toMatchObject({ running: 1, waiting: [] });
+    b.fake.emit(result());
+    await settled(b.events);
+    expect(b.events.find(e => e.type === 'run.ended')).toMatchObject({ runId, reason: 'complete' });
+    expect(limiter.snapshot().running).toBe(0);
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it('sends the turns a person queued behind a waiting turn in order, in the one slot', async () => {
+    const { open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    await b.session.send({ text: 'one' });
+    await b.session.send({ text: 'two' });
+    expect(b.queued()).toHaveLength(1);
+    a.fake.emit(result());
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    b.fake.emit(result());
+    await vi.waitFor(() => expect(b.events.filter(e => e.type === 'run.ended')).toHaveLength(1));
+    b.fake.emit(result());
+    await settled(b.events, 2);
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it('ends a waiting turn the person stops without starting Claude Code, and frees its place', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    const { runId } = await b.session.send({ text: 'waits' });
+    await b.session.abort();
+    expect(b.events.find(e => e.type === 'run.ended')).toEqual({ type: 'run.ended', runId, reason: 'aborted' });
+    expect(b.session.status()).toBe('idle');
+    expect(limiter.snapshot().waiting).toEqual([]);
+    a.fake.emit(result());
+    await settled(a.events);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(b.fake.calls).toHaveLength(0);
+    await a.session.close();
+  });
+
+  it('lets a waiting turn go as soon as the cap is raised or removed, without a restart', async () => {
+    const cap = { value: 1 as number | undefined };
+    const { limiter, open } = slotSetup(cap);
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    await b.session.send({ text: 'second' });
+    expect(b.fake.calls).toHaveLength(0);
+    cap.value = 0; // no limit
+    limiter.update();
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(limiter.snapshot()).toMatchObject({ cap: undefined, running: 2 });
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it("puts a person's turn ahead of Factory's waiting runs", async () => {
+    const { limiter, open, person } = slotSetup({ value: 1 });
+    const a = open('a');
+    const board = open('board');
+    const chat = open('chat');
+    await a.session.send({ text: 'first' });
+    await board.session.send({ text: 'board run' });
+    person.add('mine');
+    await chat.session.send({ text: 'a question', runId: 'mine' });
+    expect(limiter.snapshot().waiting.map(waiter => waiter.sessionId)).toEqual(['chat', 'board']);
+    a.fake.emit(result());
+    await vi.waitFor(() => expect(chat.fake.calls).toHaveLength(1));
+    expect(board.fake.calls).toHaveLength(0);
+    await Promise.all([a.session.close(), board.session.close(), chat.session.close()]);
+  });
+
+  it('does not count a turn waiting on a person, and counts it again once they answer', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'asks the person' });
+    limiter.park('a');
+    await b.session.send({ text: 'goes meanwhile' });
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(b.queued()).toHaveLength(0);
+    limiter.unpark('a');
+    expect(limiter.snapshot().running).toBe(2);
+    const c = open('c');
+    await c.session.send({ text: 'waits for both' });
+    expect(c.queued()).toHaveLength(1);
+    await Promise.all([a.session.close(), b.session.close(), c.session.close()]);
+    expect(limiter.snapshot()).toMatchObject({ running: 0, waiting: [] });
+  });
+
+  it('keeps the order of turns sent while a waiting session starts Claude Code, so results close the right runs', async () => {
+    // Fetching the environment takes a while, as a re-minted token does.
+    let release!: () => void;
+    const fetched = new Promise<void>(resolve => (release = resolve));
+    let calls = 0;
+    const env = async () => {
+      calls += 1;
+      if (calls > 1) await fetched;
+      return { HOME: '/home/u' };
+    };
+    const cap = { value: 1 as number | undefined };
+    const { open, limiter } = slotSetup(cap, env);
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    await vi.waitFor(() => expect(a.fake.calls).toHaveLength(1));
+    const one = await b.session.send({ text: 'one' });
+    const two = await b.session.send({ text: 'two' });
+    a.fake.emit(result());
+    // b is let in and fetches its environment; a turn sent meanwhile must not overtake the two held.
+    await vi.waitFor(() => expect(limiter.snapshot().waiting).toEqual([]));
+    await vi.waitFor(() => expect(calls).toBe(2));
+    // Sent while Claude Code is still starting: it waits for the start, behind the two held turns.
+    const sending = b.session.send({ text: 'three' });
+    release();
+    const three = await sending;
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    for (let turn = 0; turn < 3; turn++) {
+      b.fake.emit(result());
+      await vi.waitFor(() => expect(b.events.filter(e => e.type === 'run.ended')).toHaveLength(turn + 1));
+    }
+    expect(b.events.filter(e => e.type === 'run.ended').map(e => (e as { runId: string }).runId)).toEqual([
+      one.runId,
+      two.runId,
+      three.runId,
+    ]);
+    // Claude Code read them in the order they were sent: each result closes the turn it answers.
+    expect(b.fake.received).toEqual(['one', 'two', 'three']);
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it('ends a waiting turn as aborted when the session closes (shutdown, host lease lost), freeing its place', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    const { runId } = await b.session.send({ text: 'waits' });
+    await b.session.close('The server restarted.');
+    expect(b.events.find(e => e.type === 'run.ended')).toEqual({ type: 'run.ended', runId, reason: 'aborted' });
+    expect(limiter.snapshot()).toMatchObject({ running: 1, waiting: [] });
+    a.fake.emit(result());
+    await settled(a.events);
+    expect(b.fake.calls).toHaveLength(0);
+    await a.session.close();
+  });
+
+  it('ends a waiting turn as an error when its Claude Code then cannot start, and lets the next in', async () => {
+    // The next environment read fails once, as a token refresh can.
+    let fail = false;
+    const env = async () => {
+      if (fail) {
+        fail = false;
+        throw new Error('token refresh failed');
+      }
+      return { HOME: '/home/u' };
+    };
+    const { limiter, open } = slotSetup({ value: 1 }, env);
+    const a = open('a');
+    const b = open('b');
+    const c = open('c');
+    await a.session.send({ text: 'first' });
+    await vi.waitFor(() => expect(a.fake.calls).toHaveLength(1));
+    const { runId } = await b.session.send({ text: 'cannot start' });
+    await c.session.send({ text: 'next' });
+    fail = true;
+    a.fake.emit(result());
+    await vi.waitFor(() =>
+      expect(b.events.find(e => e.type === 'run.ended')).toMatchObject({ runId, reason: 'error' }),
+    );
+    await vi.waitFor(() => expect(c.fake.calls).toHaveLength(1));
+    expect(limiter.snapshot().waiting).toEqual([]);
+    await Promise.all([a.session.close(), b.session.close(), c.session.close()]);
+  });
+
+  it('counts a turn again only once every call it parked on a person was answered', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    await a.session.send({ text: 'asks twice' });
+    limiter.park('a');
+    limiter.park('a');
+    limiter.unpark('a');
+    expect(limiter.snapshot().running).toBe(0);
+    limiter.unpark('a');
+    expect(limiter.snapshot().running).toBe(1);
+    await a.session.close();
   });
 });

@@ -257,6 +257,26 @@ export const runQueueResponseSchema = z.object({
   /** Every waiting run, though `queued` lists at most the oldest 50. */
   queuedCount: z.number().int(),
   queued: z.array(runQueueEntrySchema.extend({ position: z.number().int().positive() })),
+  /**
+   * fork(claude-agent): Claude Agent sessions of this project whose turn waits for a slot under the
+   * operator's cap (Settings → Manage Factory), next first. `null` when this server runs no Claude
+   * Agent sessions; `cap` is `null` when there is no cap.
+   */
+  claudeAgent: z
+    .object({
+      cap: z.number().int().nullable(),
+      running: z.number().int(),
+      waiting: z.array(
+        z.object({
+          sessionId: z.string(),
+          position: z.number().int().positive(),
+          priority: z.enum(['person', 'factory']),
+          since: z.string(),
+        }),
+      ),
+    })
+    .nullable()
+    .optional(),
 });
 export type RunQueueResponse = z.infer<typeof runQueueResponseSchema>;
 

@@ -161,8 +161,21 @@ export function BoardContent({
     for (const run of runQueue.data?.queued ?? []) {
       if (run.workItem && !positions.has(run.workItem.id)) positions.set(run.workItem.id, run.position);
     }
+    // fork(claude-agent): a card whose Claude Agent session waits for a slot under the server's cap.
+    const waiting = new Map(
+      (runQueue.data?.claudeAgent?.waiting ?? []).map(entry => [entry.sessionId, entry.position]),
+    );
+    if (waiting.size) {
+      for (const card of cards) {
+        if (positions.has(card.id)) continue;
+        const position = Object.values(card.sessions ?? {})
+          .map(ref => waiting.get(ref.sessionId))
+          .find(found => found !== undefined);
+        if (position !== undefined) positions.set(card.id, position);
+      }
+    }
     return positions;
-  }, [runQueue.data]);
+  }, [runQueue.data, cards]);
   const composer = useBoardComposer(factoryProjectId, definition, currentUserId);
   const filterOptions = useWorkItemFilterOptionsQuery(factoryProjectId).data;
   const activity = useRecentAuditEvents(

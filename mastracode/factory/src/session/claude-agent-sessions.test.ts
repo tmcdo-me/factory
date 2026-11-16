@@ -22,6 +22,7 @@ import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
+import { ClaudeAgentConcurrency } from './claude-agent-concurrency.js';
 import {
   ClaudeAgentSessions,
   claudeAgentBackgroundMaxMs,
@@ -1769,5 +1770,111 @@ describe('claudeAgentWaitingJudge', () => {
     const judge = claudeAgentWaitingJudge({ home, hostEnv: { HOME: '/home/u' }, query, log });
     for (let i = 0; i < 3; i++) await judge({ objective: 'x', text: 'y?' });
     expect(log).toHaveBeenCalledTimes(2);
+  });
+});
+
+// fork(claude-agent): the operator's cap on Claude Agent turns at once (spec slice 13).
+describe('ClaudeAgentSessions under a concurrency cap', () => {
+  /** A Claude Code whose turns stay open until the test finishes them, per session. */
+  function heldQuery() {
+    const finish = new Map<string, Array<() => void>>();
+    const started: string[] = [];
+    const fn: QueryFn = ({ prompt, options }) => {
+      const cwd = String((options as { cwd?: string }).cwd);
+      const iterator = (async function* () {
+        for await (const _message of prompt) {
+          started.push(cwd);
+          yield { type: 'system', subtype: 'init', session_id: `claude-${cwd}`, uuid: 'u' } as never;
+          await new Promise<void>(resolve => finish.set(cwd, [...(finish.get(cwd) ?? []), resolve]));
+          yield { type: 'result', subtype: 'success', session_id: 'c', uuid: 'u', usage: {} } as never;
+        }
+      })();
+      // Closing ends whatever turn it is in, as stopping Claude Code does.
+      const close = () => {
+        for (const resolve of finish.get(cwd)?.splice(0) ?? []) resolve();
+      };
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close }) as never;
+    };
+    return {
+      fn,
+      started,
+      finish: (sessionId: string) => finish.get(`/sandboxes/${sessionId}/repo`)?.shift()?.(),
+    };
+  }
+
+  function capSetup(cap: string) {
+    const log = new InMemoryEventLog();
+    const fake = heldQuery();
+    const concurrency = new ClaudeAgentConcurrency({ env: { FACTORY_CLAUDE_AGENT_MAX_CONCURRENT: cap } });
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('busy'), claude('board'), claude('chat')]),
+      workspace: async sessionId => ({ cwd: `/sandboxes/${sessionId}/repo`, env: {} }),
+      query: fake.fn,
+      turns: concurrency.limiter,
+    });
+    onTestFinished(() => sessions.shutdown());
+    // Stored as the session publishes them, so read once they landed.
+    const queuedNotices = async (sessionId: string) => {
+      let found: Awaited<ReturnType<typeof log.list>> = [];
+      await vi.waitFor(async () => {
+        found = (await log.list(sessionId)).filter(e => e.event.type === 'notice' && e.event.tag === 'turn-queued');
+        expect(found.length).toBeGreaterThan(0);
+      });
+      return found;
+    };
+    return { log, fake, concurrency, sessions, queuedNotices };
+  }
+
+  const owner = () => hostContext('user-a', false);
+
+  it('lets a board run wait its turn behind a running session, never failing it, and starts it once a slot frees', async () => {
+    const { fake, concurrency, sessions, queuedNotices } = capSetup('1');
+    await sessions.commands().send('busy', { text: 'a long task' }, { context: hostContext('user-a') });
+    await vi.waitFor(() => expect(fake.started).toHaveLength(1));
+
+    // The kickoff is accepted at once: the dispatcher watches the run while it waits.
+    const runs = sessions.runtimeSessions();
+    const { ended } = await runs.kickoff('board', { runId: 'decision-1', prompt: 'Build it.' }, owner());
+    expect(runs.isRunning('board')).toBe(true);
+    expect(await queuedNotices('board')).toHaveLength(1);
+    expect(concurrency.limiter.snapshot().waiting).toMatchObject([{ sessionId: 'board', priority: 'factory' }]);
+    expect(fake.started).toEqual(['/sandboxes/busy/repo']);
+
+    fake.finish('busy');
+    await vi.waitFor(() => expect(fake.started).toEqual(['/sandboxes/busy/repo', '/sandboxes/board/repo']));
+    fake.finish('board');
+    expect(await ended).toMatchObject({ reason: 'complete' });
+    expect(concurrency.state()).toMatchObject({ running: 0, waiting: 0 });
+  });
+
+  it('ends a board run still waiting for a slot as aborted when this process stops its sessions', async () => {
+    const { fake, concurrency, sessions } = capSetup('1');
+    await sessions.commands().send('busy', { text: 'a long task' }, { context: hostContext('user-a') });
+    await vi.waitFor(() => expect(fake.started).toHaveLength(1));
+    const { ended } = await sessions
+      .runtimeSessions()
+      .kickoff('board', { runId: 'decision-1', prompt: 'Build it.' }, owner());
+    await sessions.shutdown();
+    expect(await ended).toMatchObject({ reason: 'aborted' });
+    expect(fake.started).toEqual(['/sandboxes/busy/repo']);
+    expect(concurrency.state()).toMatchObject({ running: 0, waiting: 0 });
+  });
+
+  it("puts a person's message to an idle session ahead of a waiting board run, with a notice in their session", async () => {
+    const { fake, concurrency, sessions, queuedNotices } = capSetup('1');
+    await sessions.commands().send('busy', { text: 'a long task' }, { context: hostContext('user-a') });
+    await vi.waitFor(() => expect(fake.started).toHaveLength(1));
+    await sessions.runtimeSessions().kickoff('board', { runId: 'decision-1', prompt: 'Build it.' }, owner());
+    expect(
+      await sessions.commands().send('chat', { text: 'quick question' }, { context: hostContext('user-a') }),
+    ).toEqual({ ok: true });
+    const [notice] = await queuedNotices('chat');
+    expect(notice?.event).toMatchObject({ text: expect.stringContaining('This turn starts as soon as one ends') });
+    expect(concurrency.limiter.snapshot().waiting.map(waiter => waiter.sessionId)).toEqual(['chat', 'board']);
+
+    fake.finish('busy');
+    await vi.waitFor(() => expect(fake.started.at(-1)).toBe('/sandboxes/chat/repo'));
+    expect(fake.started).not.toContain('/sandboxes/board/repo');
   });
 });

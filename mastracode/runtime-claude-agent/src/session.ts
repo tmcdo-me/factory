@@ -116,9 +116,32 @@ export interface ClaudeAgentSessionOptions {
   spawnClaudeCodeProcess?: Options['spawnClaudeCodeProcess'];
   /** An installed `claude` instead of the SDK's bundled one. */
   pathToClaudeCodeExecutable?: string;
+  /**
+   * Where a turn waits for its turn when the host caps how many Claude Code turns run at once. A
+   * slot is taken when the session goes from idle to running and held until its last open run ends;
+   * turns sent meanwhile ride in the same slot (Claude Code answers them in order). While the slot
+   * is not yet free, the turn is open (`running`) but not sent to Claude Code, and the transcript
+   * says it waits.
+   */
+  turnSlots?: ClaudeTurnSlots;
   /** Injected for tests; defaults to the SDK's `query`. */
   query?: QueryFn;
   newId?: () => string;
+}
+
+/** Hands out the slots turns run in (see `turnSlots`). */
+export interface ClaudeTurnSlots {
+  take(turn: { runId: string }): ClaudeTurnSlot;
+}
+
+/** A slot one session's turns hold while Claude Code answers them. */
+export interface ClaudeTurnSlot {
+  /** Resolves once the turn may go to Claude Code (at once when a slot was free). */
+  readonly ready: Promise<void>;
+  /** Set when the turn has to wait: what the transcript says meanwhile. */
+  readonly waiting?: string;
+  /** Give the slot back, or stop waiting for it. Idempotent. */
+  release(): void;
 }
 
 export interface ClaudeAgentRuntimeState {
@@ -210,6 +233,10 @@ export class ClaudeAgentSession {
   /** Since when background work alone has kept Claude Code running (no run open). */
   #backgroundIdleSince: number | undefined;
   #capTimer: ReturnType<typeof setTimeout> | undefined;
+  /** The turn slot the open runs hold, or wait for (`turnSlots`). */
+  #slot: ClaudeTurnSlot | undefined;
+  /** Turns waiting for the slot, in the order they were sent; set only while the slot is not free. */
+  #held: (() => Promise<void>)[] | undefined;
 
   constructor(options: ClaudeAgentSessionOptions) {
     this.id = options.sessionId;
@@ -258,6 +285,35 @@ export class ClaudeAgentSession {
     this.#clearIdle();
     // A turn: the background-work clock starts again when it ends.
     this.#backgroundIdleSince = undefined;
+    // fork(claude-agent): the first turn of an idle session takes a slot; it may have to wait for one.
+    if (this.#runs.length === 1 && !this.#slot && this.#options.turnSlots) {
+      const slot = this.#options.turnSlots.take({ runId });
+      this.#slot = slot;
+      if (slot.waiting !== undefined) {
+        this.#options.emit({
+          type: 'notice',
+          noticeId: this.#newId(),
+          kind: 'system-reminder',
+          tag: 'turn-queued',
+          text: slot.waiting,
+          runId,
+        });
+        this.#held = [];
+        void slot.ready.then(() => this.#admit(slot));
+      }
+    }
+    if (this.#held) {
+      // Sent once the slot is free, in order; a failure to start then ends the turn as an error.
+      this.#held.push(() => this.#deliver(input, runId).catch(() => undefined));
+      return { runId };
+    }
+    await this.#deliver(input, runId);
+    return { runId };
+  }
+
+  /** Hand a turn to Claude Code, starting it first if it isn't running. Ends the turn as an error when it can't start. */
+  async #deliver(input: ClaudeTurnInput, runId: string): Promise<void> {
+    if (!this.#runs.includes(runId)) return;
     const env = this.#options.env;
     if (!this.#query && !this.#stopping && typeof env !== 'function') this.#start(env);
     else if (!this.#query || this.#starting) {
@@ -269,6 +325,7 @@ export class ClaudeAgentSession {
         this.#runs.splice(this.#runs.indexOf(runId), 1);
         this.#options.emit({ type: 'error', message, retryable: true, runId });
         this.#options.emit({ type: 'run.ended', runId, reason: 'error', error: message });
+        if (!this.#runs.length) this.#releaseSlot();
         throw error;
       }
     }
@@ -277,10 +334,33 @@ export class ClaudeAgentSession {
       message: { role: 'user', content: userContent({ ...input, text: turnText(input) }) },
       parent_tool_use_id: null,
     } as SDKUserMessage);
-    return { runId };
+  }
+
+  /** fork(claude-agent): the slot the held turns waited for is free: send them, in order. */
+  async #admit(slot: ClaudeTurnSlot): Promise<void> {
+    // Given back meanwhile (the turns were stopped, the session closed).
+    if (this.#slot !== slot || !this.#held) return;
+    const held = this.#held;
+    this.#held = undefined;
+    // All started now, in the order they were sent: each takes its place in Claude Code's input (or in
+    // the line for its start) before a turn sent from here on can, so results close the right runs.
+    await Promise.all(held.map(deliver => deliver()));
+  }
+
+  /** fork(claude-agent): no run is open any more: give the slot back. */
+  #releaseSlot(): void {
+    const slot = this.#slot;
+    this.#slot = undefined;
+    this.#held = undefined;
+    slot?.release();
   }
 
   async abort(): Promise<void> {
+    // fork(claude-agent): turns still waiting for a slot never reached Claude Code: they just end.
+    if (this.#held) {
+      this.#endOpenRuns('aborted', 'Stopped before it started');
+      return;
+    }
     if (!this.#query || !this.#runs.length) return;
     this.#aborting = true;
     await this.#query.interrupt();
@@ -566,7 +646,10 @@ export class ClaudeAgentSession {
     if (message.type !== 'result' || !runId) return;
     this.#runs.shift();
     const reason: RunEndReason = this.#aborting ? 'aborted' : message.subtype === 'success' ? 'complete' : 'error';
-    if (!this.#runs.length) this.#aborting = false;
+    if (!this.#runs.length) {
+      this.#aborting = false;
+      this.#releaseSlot();
+    }
     this.#options.emit({
       type: 'run.ended',
       runId,
@@ -611,10 +694,12 @@ export class ClaudeAgentSession {
   }
 
   #endOpenRuns(reason: RunEndReason, error: string): void {
-    for (const runId of this.#runs.splice(0)) {
+    const ended = this.#runs.splice(0);
+    this.#aborting = false;
+    this.#releaseSlot();
+    for (const runId of ended) {
       this.#options.emit({ type: 'run.ended', runId, reason, ...(reason === 'error' ? { error } : {}) });
     }
-    this.#aborting = false;
   }
 }
 

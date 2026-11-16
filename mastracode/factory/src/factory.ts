@@ -158,6 +158,7 @@ import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
+import { ClaudeAgentConcurrency } from './session/claude-agent-concurrency.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
 import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-agent-host.js';
 import type { ClaudeAgentHost } from './session/claude-agent-host.js';
@@ -630,6 +631,7 @@ export class MastraFactory {
     | undefined;
   /** fork(claude-agent): live Claude Agent sessions. */
   #claudeAgentSessions: ClaudeAgentSessions | undefined;
+  #claudeAgentConcurrency: ClaudeAgentConcurrency | undefined; // fork(claude-agent)
   /** fork(claude-agent): whether this process runs Claude Agent sessions. */
   #claudeAgentHost: ClaudeAgentHost | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
@@ -1900,8 +1902,33 @@ export class MastraFactory {
         "[factory] The agent-messages storage domain isn't ready: messages held for Claude Agent sessions are kept in memory and lost on restart.",
       );
     }
+    // fork(claude-agent): how many Claude Agent turns run at once (Settings, else FACTORY_CLAUDE_AGENT_MAX_CONCURRENT).
+    const claudeAgentConcurrency = new ClaudeAgentConcurrency({
+      settings: {
+        getSetting: async key => {
+          await agentSessionsStorage.ensureReady();
+          return agentSessionsStorage.getSetting(key);
+        },
+        setSetting: async (key, value) => {
+          await agentSessionsStorage.ensureReady();
+          await agentSessionsStorage.setSetting(key, value);
+        },
+      },
+      // A session starting or stopping to wait shows on its card: its board re-reads the run queue.
+      onChanged: sessionId =>
+        void sourceControlSessions
+          .getBySessionId(sessionId)
+          .then(row => {
+            if (row?.factoryProjectId)
+              touchFeed(eventBus, { orgId: row.orgId, factoryProjectId: row.factoryProjectId });
+          })
+          .catch(() => undefined),
+    });
+    void claudeAgentConcurrency.start();
+    this.#claudeAgentConcurrency = claudeAgentConcurrency;
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
+      turns: claudeAgentConcurrency.limiter,
       sessions: agentSessionsStorage,
       workspace: claudeAgentWorkspace,
       home: claudeAgentHome(),
@@ -2417,6 +2444,7 @@ export class MastraFactory {
               prepareWorkspace: (sessionId, requestContext) => claudeAgentWorkspace(sessionId, requestContext),
             }),
             runSlots: () => this.#dispatcher?.runSlots(),
+            claudeAgentSlots: () => claudeAgentConcurrency.limiter.snapshot(), // fork(claude-agent)
             onFactoryRuntime: ({ transitionService: runtimeTransitionService, startCoordinator, prepareBinding }) => {
               this.#startCoordinator = startCoordinator;
               this.#dispatcher ??= new FactoryDecisionDispatcher({
@@ -2518,6 +2546,7 @@ export class MastraFactory {
               if (!controller) throw new Error('Factory has not started yet');
               return historyPredatesEventLog({ conversation: controller, events: agentEventHub.log, sessionId });
             },
+            claudeAgentConcurrency,
           }),
           // fork(claude-agent): Factory's runtime-neutral session API.
           ...buildAgentSessionRoutes({
@@ -2881,6 +2910,7 @@ export class MastraFactory {
     const shutdownPromise = (async () => {
       // fork(claude-agent): stop live Claude Code processes.
       await this.#claudeAgentSessions?.shutdown().catch(() => undefined);
+      this.#claudeAgentConcurrency?.stop();
       await this.#claudeAgentHost?.release().catch(() => undefined);
       const unsubscribeDispatchWakes = this.#unsubscribeDispatchWakes;
       this.#unsubscribeDispatchWakes = undefined;

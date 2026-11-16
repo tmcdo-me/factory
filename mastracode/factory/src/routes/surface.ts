@@ -170,6 +170,8 @@ export interface FactoryApiRoutesDeps {
   moveThread?: (input: { threadId: string; resourceId: string }) => Promise<unknown>;
   /** This process's dispatcher run slots, for the run queue; `undefined` until the dispatcher exists. */
   runSlots?: () => { inUse: number; cap: number } | undefined;
+  /** fork(claude-agent): Claude Agent sessions waiting for a slot under the operator's cap, for the run queue. */
+  claudeAgentSlots?: () => import('./run-queue.js').ClaudeAgentSlotsSnapshot | undefined;
   /** fork(claude-agent): which agent runtime a run's session uses; without it, Mastra Code. */
   startRuntimes?: FactoryStartRuntimes;
   /** fork(claude-agent): sessions on another agent runtime; integrations deliver their events through it. */
@@ -1047,6 +1049,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           startCoordinator,
           liveSessions: deps.liveSessions,
           runSlots: deps.runSlots,
+          ...(deps.claudeAgentSlots ? { claudeAgentSlots: deps.claudeAgentSlots } : {}), // fork(claude-agent)
         }).routes()
       : []),
     ...(deps.factoryReady && deps.storedBoards

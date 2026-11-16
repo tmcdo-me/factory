@@ -4,6 +4,7 @@ import type { CollectionSchema } from '@mastra/core/storage';
 
 const SESSIONS = 'factory_agent_sessions';
 const DEFAULTS = 'factory_agent_runtime_defaults';
+const SETTINGS = 'factory_agent_runtime_settings';
 
 export const AGENT_SESSIONS_SCHEMA: CollectionSchema = {
   name: SESSIONS,
@@ -29,6 +30,18 @@ export const AGENT_RUNTIME_DEFAULTS_SCHEMA: CollectionSchema = {
   uniqueIndexes: [{ name: 'factory_agent_runtime_defaults_project_key', columns: ['org_id', 'project_id'] }],
 };
 
+/** Deployment-wide runtime settings (the Claude Agent concurrency cap), one value per key. */
+export const AGENT_RUNTIME_SETTINGS_SCHEMA: CollectionSchema = {
+  name: SETTINGS,
+  columns: {
+    id: { type: 'uuid-pk' },
+    key: { type: 'text' },
+    value: { type: 'json', nullable: true },
+    updated_at: { type: 'timestamp' },
+  },
+  uniqueIndexes: [{ name: 'factory_agent_runtime_settings_key', columns: ['key'] }],
+};
+
 export interface AgentSessionRecord {
   sessionId: string;
   runtimeId: string;
@@ -45,6 +58,13 @@ interface SessionRow extends Record<string, unknown> {
   model_id: string | null;
   runtime_state: unknown;
   created_at: Date;
+  updated_at: Date;
+}
+
+interface SettingRow extends Record<string, unknown> {
+  id: string;
+  key: string;
+  value: unknown;
   updated_at: Date;
 }
 
@@ -72,12 +92,13 @@ export class AgentSessionsStorage extends FactoryStorageDomain {
   }
 
   async init(): Promise<void> {
-    await this.ensureCollections([AGENT_SESSIONS_SCHEMA, AGENT_RUNTIME_DEFAULTS_SCHEMA]);
+    await this.ensureCollections([AGENT_SESSIONS_SCHEMA, AGENT_RUNTIME_DEFAULTS_SCHEMA, AGENT_RUNTIME_SETTINGS_SCHEMA]);
   }
 
   async dangerouslyClearAll(): Promise<void> {
     await this.ops.deleteMany(SESSIONS, {});
     await this.ops.deleteMany(DEFAULTS, {});
+    await this.ops.deleteMany(SETTINGS, {});
   }
 
   async get(sessionId: string): Promise<AgentSessionRecord | undefined> {
@@ -131,5 +152,16 @@ export class AgentSessionsStorage extends FactoryStorageDomain {
       runtime_id: runtimeId,
       updated_at: new Date(),
     });
+  }
+
+  /** A deployment-wide runtime setting, or `undefined` when it was never set. */
+  async getSetting<T = unknown>(key: string): Promise<T | undefined> {
+    const row = await this.ops.findOne<SettingRow>(SETTINGS, { key });
+    return row?.value == null ? undefined : (row.value as T);
+  }
+
+  /** Set a deployment-wide runtime setting; `null` clears it (back to the default). */
+  async setSetting(key: string, value: unknown): Promise<void> {
+    await this.ops.upsertOne<SettingRow>(SETTINGS, ['key'], { key, value, updated_at: new Date() });
   }
 }

@@ -46,4 +46,16 @@ describe('AgentSessionsStorage', () => {
     expect(await sessions.getProjectDefault(scope)).toBe('mastra-code');
     expect(await sessions.getProjectDefault({ orgId: 'o', projectId: 'other' })).toBeUndefined();
   });
+
+  it('keeps one value per deployment-wide setting, and clears it with null', async () => {
+    const sessions = await setup();
+    expect(await sessions.getSetting('claude-agent.maxConcurrent')).toBeUndefined();
+    await sessions.setSetting('claude-agent.maxConcurrent', 2);
+    await sessions.setSetting('claude-agent.maxConcurrent', 3);
+    expect(await sessions.getSetting('claude-agent.maxConcurrent')).toBe(3);
+    await sessions.setSetting('claude-agent.maxConcurrent', 0);
+    expect(await sessions.getSetting('claude-agent.maxConcurrent')).toBe(0);
+    await sessions.setSetting('claude-agent.maxConcurrent', null);
+    expect(await sessions.getSetting('claude-agent.maxConcurrent')).toBeUndefined();
+  });
 });

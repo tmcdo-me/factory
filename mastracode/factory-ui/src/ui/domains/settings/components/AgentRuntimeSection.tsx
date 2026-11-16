@@ -8,6 +8,7 @@ import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useApiConfig } from '../../../../api/config';
 import { useProjectRuntime, useRuntimeCatalog } from '../../chat/hooks/useSessionRuntime';
 import { runtimeKeys, runtimeLabel, setProjectRuntime } from '../../chat/services/factoryRuntimes';
+import { ClaudeAgentConcurrencyRow } from './ClaudeAgentConcurrencyRow';
 import { SettingsSubsection } from './SettingsSubsection';
 
 /**
@@ -65,6 +66,7 @@ export function AgentRuntimeSection({ factoryId }: { factoryId: string }) {
             </SelectContent>
           </Select>
         </SettingsRow>
+        <ClaudeAgentConcurrencyRow />
       </SettingsContainer>
     </SettingsSubsection>
   );
