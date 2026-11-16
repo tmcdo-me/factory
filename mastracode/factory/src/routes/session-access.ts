@@ -55,6 +55,8 @@ const OM_CONFIG_PATH = /^\/web\/config\/om(\/|$)/;
 const MEMORY_PATH = /^\/api\/memory(\/|$)/;
 const ACTIVE_RUNS_PATH = /\/agent-controller\/[^/]+\/active-runs\/?$/;
 const SWITCH_MODEL_PATH = /\/agent-controller\/[^/]+\/sessions\/[^/]+\/model\/?$/;
+// fork(claude-agent): Factory's own session API switches the model with PUT.
+const FACTORY_MODEL_PATH = /^\/web\/factory\/sessions\/[^/]+\/model\/?$/;
 const SET_STATE_PATH = /\/agent-controller\/[^/]+\/sessions\/[^/]+\/state\/?$/;
 
 /** A form field as the server adapter reads it: JSON when it parses, else the raw text. */
@@ -92,6 +94,7 @@ async function bodyField(c: Context, field: string): Promise<string | undefined>
 async function switchesModel(c: Context): Promise<boolean> {
   const { method, path } = c.req;
   if (method === 'POST' && SWITCH_MODEL_PATH.test(path)) return true;
+  if (method === 'PUT' && FACTORY_MODEL_PATH.test(path)) return true;
   if (method !== 'PUT' || !SET_STATE_PATH.test(path)) return false;
   const state = await bodyValue(c, 'state');
   return typeof state === 'object' && state !== null && 'thinkingLevel' in state;

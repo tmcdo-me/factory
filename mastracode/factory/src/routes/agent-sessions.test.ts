@@ -1,6 +1,6 @@
 // fork(claude-agent)
 import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
-import type { EventEnvelope, Transcript } from '@factory/agent-runtime';
+import type { CommandResult, EventEnvelope, SessionCommands, Transcript } from '@factory/agent-runtime';
 import { Hono } from 'hono';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -9,19 +9,48 @@ import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 
 const alice = { workosId: 'user-alice', organizationId: 'org-1' };
 
-function buildApp(options: { user?: typeof alice; authEnabled?: boolean } = {}) {
+function buildApp(options: { user?: typeof alice; authEnabled?: boolean; commands?: SessionCommands } = {}) {
   const hub = new SessionEventHub(new InMemoryEventLog());
   const app = new Hono();
   app.use('*', async (c, next) => {
     if (options.user) c.set('factoryAuthUser' as never, options.user as never);
+    c.set('requestContext' as never, 'host-request-context' as never);
     await next();
   });
   mountApiRoutes(
     app as never,
-    buildAgentSessionRoutes({ auth: fakeRouteAuth({ enabled: options.authEnabled }), events: hub }),
+    buildAgentSessionRoutes({
+      auth: fakeRouteAuth({ enabled: options.authEnabled }),
+      events: hub,
+      ...(options.commands ? { commands: options.commands } : {}),
+    }),
   );
   return { app, hub };
 }
+
+/** Records every command; answers with `result`. */
+function fakeCommands(result: CommandResult = { ok: true }) {
+  const calls: unknown[][] = [];
+  const record =
+    (name: string) =>
+    async (...args: unknown[]) => {
+      calls.push([name, ...args]);
+      return result;
+    };
+  const commands: SessionCommands = {
+    send: record('send'),
+    abort: record('abort'),
+    answer: record('answer'),
+    setModel: record('setModel'),
+  };
+  return { commands, calls };
+}
+
+const json = (body: unknown, method = 'POST') => ({
+  method,
+  headers: { 'content-type': 'application/json' },
+  body: JSON.stringify(body),
+});
 
 /** Reads SSE frames incrementally; `stop()` cancels the body, which aborts the stream server-side. */
 function openStream(response: Response) {
@@ -144,5 +173,85 @@ describe('Factory session transcript', () => {
   it('returns an empty transcript for a session with no events', async () => {
     const res = await buildApp({ user: alice }).app.request('/web/factory/sessions/none/transcript');
     expect(await res.json()).toEqual({ sessionId: 'none', lastSeq: 0, items: [], tasks: [] });
+  });
+});
+
+describe('Factory session commands', () => {
+  it('passes parsed commands and the host request context to the runtime', async () => {
+    const { commands, calls } = fakeCommands();
+    const { app } = buildApp({ user: alice, commands });
+    const ctx = { context: 'host-request-context' };
+
+    expect(
+      (
+        await app.request(
+          '/web/factory/sessions/s1/messages',
+          json({ text: 'Hi', files: [{ data: 'aGk=', mediaType: 'text/plain' }] }),
+        )
+      ).status,
+    ).toBe(200);
+    expect((await app.request('/web/factory/sessions/s1/abort', { method: 'POST' })).status).toBe(200);
+    const answer = { callId: 'c1', response: { kind: 'plan_approval', action: 'approved', plan: { path: 'p.md' } } };
+    expect((await app.request('/web/factory/sessions/s1/interactions', json(answer))).status).toBe(200);
+    expect(
+      (await app.request('/web/factory/sessions/s1/model', json({ modelId: 'm', thinkingLevel: 'high' }, 'PUT')))
+        .status,
+    ).toBe(200);
+
+    expect(calls).toEqual([
+      ['send', 's1', { text: 'Hi', files: [{ data: 'aGk=', mediaType: 'text/plain' }] }, ctx],
+      ['abort', 's1', ctx],
+      ['answer', 's1', { interactionId: undefined, callId: 'c1' }, answer.response, ctx],
+      ['setModel', 's1', { modelId: 'm', thinkingLevel: 'high' }, ctx],
+    ]);
+  });
+
+  it('rejects malformed bodies before reaching the runtime', async () => {
+    const { commands, calls } = fakeCommands();
+    const { app } = buildApp({ user: alice, commands });
+    expect((await app.request('/web/factory/sessions/s1/messages', json({ text: '' }))).status).toBe(400);
+    expect(
+      (
+        await app.request(
+          '/web/factory/sessions/s1/interactions',
+          json({ response: { kind: 'question', answer: 'x' } }),
+        )
+      ).status,
+    ).toBe(400);
+    expect(
+      (await app.request('/web/factory/sessions/s1/interactions', json({ callId: 'c', response: { kind: 'nope' } })))
+        .status,
+    ).toBe(400);
+    expect(
+      (await app.request('/web/factory/sessions/s1/model', json({ modelId: 'm', thinkingLevel: 'ultra' }, 'PUT')))
+        .status,
+    ).toBe(400);
+    expect(calls).toEqual([]);
+  });
+
+  it.each([
+    [{ ok: false, reason: 'session_not_found' } as const, 404],
+    [{ ok: false, reason: 'not_pending', message: 'stale_tool_call' } as const, 409],
+    [{ ok: false, reason: 'invalid' } as const, 400],
+  ])('maps a runtime refusal %o to HTTP %i', async (result, status) => {
+    const { commands } = fakeCommands(result);
+    const res = await buildApp({ user: alice, commands }).app.request('/web/factory/sessions/s1/abort', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(status);
+    expect(await res.json()).toEqual(result);
+  });
+
+  it('needs a signed-in user and configured commands', async () => {
+    expect(
+      (
+        await buildApp({ commands: fakeCommands().commands }).app.request('/web/factory/sessions/s1/abort', {
+          method: 'POST',
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await buildApp({ user: alice }).app.request('/web/factory/sessions/s1/abort', { method: 'POST' })).status,
+    ).toBe(503);
   });
 });

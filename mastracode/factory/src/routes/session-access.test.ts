@@ -212,6 +212,15 @@ describe('createSessionAccessGuard', () => {
     expect((await buildApp().request(path(PRIVATE_ID))).status).toBe(404); // signed out
   });
 
+  // fork(claude-agent)
+  it("403s a teammate switching a shared session's model through Factory's session API", async () => {
+    const path = `/web/factory/sessions/${SHARED_ID}/model`;
+    expect((await put(teammate, path, { modelId: 'm' })).status).toBe(403);
+    expect((await put(owner, path, { modelId: 'm' })).status).toBe(200);
+    expect((await post(teammate, `/web/factory/sessions/${SHARED_ID}/messages`, { text: 'hi' })).status).toBe(200);
+    expect((await post(teammate, `/web/factory/sessions/${PRIVATE_ID}/messages`, { text: 'hi' })).status).toBe(404);
+  });
+
   it('passes through a session on its own id that no Factory session row claims', async () => {
     expect((await teammate.request(sessionPath('teammate-scratch', 'stream'))).status).toBe(200);
   });

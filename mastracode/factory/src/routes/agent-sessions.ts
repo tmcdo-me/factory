@@ -11,11 +11,12 @@
  * the handlers only require a signed-in user when auth is on.
  */
 import { buildTranscript } from '@factory/agent-runtime';
-import type { SessionEventHub } from '@factory/agent-runtime';
+import type { CommandResult, SessionCommands, SessionEventHub } from '@factory/agent-runtime';
 import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
+import { z } from 'zod';
 
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
@@ -29,6 +30,51 @@ const TRANSCRIPT_PAGE = 2_000;
 export interface AgentSessionRoutesDependencies {
   auth: RouteAuth;
   events: SessionEventHub;
+  /** Write commands; the read routes work without them. */
+  commands?: SessionCommands;
+}
+
+const sendBody = z.object({
+  text: z.string().min(1),
+  files: z
+    .array(z.object({ data: z.string().min(1), mediaType: z.string().min(1), filename: z.string().optional() }))
+    .optional(),
+});
+
+const interactionResponse = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('question'), answer: z.union([z.string(), z.array(z.string())]) }),
+  z.object({
+    kind: z.literal('plan_approval'),
+    action: z.enum(['approved', 'rejected']),
+    feedback: z.string().optional(),
+    plan: z
+      .object({ path: z.string().optional(), title: z.string().optional(), content: z.string().optional() })
+      .optional(),
+  }),
+  z.object({ kind: z.literal('tool_approval'), approved: z.boolean(), reason: z.string().optional() }),
+]);
+
+const answerBody = z
+  .object({
+    interactionId: z.string().min(1).optional(),
+    callId: z.string().min(1).optional(),
+    response: interactionResponse,
+  })
+  .refine(body => body.interactionId || body.callId, { message: 'Name interactionId or callId' });
+
+const modelBody = z.object({
+  modelId: z.string().min(1),
+  thinkingLevel: z.enum(['off', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
+});
+
+const FAILURE_STATUS = { session_not_found: 404, not_pending: 409, invalid: 400 } as const;
+
+function respond(c: Context, result: CommandResult) {
+  if (result.ok) return c.json({ ok: true });
+  return c.json(
+    { ok: false, reason: result.reason, ...(result.message ? { message: result.message } : {}) },
+    FAILURE_STATUS[result.reason],
+  );
 }
 
 function afterSeqOf(c: Context): number | 'invalid' {
@@ -38,14 +84,53 @@ function afterSeqOf(c: Context): number | 'invalid' {
   return Number.isInteger(value) && value >= 0 ? value : 'invalid';
 }
 
-export function buildAgentSessionRoutes({ auth, events }: AgentSessionRoutesDependencies): ApiRoute[] {
+export function buildAgentSessionRoutes({ auth, events, commands }: AgentSessionRoutesDependencies): ApiRoute[] {
   const requireViewer = async (c: Context) => {
     if (!auth.enabled()) return true;
     await auth.ensureUser(c);
     return Boolean(auth.tenant(c));
   };
 
+  /** A write route: signed-in viewer, parsed body, the host's request context passed through. */
+  const command = <S extends z.ZodType>(
+    path: string,
+    method: 'POST' | 'PUT',
+    schema: S | undefined,
+    run: (commands: SessionCommands, sessionId: string, body: z.infer<S>, context: unknown) => Promise<CommandResult>,
+  ) =>
+    registerApiRoute(path, {
+      method,
+      requiresAuth: false,
+      handler: async cc => {
+        const c = loose(cc);
+        if (!(await requireViewer(c))) return c.json({ error: 'unauthorized' }, 401);
+        if (!commands) return c.json({ error: 'Session commands are not available' }, 503);
+        const sessionId = c.req.param('sessionId');
+        if (!sessionId) return c.json({ error: 'Session not found' }, 404);
+        let body: z.infer<S> = undefined as z.infer<S>;
+        if (schema) {
+          const parsed = schema.safeParse(await c.req.json().catch(() => undefined));
+          if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
+          body = parsed.data;
+        }
+        return respond(c, await run(commands, sessionId, body, c.get('requestContext' as never)));
+      },
+    });
+
   return [
+    command('/web/factory/sessions/:sessionId/messages', 'POST', sendBody, (cmd, id, body, context) =>
+      cmd.send(id, body, { context }),
+    ),
+    command('/web/factory/sessions/:sessionId/abort', 'POST', undefined, (cmd, id, _body, context) =>
+      cmd.abort(id, { context }),
+    ),
+    command('/web/factory/sessions/:sessionId/interactions', 'POST', answerBody, (cmd, id, body, context) =>
+      cmd.answer(id, { interactionId: body.interactionId, callId: body.callId }, body.response, { context }),
+    ),
+    // Only the session's owner may change its model; `createSessionAccessGuard` enforces that.
+    command('/web/factory/sessions/:sessionId/model', 'PUT', modelBody, (cmd, id, body, context) =>
+      cmd.setModel(id, body, { context }),
+    ),
     registerApiRoute('/web/factory/sessions/:sessionId/events', {
       method: 'GET',
       requiresAuth: false,

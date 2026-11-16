@@ -3,6 +3,7 @@ export type * from './interactions';
 export type * from './runtime';
 export type * from './tools';
 export type * from './workspace';
+export type * from './commands';
 export type * from './transcript';
 export type { EventLog } from './event-log';
 

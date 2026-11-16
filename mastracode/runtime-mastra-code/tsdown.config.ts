@@ -11,7 +11,7 @@ export default defineConfig({
   treeshake: true,
   sourcemap: true,
   deps: {
-    neverBundle: ['@mastra/core', '@factory/agent-runtime'],
+    neverBundle: ['@mastra/core', '@mastra/server', '@factory/agent-runtime'],
   },
   onSuccess: async () => {
     await generateTypes(process.cwd());
