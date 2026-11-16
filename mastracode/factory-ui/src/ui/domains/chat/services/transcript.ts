@@ -21,6 +21,8 @@ export interface ToolCall {
   // Epoch milliseconds.
   createdAt?: number;
   exit?: ToolCallExit;
+  // fork(claude-agent): the person stopped the run while this call was in flight.
+  stopped?: boolean;
 }
 
 export function toolCallStatus(status: ToolCall['status']): ActivityStatus {

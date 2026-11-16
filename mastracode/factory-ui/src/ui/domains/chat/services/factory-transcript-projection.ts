@@ -185,7 +185,7 @@ function toolCall(tool: ToolItem): ToolCall {
     ...(tool.input !== undefined ? { args: tool.input } : {}),
     // fork(claude-agent): a stopped tool shows as stopped, not as a failure.
     ...(tool.stopped
-      ? { status: 'done' as const, result: 'Stopped' }
+      ? { status: 'done' as const, result: 'Stopped', stopped: true }
       : {
           status: tool.status,
           ...(tool.status === 'error'

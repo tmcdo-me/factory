@@ -127,5 +127,7 @@ export function toolFromInvocationPart(
     output: runtime?.output ?? '',
     createdAt: part.createdAt ?? runtime?.createdAt ?? fallbackCreatedAt,
     exit: runtime?.exit,
+    // fork(claude-agent)
+    ...(runtime?.stopped ? { stopped: true } : {}),
   };
 }

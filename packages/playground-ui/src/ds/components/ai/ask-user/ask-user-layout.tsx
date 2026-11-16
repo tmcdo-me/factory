@@ -122,8 +122,13 @@ export const AskUserOutput = ({ result, className, ...props }: AskUserOutputProp
     className={cn('grid gap-2 rounded-lg bg-fill p-3', className)}
     {...props}
   >
-    <Badge size="xs" variant={result.isError ? 'destructive' : 'success'} className="justify-self-start">
-      {result.isError ? 'Error' : 'Answered'}
+    {/* fork(claude-agent): a stopped question is neither answered nor an error. */}
+    <Badge
+      size="xs"
+      variant={result.isError ? 'destructive' : result.stopped ? 'neutral' : 'success'}
+      className="justify-self-start"
+    >
+      {result.isError ? 'Error' : result.stopped ? 'Stopped' : 'Answered'}
     </Badge>
     <Txt as="p" variant="body" tone="ink" className={cn(result.isError && 'text-destructive-foreground')}>
       {result.content}

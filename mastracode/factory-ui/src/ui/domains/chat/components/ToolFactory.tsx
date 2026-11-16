@@ -24,6 +24,8 @@ export interface ToolFactoryProps {
   replyFooter?: (text: string) => ReplyFooter;
   output?: unknown;
   status: ToolStatus;
+  /** fork(claude-agent): the person stopped the run while this call was in flight. */
+  stopped?: boolean;
   isSubmitting?: boolean;
   onRespond?: (response: ToolResponse) => void;
   fallback: () => ReactNode;
@@ -79,6 +81,7 @@ function ToolFactoryComponent({
   replyFooter,
   output,
   status,
+  stopped = false,
   isSubmitting = false,
   onRespond,
   fallback,
@@ -88,7 +91,12 @@ function ToolFactoryComponent({
     if (status === 'running' && (!payload || !onRespond)) return null;
 
     const resultContent = status !== 'running' ? askUserResultContent(output) : undefined;
-    const result = resultContent ? { content: resultContent, isError: status === 'error' } : undefined;
+    // fork(claude-agent): stopped before anyone answered.
+    const result = stopped
+      ? { content: 'Stopped before you answered.', stopped: true }
+      : resultContent
+        ? { content: resultContent, isError: status === 'error' }
+        : undefined;
     return (
       <AskUser
         role="group"
