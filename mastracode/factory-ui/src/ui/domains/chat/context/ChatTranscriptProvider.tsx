@@ -6,6 +6,8 @@ import { useContext, useEffect, useEffectEvent, useReducer } from 'react';
 import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { chatSessionPhase } from '../../workspaces/services/sessionStatus';
 import { useAgentControllerTranscript } from '../hooks/useAgentControllerTranscript';
+import { useFactorySessionTranscript } from '../hooks/useFactorySessionTranscript';
+import { transcriptSource } from '../services/transcript-source';
 import { initialChatRuntime, runtimeReducer } from '../services/runtime';
 import type { ChatRuntimeState, SessionStateSnapshot } from '../services/runtime';
 import type { TranscriptState } from '../services/transcript';
@@ -19,6 +21,12 @@ import { useChatConnection } from './useChatConnection';
 import { useChatMessagesError } from './useChatMessagesError';
 import { useChatMessagesInitializing } from './useChatMessagesInitializing';
 import { useChatSessionContext } from './useChatSessionContext';
+
+// fork(claude-agent): draw from Factory's session event log when selected (thread id === session id).
+const useTranscript: typeof useAgentControllerTranscript =
+  transcriptSource === 'factory'
+    ? ({ initialThreadId, viewerId } = {}) => useFactorySessionTranscript({ sessionId: initialThreadId, viewerId })
+    : useAgentControllerTranscript;
 
 export function ChatTranscriptProvider({
   children,
@@ -36,7 +44,7 @@ export function ChatTranscriptProvider({
   loadMoreHistory?: () => void;
 }) {
   const viewerId = useFactoryAuth().data?.user?.userId;
-  const transcriptApi = useAgentControllerTranscript({ initialThreadId: threadId, initialMessages, viewerId });
+  const transcriptApi = useTranscript({ initialThreadId: threadId, initialMessages, viewerId });
   const [runtime, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
   const onEvent = (event: AgentControllerEvent) => {
     transcriptApi.onEvent(event);

@@ -297,8 +297,19 @@ Each slice: implement → focused tests → manual check where noted → commit.
    write, deltas coalesced). Verified against a real `AgentController` session driven by a mock
    model. Finding: Mastra Code delivers typed user turns as `role: 'signal'` messages with a
    `data-user-message` part; `data-signal` / `data-system-reminder` signals are system context.
-3. **Factory session API + UI on the seam.** New endpoints; UI chat domain moved to `FactoryEvent`.
-   Manual: existing sessions render identically.
+3. **Factory session API + UI on the seam**, in four parts:
+   - **3a** ✅ read API: `/web/factory/sessions/:id/events` (SSE, replay by `seq`) and `/transcript`,
+     behind the existing session access guard.
+   - **3b** ✅ richer `FactoryEvent` for what the UI renders for any runtime (message meta and
+     attachments, streamed tool input, exits, progress, notices, tasks, subagents, error codes).
+   - **3c** UI data layer: `useFactorySessionTranscript` (snapshot, then stream from `seq`, gap →
+     resync) and `projectTranscript` (Factory transcript → the existing timeline entry shapes, so
+     the 4k+ LOC of renderers keep working). Selected by `VITE_FACTORY_TRANSCRIPT_SOURCE=factory` or
+     `localStorage['factory:transcript-source']`; default stays Mastra until 3d.
+   - **3d** writes through Factory routes (send, abort, approvals, suspensions, model), runtime
+     state (running, usage) from the seam, removal of the dropped Mastra-only UI (goals, OM,
+     permissions, multi-thread sessions), then flip the default to `factory`.
+     Renderers move from the projection to native transcript items opportunistically afterwards.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
