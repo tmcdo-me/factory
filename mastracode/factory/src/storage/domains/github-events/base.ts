@@ -1,5 +1,7 @@
 // fork(claude-agent): GitHub events Factory already handled, by what they are (not by delivery), so the
 // webhook and the active pull request poll never both act on one review, comment, push or close.
+import { randomUUID } from 'node:crypto';
+
 import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema } from '@mastra/core/storage';
 
@@ -10,6 +12,7 @@ export const GITHUB_EVENTS_SEEN_SCHEMA: CollectionSchema = {
   columns: {
     key: { type: 'text', primaryKey: true },
     status: { type: 'text' },
+    owner: { type: 'text', nullable: true },
     claimed_at: { type: 'timestamp' },
   },
   indexes: [{ name: 'factory_github_events_seen_claimed_idx', columns: ['claimed_at'] }],
@@ -18,20 +21,25 @@ export const GITHUB_EVENTS_SEEN_SCHEMA: CollectionSchema = {
 interface SeenRow extends Record<string, unknown> {
   key: string;
   status: 'claimed' | 'done';
+  owner: string | null;
   claimed_at: Date;
 }
 
+/**
+ * What a claim found: the event is this caller's to handle (`taken`, with the token that finishes
+ * it), it was handled already (`done`), or another caller is handling it right now (`busy`: try
+ * again later, it may yet give it back).
+ */
+export type GithubEventClaim = { state: 'taken'; token: string } | { state: 'done' } | { state: 'busy' };
+
 /** Handled events, and the ones being handled right now. */
 export interface GithubEventClaims {
-  /**
-   * Take the event for handling: `false` when it was handled already, or is being handled (a claim
-   * left by a process that died is taken over after `staleAfterMs`).
-   */
-  claim(key: string): Promise<boolean>;
-  /** Handled: never handled again. */
-  done(key: string): Promise<void>;
-  /** Not handled after all (it failed): the next delivery of it handles it. */
-  release(key: string): Promise<void>;
+  /** Take the event for handling (a claim left by a process that died is taken over after `staleAfterMs`). */
+  claim(key: string): Promise<GithubEventClaim>;
+  /** Handled: never handled again. Only the claim `token` names. */
+  done(key: string, token: string): Promise<void>;
+  /** Not handled after all (it failed): the next delivery of it handles it. Only the claim `token` names. */
+  release(key: string, token: string): Promise<void>;
 }
 
 /** How long a claim may stand before another process takes the event over. */
@@ -54,33 +62,36 @@ export class GithubEventsSeenStorage extends FactoryStorageDomain implements Git
     await this.ops.deleteMany(COLLECTION, {});
   }
 
-  async claim(key: string): Promise<boolean> {
+  async claim(key: string): Promise<GithubEventClaim> {
     const now = new Date();
+    const token = randomUUID();
     this.#prune(now);
     try {
-      await this.ops.insertOne<SeenRow>(COLLECTION, { key, status: 'claimed', claimed_at: now });
-      return true;
+      await this.ops.insertOne<SeenRow>(COLLECTION, { key, status: 'claimed', owner: token, claimed_at: now });
+      return { state: 'taken', token };
     } catch (error) {
       if (!(error instanceof UniqueViolationError)) throw error;
     }
     // Taken over only from a claim nobody finished in time, and only by one caller.
-    let taken = false;
+    let found: GithubEventClaim = { state: 'busy' };
     await this.ops.updateAtomic<SeenRow>(COLLECTION, { key }, current => {
-      if (current.status !== 'claimed' || now.getTime() - new Date(current.claimed_at).getTime() < STALE_CLAIM_MS) {
+      if (current.status === 'done') {
+        found = { state: 'done' };
         return null;
       }
-      taken = true;
-      return { claimed_at: now };
+      if (now.getTime() - new Date(current.claimed_at).getTime() < STALE_CLAIM_MS) return null;
+      found = { state: 'taken', token };
+      return { owner: token, claimed_at: now };
     });
-    return taken;
+    return found;
   }
 
-  async done(key: string): Promise<void> {
-    await this.ops.updateMany(COLLECTION, { key }, { status: 'done' });
+  async done(key: string, token: string): Promise<void> {
+    await this.ops.updateMany(COLLECTION, { key, owner: token }, { status: 'done' });
   }
 
-  async release(key: string): Promise<void> {
-    await this.ops.deleteMany(COLLECTION, { key, status: 'claimed' });
+  async release(key: string, token: string): Promise<void> {
+    await this.ops.deleteMany(COLLECTION, { key, status: 'claimed', owner: token });
   }
 
   /** Now and then, forget what is past retention. Never holds up the claim that triggered it. */
@@ -100,17 +111,20 @@ export class GithubEventsSeenStorage extends FactoryStorageDomain implements Git
 
 /** In memory, for a server without the domain and for tests. */
 export class InMemoryGithubEventClaims implements GithubEventClaims {
-  readonly #rows = new Map<string, 'claimed' | 'done'>();
-  async claim(key: string): Promise<boolean> {
-    if (this.#rows.has(key)) return false;
-    this.#rows.set(key, 'claimed');
-    return true;
+  readonly #rows = new Map<string, { status: 'claimed' | 'done'; token: string }>();
+  async claim(key: string): Promise<GithubEventClaim> {
+    const row = this.#rows.get(key);
+    if (row) return { state: row.status === 'done' ? 'done' : 'busy' };
+    const token = randomUUID();
+    this.#rows.set(key, { status: 'claimed', token });
+    return { state: 'taken', token };
   }
-  async done(key: string): Promise<void> {
-    this.#rows.set(key, 'done');
+  async done(key: string, token: string): Promise<void> {
+    if (this.#rows.get(key)?.token === token) this.#rows.set(key, { status: 'done', token });
   }
-  async release(key: string): Promise<void> {
-    if (this.#rows.get(key) === 'claimed') this.#rows.delete(key);
+  async release(key: string, token: string): Promise<void> {
+    const row = this.#rows.get(key);
+    if (row?.status === 'claimed' && row.token === token) this.#rows.delete(key);
   }
 }
 
@@ -131,19 +145,19 @@ export function failOpenGithubEventClaims(store: () => Promise<GithubEventClaims
         return await (await store()).claim(key);
       } catch (error) {
         warn(error);
-        return true;
+        return { state: 'taken', token: 'unrecorded' };
       }
     },
-    done: async key => {
+    done: async (key, token) => {
       try {
-        await (await store()).done(key);
+        await (await store()).done(key, token);
       } catch (error) {
         warn(error);
       }
     },
-    release: async key => {
+    release: async (key, token) => {
       try {
-        await (await store()).release(key);
+        await (await store()).release(key, token);
       } catch (error) {
         warn(error);
       }

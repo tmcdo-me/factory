@@ -38,6 +38,17 @@ export type ConditionalGithubGet = (input: {
   etag?: string;
 }) => Promise<{ status: 304 } | { status: 200; etag?: string; link?: string; data: unknown }>;
 
+/**
+ * Another caller (the webhook) is handling this event right now. The answer it came from is read
+ * again next tick (neither its ETag nor the event is kept), in case that caller fails.
+ */
+export class GithubEventBusy extends Error {
+  constructor(deliveryId: string) {
+    super(`GitHub event ${deliveryId} is being handled elsewhere; read again next tick.`);
+    this.name = 'GithubEventBusy';
+  }
+}
+
 /** GitHub asked to wait (a `403`/`429` rate limit) until `resumeAt` (epoch ms). */
 export class GithubRateLimited extends Error {
   readonly resumeAt: number;
@@ -178,6 +189,8 @@ export function createActivePullRequestPoll(
             await pollPullRequest(repository, number, entry, deps, summary);
           } catch (error) {
             if (error instanceof GithubRateLimited) throw error;
+            // The webhook has it in hand: this pull request is read again next tick.
+            if (error instanceof GithubEventBusy) continue;
             fail(repository, error, number);
           }
         }
@@ -275,13 +288,15 @@ async function pollPullRequest(
     if (first.status === 304) return undefined;
     const items = list(first.data);
     let next = nextPage(first.link);
-    for (let page = 1; next && page < MAX_PAGES; page++) {
+    let pages = 1;
+    for (; next && pages < MAX_PAGES; pages++) {
       const more = await read(next, undefined);
       if (more.status === 304) break;
       items.push(...list(more.data));
       next = nextPage(more.link);
     }
-    return { etag: first.etag, items };
+    // A later page can change while the first stays the same: a list of several pages is read whole.
+    return { ...(pages === 1 && first.etag ? { etag: first.etag } : {}), items };
   };
   const deliver = async (event: ParsedGithubWebhook) => {
     await deps.deliver(event);
@@ -305,8 +320,11 @@ async function pollPullRequest(
       const outcome = merged ? 'merged' : 'closed';
       await deliver({
         event: 'pull_request',
-        // The reconcile sweep's id for the same outcome: whichever sees it first, the other replays it.
-        deliveryId: `reconcile:${repository.id}:pull-request:${number}:${outcome}`,
+        // A merge has the reconcile sweep's id, so whichever sees it first, the other replays it; a pull
+        // request can be closed again after a reopen, so each close is its own.
+        deliveryId: `reconcile:${repository.id}:pull-request:${number}:${outcome}${
+          outcome === 'closed' && typeof pullRequest.closed_at === 'string' ? `:${pullRequest.closed_at}` : ''
+        }`,
         payload: {
           action: 'closed',
           ...envelope,
@@ -320,6 +338,8 @@ async function pollPullRequest(
         deliveryId: `poll:${repository.id}:pull-request:${number}:synchronize:${headSha}`,
         payload: {
           action: 'synchronize',
+          before: before.headSha,
+          after: headSha,
           ...envelope,
           sender: { login: login(pullRequest.user) ?? 'github' },
           pull_request: pullRequest,

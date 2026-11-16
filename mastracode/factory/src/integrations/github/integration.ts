@@ -51,6 +51,7 @@ import type { GithubEventClaims } from '../../storage/domains/github-events/base
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
 import {
   GithubActivePullRequestPollWorker,
+  GithubEventBusy,
   GithubRateLimited,
   activePullRequestPollInterval,
   createActivePullRequestPoll,
@@ -1403,7 +1404,7 @@ export class GithubIntegration implements FactoryIntegration {
     const controller = ctx.controller;
     // As a webhook delivery is handled, once per event: one the webhook brought first is a duplicate.
     const deliver = async (event: ParsedGithubWebhook) => {
-      await processGithubEvent(event, {
+      const outcome = await processGithubEvent(event, {
         ...(this.eventClaims ? { claims: this.eventClaims } : {}),
         ...(ingest ? { ingest } : {}),
         ...(controller
@@ -1419,6 +1420,8 @@ export class GithubIntegration implements FactoryIntegration {
             }
           : {}),
       });
+      // The webhook is handling it right now: read it again next tick, in case that fails.
+      if (outcome === 'busy') throw new GithubEventBusy(event.deliveryId);
     };
     return new GithubActivePullRequestPollWorker({
       poll: createActivePullRequestPoll(options, { get: input => this.conditionalGet(input), deliver }),

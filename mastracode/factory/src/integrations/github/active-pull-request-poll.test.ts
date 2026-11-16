@@ -10,6 +10,7 @@ import { GithubEventsSeenStorage } from '../../storage/domains/github-events/bas
 import { createFactoryStorageForTests } from '../../storage/test-utils.js';
 import {
   GithubActivePullRequestPollWorker,
+  GithubEventBusy,
   GithubRateLimited,
   createActivePullRequestPoll,
   rateLimitResumeAt,
@@ -19,7 +20,7 @@ import { resolveGithubRules } from './default-rules.js';
 import type { GithubIntegration } from './integration.js';
 import { GithubRules, createGithubPullRequestReconciler } from './rules.js';
 import type { GithubRulesOptions } from './rules.js';
-import { processGithubEvent } from './webhook.js';
+import { githubEventContentKey, processGithubEvent } from './webhook.js';
 import type { ParsedGithubWebhook } from './webhook.js';
 
 const repository = { id: 10, fullName: 'acme/repo', installationId: 7 };
@@ -191,8 +192,9 @@ async function setup(stages: string[] = ['review'], enteredAt = '2030-01-01T00:0
         return { failed: 0 };
       },
     });
+  // As the server's poll delivers: an event the webhook is handling is read again next tick.
   const deliver = async (event: ParsedGithubWebhook) => {
-    await handle(event);
+    if ((await handle(event)) === 'busy') throw new GithubEventBusy(event.deliveryId);
   };
   const decisions = () => seeded.workItems.listDeferredDecisions('org-1', project.id);
   return { options, deliver, handle, delivered, failing, decisions, card, workItems: seeded.workItems, claims };
@@ -403,13 +405,93 @@ describe('rateLimitResumeAt', () => {
 describe('GithubEventsSeenStorage', () => {
   it('lets one caller handle an event, gives it back when that failed, and keeps it once handled', async () => {
     const claims = await eventClaims();
-    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(true);
-    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(false);
-    await claims.release('github:10:pull-request:17:review:1');
-    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(true);
-    await claims.done('github:10:pull-request:17:review:1');
-    await claims.release('github:10:pull-request:17:review:1');
-    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(false);
+    const key = 'github:10:pull-request:17:review:1';
+    const first = await claims.claim(key);
+    expect(first).toMatchObject({ state: 'taken' });
+    // Another caller while the first handles it: busy, not handled.
+    expect(await claims.claim(key)).toEqual({ state: 'busy' });
+    const token = (first as { token: string }).token;
+    // Only the claim's own token finishes it.
+    await claims.release(key, 'someone-else');
+    expect(await claims.claim(key)).toEqual({ state: 'busy' });
+    await claims.release(key, token);
+    const again = await claims.claim(key);
+    expect(again).toMatchObject({ state: 'taken' });
+    await claims.done(key, (again as { token: string }).token);
+    await claims.release(key, (again as { token: string }).token);
+    expect(await claims.claim(key)).toEqual({ state: 'done' });
+  });
+});
+
+describe('githubEventContentKey', () => {
+  const pr = (extra: Record<string, unknown>) => ({
+    event: 'pull_request',
+    deliveryId: 'd',
+    payload: { repository: { id: 10 }, ...extra },
+  });
+  it('tells a second close after a reopen from the first, and a push back to a head from the first push', () => {
+    const closed = (closedAt: string) =>
+      githubEventContentKey(pr({ action: 'closed', pull_request: { number: 17, closed_at: closedAt } }));
+    expect(closed('2030-01-01T01:00:00Z')).not.toBe(closed('2030-01-01T02:00:00Z'));
+    expect(githubEventContentKey(pr({ action: 'closed', pull_request: { number: 17, merged: true } }))).toBe(
+      'github:10:pull-request:17:merged',
+    );
+    const push = (before: string, after: string) =>
+      githubEventContentKey(pr({ action: 'synchronize', before, after, pull_request: { number: 17, head: { sha: after } } }));
+    const keys = [push('a', 'b'), push('b', 'a')];
+    expect(new Set(keys).size).toBe(2);
+    expect(push('a', 'b')).toBe(keys[0]);
+  });
+});
+
+describe('the poll and the webhook on one event', () => {
+  it('delivers a close after a reopen, and a push back to an earlier head, as events of their own', async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await poll([repository]);
+    const head = (sha: string) => ({ ref: 'feature', sha, repo: { id: 10 } });
+    for (const sha of ['b'.repeat(40), 'a'.repeat(40)]) {
+      Object.assign(github.pull, { head: head(sha) });
+      clock += 60_000;
+      await poll([repository]);
+    }
+    for (const closedAt of ['2030-01-01T02:00:00Z', '2030-01-01T03:00:00Z']) {
+      Object.assign(github.pull, { state: 'closed', closed_at: closedAt });
+      clock += 60_000;
+      await poll([repository]);
+      Object.assign(github.pull, { state: 'open', closed_at: null });
+      clock += 60_000;
+      await poll([repository]);
+    }
+    expect(context.delivered.map(event => `${event.event}:${String(event.payload.action)}`)).toEqual([
+      'pull_request:synchronize',
+      'pull_request:synchronize',
+      'pull_request:closed',
+      'pull_request:closed',
+    ]);
+  });
+
+  it('leaves an event the webhook is handling, and delivers it next tick when the webhook failed', async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await poll([repository]);
+    clock += 30_000;
+    github.review(910, 'CHANGES_REQUESTED');
+    // The webhook took the review and is handling it.
+    const held = await context.claims.claim('github:10:pull-request:17:review:910');
+    clock += 30_000;
+    expect(await poll([repository])).toMatchObject({ delivered: 0, failed: 0 });
+    // It failed and gave it back: the poll reads the reviews again (no 304) and delivers it.
+    await context.claims.release('github:10:pull-request:17:review:910', (held as { token: string }).token);
+    clock += 60_000;
+    expect(await poll([repository])).toMatchObject({ delivered: 1 });
+    expect(context.delivered.map(event => event.deliveryId)).toEqual(['poll:10:pull-request:17:review:910']);
   });
 });
 

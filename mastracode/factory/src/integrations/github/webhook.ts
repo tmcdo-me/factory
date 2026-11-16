@@ -47,12 +47,17 @@ export function githubEventContentKey(parsed: ParsedGithubWebhook): string | und
     const found = getNumber(getObject(value)?.id);
     return found === undefined ? undefined : String(found);
   };
+  // A pull request merges once; it can be closed, reopened and closed again, each close its own.
   if (parsed.event === 'pull_request' && action === 'closed') {
-    return `${base}:${pullRequest?.merged === true ? 'merged' : 'closed'}`;
+    if (pullRequest?.merged === true) return `${base}:merged`;
+    const closedAt = getString(pullRequest?.closed_at);
+    return closedAt ? `${base}:closed:${closedAt}` : undefined;
   }
+  // A push is from one head to another: a head pushed back to (A, B, then A again) is a push of its own.
   if (parsed.event === 'pull_request' && action === 'synchronize') {
-    const sha = getObject(pullRequest?.head)?.sha;
-    return typeof sha === 'string' ? `${base}:synchronize:${sha.toLowerCase()}` : undefined;
+    const sha = getString(getObject(pullRequest?.head)?.sha) ?? getString(payload.after);
+    const before = getString(payload.before);
+    return sha && before ? `${base}:synchronize:${before.toLowerCase()}..${sha.toLowerCase()}` : undefined;
   }
   if (parsed.event === 'pull_request_review' && action === 'submitted') {
     const review = id(payload.review);
@@ -72,9 +77,10 @@ export function githubEventContentKey(parsed: ParsedGithubWebhook): string | und
 /**
  * fork(claude-agent): handle one GitHub event as a webhook delivery is handled (the board's rules
  * ingress, then the sessions subscribed to its pull request), once per event whichever way it came:
- * an event already handled (`githubEventContentKey`, kept in storage) is a `duplicate`. A failure
- * gives the event back, so its next delivery (GitHub's retry, the next poll) handles it; sessions that
- * already heard it don't hear it again (their notifications carry the same dedupe key).
+ * an event already handled (`githubEventContentKey`, kept in storage) is a `duplicate`, and one
+ * another caller is handling right now is `busy` (it may yet fail and give it back: try again later).
+ * A failure gives the event back, so its next delivery (GitHub's retry, the next poll) handles it;
+ * sessions that already heard it don't hear it again (their notifications carry the same dedupe key).
  */
 export async function processGithubEvent(
   parsed: ParsedGithubWebhook,
@@ -83,9 +89,15 @@ export async function processGithubEvent(
     ingest?: (event: ParsedGithubWebhook) => Promise<unknown>;
     dispatch?: (event: ParsedGithubWebhook) => Promise<{ failed: number }>;
   },
-): Promise<'handled' | 'duplicate'> {
+): Promise<'handled' | 'duplicate' | 'busy'> {
   const key = deps.claims ? githubEventContentKey(parsed) : undefined;
-  if (key && !(await deps.claims!.claim(key))) return 'duplicate';
+  let token: string | undefined;
+  if (key) {
+    const claim = await deps.claims!.claim(key);
+    if (claim.state === 'done') return 'duplicate';
+    if (claim.state === 'busy') return 'busy';
+    token = claim.token;
+  }
   try {
     await deps.ingest?.(parsed);
     const result = await deps.dispatch?.(parsed);
@@ -93,10 +105,10 @@ export async function processGithubEvent(
       throw new Error(`${result.failed} subscribed target(s) failed for delivery ${parsed.deliveryId}.`);
     }
   } catch (error) {
-    if (key) await deps.claims!.release(key).catch(() => undefined);
+    if (key && token) await deps.claims!.release(key, token).catch(() => undefined);
     throw error;
   }
-  if (key) await deps.claims!.done(key);
+  if (key && token) await deps.claims!.done(key, token);
   return 'handled';
 }
 
@@ -775,6 +787,7 @@ export async function handleGithubWebhook(
         }
       : {}),
   });
-  if (outcome === 'duplicate') return { status: 202, body: { ok: true, ignored: true } };
+  // Handled already, or being handled by the active pull request poll (which retries if it fails).
+  if (outcome !== 'handled') return { status: 202, body: { ok: true, ignored: true } };
   return { status: 202, body: { ok: true, ...(ignored ? { ignored: true as const } : {}) } };
 }
