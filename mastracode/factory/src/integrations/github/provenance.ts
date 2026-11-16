@@ -355,3 +355,56 @@ function rememberOwnHeadVerdict(key: string, verdict: { own: true } | { own: fal
 function record(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
 }
+
+/**
+ * fork(claude-agent): the open pull request whose head is this run's own branch, on the repository
+ * the run's session is filed under, found with one listing (`head=<owner>:<branch>`), or `undefined`.
+ * A pull request the run opened some other way than Factory's tool (Claude's own `gh pr create`, a
+ * `gh api` call) has no tool result naming it, so after each turn the run's card looks it up here and
+ * files it through the same own-pull-request path (`recordFactoryPullRequestProvenance`), which
+ * checks GitHub's record again: same-repository head, the card's or the run's branch.
+ */
+export async function findOwnBranchPullRequest(
+  github: Pick<GithubIntegration, 'getInstallationOctokit'>,
+  sourceControl: Pick<SourceControlStorageHandle, 'sessions' | 'projectRepositories' | 'connections' | 'repositories' | 'installations'>,
+  binding: Pick<FactoryRunBindingRecord, 'orgId' | 'factoryProjectId' | 'sessionId' | 'branch'>,
+): Promise<string | undefined> {
+  if (!binding.branch) return undefined;
+  const session = await sourceControl.sessions.getBySessionId(binding.sessionId);
+  // The session's own repository; one filed under none counts when the project has only one.
+  let link = session?.projectRepositoryId
+    ? await sourceControl.projectRepositories.get({ orgId: binding.orgId, id: session.projectRepositoryId })
+    : null;
+  if (!link) {
+    const links = await sourceControl.projectRepositories.listByProject({
+      orgId: binding.orgId,
+      factoryProjectId: binding.factoryProjectId,
+    });
+    if (links.length !== 1) return undefined;
+    link = links[0]!;
+  }
+  const connection = await sourceControl.connections.get({ orgId: binding.orgId, id: link.connectionId });
+  if (!connection || connection.factoryProjectId !== binding.factoryProjectId) return undefined;
+  const [repository, installation] = await Promise.all([
+    sourceControl.repositories.get({ orgId: binding.orgId, id: link.repositoryId }),
+    sourceControl.installations.get({ orgId: binding.orgId, id: connection.installationId }),
+  ]);
+  const [owner, repo] = repository?.slug.split('/') ?? [];
+  const repositoryId = Number(repository?.externalId);
+  const installationId = Number(installation?.externalId);
+  if (!owner || !repo || !Number.isInteger(repositoryId) || !Number.isInteger(installationId)) return undefined;
+  const { data } = await github.getInstallationOctokit(installationId).pulls.list({
+    owner,
+    repo,
+    state: 'open',
+    head: `${owner}:${binding.branch}`,
+    per_page: 10,
+  });
+  const own = data
+    .filter(pullRequest => {
+      const head = record(record(pullRequest).head);
+      return head.ref === binding.branch && record(head.repo).id === repositoryId;
+    })
+    .sort((a, b) => b.number - a.number);
+  return own[0]?.html_url;
+}

@@ -1972,7 +1972,14 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
     url: 'https://github.com/acme/repo/pull/17',
   };
 
-  async function building(options: { attaches?: boolean; intakeRoutes?: unknown[]; firstMoveLoses?: boolean } = {}) {
+  async function building(
+    options: {
+      attaches?: boolean;
+      intakeRoutes?: unknown[];
+      firstMoveLoses?: boolean;
+      ownBranchPullRequest?: string;
+    } = {},
+  ) {
     const storage = (await createFactoryStorageForTests()).workItems;
     const prepared = await prepare(storage, 'work', 'issue', { id: 'work', stage: 'execute' });
     const boards = createBoardRegistry();
@@ -1997,18 +2004,21 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
       });
       return { attached: true, attachedAt: attached!.item.workItem.sources.at(-1)!.createdAt };
     });
+    // fork(claude-agent): GitHub's listing of open pull requests whose head is the run's branch.
+    const findOwnBranchPullRequest = vi.fn(async () => options.ownBranchPullRequest);
     const processor = new FactoryPhaseStateProcessor({
       configVersion: 'rules-v1',
       boards,
       storage,
       transitionService,
       recordPullRequestProvenance,
+      findOwnBranchPullRequest,
       ...(options.intakeRoutes
         ? { intakeRoutes: { listIntakeRoutes: vi.fn(async () => options.intakeRoutes) } as never }
         : {}),
     });
     const card = () => storage.get({ orgId: 'org-1', id: prepared.item.id });
-    return { storage, prepared, processor, card, recordPullRequestProvenance, service };
+    return { storage, prepared, processor, card, recordPullRequestProvenance, service, findOwnBranchPullRequest };
   }
 
   const created = { url: 'https://github.com/acme/repo/pull/17', number: 17 };
@@ -2084,6 +2094,38 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
 
     // Mastra Code reads the latest tool result again on its next step: it is still the pull request's.
     await runtimes['Mastra Code'](processor);
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+  });
+
+  // fork(claude-agent): Claude's own `gh pr create` (its Bash) names the pull request in no Factory tool result.
+  it('files the pull request the run opened on its own branch after the turn, through the same path', async () => {
+    const { processor, card, prepared, recordPullRequestProvenance, findOwnBranchPullRequest } = await building({
+      ownBranchPullRequest: 'https://github.com/acme/repo/pull/17',
+    });
+
+    await processor.attachOwnBranchPullRequest(prepared.binding);
+
+    // Recorded as a pull request Factory's tool opened, so GitHub's record is checked as for one.
+    expect(recordPullRequestProvenance).toHaveBeenCalledWith(
+      expect.objectContaining({
+        toolName: 'source_control_create_change_request',
+        toolResult: { url: 'https://github.com/acme/repo/pull/17' },
+        itemOpen: true,
+      }),
+    );
+    const moved = await card();
+    expect(moved).toMatchObject({ stages: ['pr-review'] });
+    expect(moved!.workItem.sources.map(source => source.sourceType)).toEqual(['issue', 'pull-request']);
+
+    // The card holds its pull request now: later turns ask GitHub nothing.
+    await processor.attachOwnBranchPullRequest(prepared.binding);
+    expect(findOwnBranchPullRequest).toHaveBeenCalledTimes(1);
+  });
+
+  it('leaves the card be when its branch has no open pull request', async () => {
+    const { processor, card, prepared, recordPullRequestProvenance } = await building();
+    await processor.attachOwnBranchPullRequest(prepared.binding);
+    expect(recordPullRequestProvenance).not.toHaveBeenCalled();
     expect(await card()).toMatchObject({ stages: ['execute'] });
   });
 

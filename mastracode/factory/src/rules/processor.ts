@@ -26,7 +26,7 @@ import { workStageCarries } from '../boards/legacy-plan-role.js';
 import { exitToolSucceeded, PHASE_EXIT_METADATA_KEY } from '../boards/phase-automation.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
-import { hasPullRequest } from '../boards/semantics.js';
+import { hasOpenPullRequest, hasPullRequest } from '../boards/semantics.js';
 import { WorkItemUpdateConflictError } from '../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, WorkItemsStorage, Card } from '../storage/domains/work-items/base.js';
 import { findSessionRunBinding, getFactorySessionCoordinates } from './binding-context.js';
@@ -363,6 +363,11 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       }) => Promise<{ attached?: boolean; attachedAt?: Date } | void>;
       /** fork(claude-agent): the project's intake routes; a route on "pull request opened" moves the card instead. */
       intakeRoutes?: IntakeRoutesReader;
+      /**
+       * fork(claude-agent): the URL of the open pull request whose head is the run's own branch, on its
+       * session's repository (one listing), or `undefined` (see `attachOwnBranchPullRequest`).
+       */
+      findOwnBranchPullRequest?: (binding: FactoryRunBindingRecord) => Promise<string | undefined>;
     },
   ) {
     this.boards = toBoardSource(options.boards);
@@ -688,6 +693,41 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       value: result.status === 'error' ? boundedError(result.error) : boundedResult(result.value),
     };
     await this.ingestToolResult(binding, await this.recordPullRequest(binding, item, toolResult), toolResult);
+  }
+
+  /**
+   * fork(claude-agent): after a turn of a card's run, a card with no open pull request takes the one
+   * the run opened on its own branch, however it was opened. Only Factory's own tool (or a `gh pr
+   * create` Mastra Code's processor read) names it in a tool result; Claude's own `Bash`, a `gh api`
+   * call or a push the agent followed with the web UI do not, and the pull request would otherwise wait
+   * for GitHub's "opened" (a webhook, or a reconcile minutes later). It is filed exactly as a tool
+   * result naming it would be: provenance, the same-repository and own-branch proof against GitHub's
+   * record, the attach, and the hand-off to the board's pull request review. Never throws.
+   */
+  async attachOwnBranchPullRequest(binding: FactoryRunBindingRecord): Promise<void> {
+    const find = this.options.findOwnBranchPullRequest;
+    if (!find || !this.options.recordPullRequestProvenance) return;
+    try {
+      const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
+      const boards = await this.boards.load(binding);
+      if (!itemInRuleStage(boards, item) || isTerminalWorkItem(boards, item)) return;
+      if (hasOpenPullRequest({ workItem: item.workItem, source: workItemSource(item.externalSource) })) return;
+      const url = await find(binding);
+      if (!url) return;
+      const callId = `own-branch-pull-request:${url}`;
+      await this.recordPullRequest(binding, item, {
+        assistantMessageId: callId,
+        messageCreatedAt: new Date(),
+        toolCallId: callId,
+        // As Factory's own tool reports a pull request it opened.
+        toolName: 'source_control_create_change_request',
+        input: {},
+        status: 'success',
+        value: { url },
+      });
+    } catch (error) {
+      console.warn(`[factory] looking up the pull request of card ${binding.workItemId}'s branch failed:`, error);
+    }
   }
 
   private async ingestMessages(

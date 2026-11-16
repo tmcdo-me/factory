@@ -80,6 +80,7 @@ import { reconcileGithubAcceptanceLabels } from './integrations/github/acceptanc
 import type { GithubRuleOverrides } from './integrations/github/default-rules.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import {
+  findOwnBranchPullRequest,
   recordFactoryPullRequestProvenance,
   resolveFactoryPullRequestParentWorkItemId,
 } from './integrations/github/provenance.js';
@@ -1718,6 +1719,9 @@ export class MastraFactory {
                     workItemsStorage,
                     input,
                   ),
+                // fork(claude-agent)
+                findOwnBranchPullRequest: (binding: FactoryRunBindingRecord) =>
+                  findOwnBranchPullRequest(githubIntegration, sourceControlStorage.forIntegration('github'), binding),
               }
             : {}),
           messageReader: {
@@ -2426,6 +2430,8 @@ export class MastraFactory {
                 },
                 reconcileToolResults: () => factoryProcessor?.reconcileAllBoundThreads() ?? Promise.resolve(),
                 reconcileRunBinding: binding => factoryProcessor?.reconcileBinding(binding) ?? Promise.resolve(),
+                // fork(claude-agent): a pull request a run opened on its branch reaches its card after the turn.
+                afterRunTurn: binding => factoryProcessor?.attachOwnBranchPullRequest(binding) ?? Promise.resolve(),
                 prepareBinding,
                 runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
                 // fork(claude-agent): their phase goals and run ledgers, in the store Mastra Code's goals use

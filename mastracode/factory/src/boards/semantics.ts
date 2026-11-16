@@ -218,6 +218,14 @@ export function pullRequestSourceNumber(source: Pick<WorkItemSourceRow, 'metadat
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
+/** fork(claude-agent): whether the card is a pull request, or holds one still open. */
+export function hasOpenPullRequest(item: SourcedItem & { readonly source?: string }): boolean {
+  return (
+    (item.source !== undefined && isPullRequestCard({ source: item.source })) ||
+    pullRequestSources(item).some(openSource)
+  );
+}
+
 function openSource(source: Pick<WorkItemSourceRow, 'state' | 'metadata'>): boolean {
   const state = source.state ?? source.metadata?.state;
   return state !== 'closed' && state !== 'merged' && source.metadata?.merged !== true;
