@@ -250,6 +250,28 @@ describe('recordFactoryPullRequestProvenance', () => {
       expect(await sources(workItems, input.item.id)).toEqual(['issue']);
     });
 
+    it("asks GitHub about a pull request that is not the card's once per card revision, not on every read", async () => {
+      const { sourceControl, integrationStorage, workItems, github, input, pullsGet } = await setup();
+      pullsGet.mockResolvedValue(pullRequest17('someone/else'));
+      const read = async () =>
+        recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, {
+          ...input,
+          item: (await workItems.get({ orgId: 'org-1', id: input.item.id }))!,
+          itemOpen: true,
+        });
+
+      // Mastra Code reads the latest tool result again on every step.
+      for (let step = 0; step < 3; step++) await expect(read()).resolves.toBeUndefined();
+      expect(pullsGet).toHaveBeenCalledTimes(1);
+
+      // Once the card changes (it may have gained the session whose branch it is), it is asked again.
+      await workItems.update({ orgId: 'org-1', id: input.item.id, userId: 'user-1', patch: { metadata: { note: 1 } } });
+      await expect(read()).resolves.toBeUndefined();
+      await expect(read()).resolves.toBeUndefined();
+      expect(pullsGet).toHaveBeenCalledTimes(2);
+      expect(await sources(workItems, input.item.id)).toEqual(['issue']);
+    });
+
     it('leaves it off a finished card', async () => {
       const { sourceControl, integrationStorage, workItems, github, input, pullsGet } = await setup();
       pullsGet.mockResolvedValue(pullRequest17());

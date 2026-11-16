@@ -5,6 +5,7 @@ import type { IntegrationStorageHandle } from '../../storage/domains/integration
 import type { SourceControlStorageHandle } from '../../storage/domains/source-control/base.js';
 import { WorkItemSourceConflictError } from '../../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, Card, WorkItemsStorage } from '../../storage/domains/work-items/base.js';
+import type { WorkItemSourceRow } from '../../storage/domains/work-items/work-item-schema.js';
 import type { GithubIntegration } from './integration.js';
 import { isRepositoryPullRequest } from './pull-request-source.js';
 import { cardBelongsToRepository } from './rules.js';
@@ -135,22 +136,45 @@ export async function recordFactoryPullRequestProvenance(
     const recorded = (await integrationStorage.subscriptions.listByTarget(targetKey)).find(
       row => row.orgId === input.binding.orgId && row.data?.factoryProjectId === input.binding.factoryProjectId,
     );
+    const verdictKey = `${input.binding.orgId}:${input.item.id}:${url}`;
+    let held: WorkItemSourceRow | undefined;
     if (recorded) {
-      // fork(claude-agent): the same result read again (the step, then the thread) says the pull
-      // request is on the card, so a hand-off to review that failed last time is tried again; or,
-      // when an earlier attach failed, it is attempted once more below.
+      // fork(claude-agent): the same result read again (the step, then the thread; Mastra Code
+      // re-reads the latest tool result every step) says the pull request is on the card, so a
+      // hand-off to review that failed last time is tried again; or, when an earlier attach failed,
+      // it is attempted once more below. Either way only for a pull request proven the card's own:
+      // the card can hold one it did not open (joined because it closes the card's issue), and a
+      // run made to echo that one's URL must not move the card with it.
       if (recorded.data?.workItemId !== input.item.id) return;
-      const held = input.item.workItem.sources.find(source =>
+      held = input.item.workItem.sources.find(source =>
         isRepositoryPullRequest(source, repositoryId, repositorySlug, pullRequestNumber),
       );
-      if (held) return held.role === 'attached' ? { attached: true, attachedAt: held.createdAt } : undefined;
-      if (input.itemOpen !== true) return;
+      const verdict = ownHeadVerdicts.get(verdictKey);
+      if (held) {
+        const headBranch = held.metadata?.headBranch;
+        if (held.role !== 'attached' || typeof headBranch !== 'string' || !ownsHead(input, headBranch)) return;
+        if (verdict?.own === true) return { attached: true, attachedAt: held.createdAt };
+        // Not verified in this process yet: GitHub says below whether its head is the base repository's.
+      } else {
+        if (input.itemOpen !== true) return;
+        // Shown not to be the card's at this revision: asked again only once the card changes.
+        if (verdict?.own === false && verdict.revision === input.item.revision) return;
+      }
     }
 
     const { data } = await github
       .getInstallationOctokit(installationId)
       .pulls.get({ owner, repo, pull_number: pullRequestNumber });
     if (data.base.repo.id !== repositoryId || data.number !== pullRequestNumber || data.html_url !== url) return;
+    // fork(claude-agent): whether GitHub's own record makes this the card's pull request, kept so a
+    // result read again neither asks GitHub again nor moves the card for a pull request that is not.
+    const reportedHead = record(record(data).head);
+    const ownHead =
+      record(reportedHead.repo).id === repositoryId &&
+      typeof reportedHead.ref === 'string' &&
+      ownsHead(input, reportedHead.ref);
+    rememberOwnHeadVerdict(verdictKey, ownHead ? { own: true } : { own: false, revision: input.item.revision });
+    if (held) return ownHead ? { attached: true, attachedAt: held.createdAt } : undefined;
 
     if (!recorded) {
       await integrationStorage.subscriptions.create({
@@ -234,7 +258,7 @@ async function attachOwnPullRequest(
   const head = record(pullRequest.head);
   const headBranch = typeof head.ref === 'string' ? head.ref : undefined;
   if (typeof number !== 'number' || !headBranch || record(head.repo).id !== created.repositoryId) return undefined;
-  if (!cardOwnsBranch(item, headBranch) && binding.branch !== headBranch) return undefined;
+  if (!ownsHead(input, headBranch)) return undefined;
   try {
     // Already on the card (`attached: false`) counts: the card holds its pull request either way.
     const result = await workItems.attachSource({
@@ -300,6 +324,32 @@ function pullRequestSourceFacts(repositoryId: number, pullRequest: Record<string
     baseBranch: typeof base.ref === 'string' ? base.ref : '',
     ...(typeof author === 'string' ? { author } : {}),
   };
+}
+
+/** fork(claude-agent): whether `headBranch` is the card's own (its build or a session branch) or the run binding's. */
+function ownsHead(
+  input: Pick<RecordFactoryPullRequestProvenanceInput, 'item' | 'binding'>,
+  headBranch: string,
+): boolean {
+  return cardOwnsBranch(input.item, headBranch) || input.binding.branch === headBranch;
+}
+
+/**
+ * fork(claude-agent): what GitHub said about a pull request a card's tool result named, by org, card
+ * and URL. That it is the card's own holds for good: a pull request's head never moves to another
+ * repository or branch. That it is not holds only at the card revision it was checked at, since the
+ * card can gain the session whose branch it is. Bounded, oldest first out.
+ */
+const ownHeadVerdicts = new Map<string, { own: true } | { own: false; revision: number }>();
+const MAX_OWN_HEAD_VERDICTS = 1_000;
+
+function rememberOwnHeadVerdict(key: string, verdict: { own: true } | { own: false; revision: number }) {
+  ownHeadVerdicts.delete(key);
+  ownHeadVerdicts.set(key, verdict);
+  for (const oldest of ownHeadVerdicts.keys()) {
+    if (ownHeadVerdicts.size <= MAX_OWN_HEAD_VERDICTS) break;
+    ownHeadVerdicts.delete(oldest);
+  }
 }
 
 function record(value: unknown): Record<string, unknown> {
