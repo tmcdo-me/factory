@@ -592,6 +592,12 @@ export interface FactoryDecisionDispatcherOptions {
    * `threadState`). Without it their runs pursue no goal and leave no run records.
    */
   runtimeThreadState?: () => Promise<RuntimeThreadState | undefined>;
+  /**
+   * fork(claude-agent): told after each turn of a card's run that ended on its own, on either runtime,
+   * before Factory judges it: files the pull request the run opened on its own branch, when no tool
+   * result named it (see `FactoryPhaseStateProcessor.attachOwnBranchPullRequest`). Never throws.
+   */
+  afterRunTurn?: (binding: FactoryRunBindingRecord) => Promise<void>;
   maxInFlight?: number;
   /** How often the stale-binding sweep runs. Defaults to 10 minutes. */
   staleBindingSweepIntervalMs?: number;
@@ -784,6 +790,7 @@ export class FactoryDecisionDispatcher {
   readonly #autoApproving = new Set<string>();
   readonly #reconcileToolResults?: () => Promise<void>;
   readonly #reconcileRunBinding?: FactoryDecisionDispatcherOptions['reconcileRunBinding'];
+  readonly #afterRunTurn?: FactoryDecisionDispatcherOptions['afterRunTurn']; // fork(claude-agent)
   readonly #prepareBinding?: (input: FactoryBindingPreparationInput) => Promise<void>;
   readonly #primeCredentials?: (tenant: { orgId: string; userId: string }) => Promise<void>;
   readonly #reportRunEnd?: FactoryRunEndReporter;
@@ -848,6 +855,7 @@ export class FactoryDecisionDispatcher {
     this.#ownerId = options.ownerId ?? `factory-dispatcher:${globalThis.crypto.randomUUID()}`;
     this.#reconcileToolResults = options.reconcileToolResults;
     this.#reconcileRunBinding = options.reconcileRunBinding;
+    this.#afterRunTurn = options.afterRunTurn; // fork(claude-agent)
     this.#prepareBinding = options.prepareBinding;
     this.#primeCredentials = options.primeCredentials;
     this.#reportRunEnd = options.reportRunEnd;
@@ -1753,6 +1761,8 @@ export class FactoryDecisionDispatcher {
                   // A final tool result can persist after agent_end. Read this binding's trailing
                   // results before deciding the unchanged card means the run did no work.
                   await this.#reconcileRunBinding?.(binding);
+                  // fork(claude-agent): a pull request the run opened on its branch that no tool result named.
+                  await this.#runTurnEnded(binding);
                   const after = await this.#storage.get({ orgId: record.orgId, id: record.workItemId! });
                   if (after?.revision === workingRevision && !(await kickoffStale())) {
                     const linked = await this.#storage.listLinked({ item: after, limit: 100 });
@@ -3012,6 +3022,15 @@ export class FactoryDecisionDispatcher {
   // ids are not there: the run's id stands in for the kickoff's message id. Phase goals and the
   // open-run ledger are kept in thread state (`runtimeThreadState`), as `runtime-run-lifecycle` says.
 
+  /** After a turn of a card's run ended on its own (see `afterRunTurn`); a failure never fails the run. */
+  async #runTurnEnded(binding: FactoryRunBindingRecord): Promise<void> {
+    try {
+      await this.#afterRunTurn?.(binding);
+    } catch (error) {
+      console.warn(`[factory] after a turn on ${binding.sessionId}:`, sanitizeDispatchError(error));
+    }
+  }
+
   /** Whether the bound session runs on another runtime. */
   async #onRuntimeSeam(binding: FactoryRunBindingRecord): Promise<boolean> {
     if (!this.#runtimeSessions) return false;
@@ -3395,6 +3414,7 @@ export class FactoryDecisionDispatcher {
               }
               ended = 'complete';
               if (await supersededAtEnd) return;
+              await this.#runTurnEnded(binding);
               if (!run.goal || !run.workingPhase) {
                 await run.workingPhase?.verify();
                 return;
@@ -3468,7 +3488,9 @@ export class FactoryDecisionDispatcher {
         }
         const goal = run.goal;
         const workingPhase = run.workingPhase;
-        if (!goal || !workingPhase || (await run.superseded?.())) break;
+        if (await run.superseded?.()) break;
+        await this.#runTurnEnded(binding);
+        if (!goal || !workingPhase) break;
         // Another turn in flight (a person's, a new phase's kickoff): the goal is judged once it ends.
         await this.#runtimeSessions!.idle(binding.sessionId);
         const taken: { step: SeamGoalStep } = { step: { kind: 'done' } };

@@ -6,12 +6,15 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { boardRegistryOf, workBoard } from '../boards/index.js';
 import { commitDecisions } from '../boards/test-utils.js';
+import { findOwnBranchPullRequest, recordFactoryPullRequestProvenance } from '../integrations/github/provenance.js';
+import type { FactoryPullRequestProvenanceData } from '../integrations/github/provenance.js';
 import { FACTORY_OPEN_RUN_STALE_MS, FACTORY_OPEN_RUNS_SETTING, isOpenRunLiveElsewhere } from '../session/run-audit.js';
 import type { FactoryOpenRun } from '../session/run-audit.js';
-import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
+import type { FactoryRunBindingRecord, WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { FactoryDecisionDispatcher } from './dispatcher.js';
 import { PHASE_GOAL_METADATA_KEY } from './phase-goal.js';
+import { FactoryPhaseStateProcessor } from './processor.js';
 import type { FactoryRuntimeSessions, RuntimeKickoff, RuntimeRunEnd, RuntimeThreadState } from './runtime-sessions.js';
 import { FactoryTransitionService } from './transition-service.js';
 
@@ -97,14 +100,21 @@ function auditLog() {
 async function building(
   storage: WorkItemsStorage,
   goal: { objective: string; maxRuns?: number } = { objective: OBJECTIVE, maxRuns: 3 },
+  url?: string,
+  projectId = PROJECT_ID,
 ) {
   const item = (
     await storage.upsert({
       orgId: 'org-1',
       userId: 'user-1',
-      factoryProjectId: PROJECT_ID,
+      factoryProjectId: projectId,
       input: {
-        externalSource: { integrationId: 'github', type: 'issue', externalId: 'github-issue:1' },
+        externalSource: {
+          integrationId: 'github',
+          type: 'issue',
+          externalId: 'github-issue:1',
+          ...(url ? { url } : {}),
+        },
         title: 'Fix issue',
         stages: ['intake'],
         sessions: {},
@@ -115,7 +125,7 @@ async function building(
   await storage.prepareRunStart({
     orgId: 'org-1',
     userId: 'user-1',
-    factoryProjectId: PROJECT_ID,
+    factoryProjectId: projectId,
     workItem: { id: item.id, input: { title: 'Fix issue', stages: ['intake'], sessions: {}, metadata: {} } },
     role: 'work',
     session: { sessionId: 'session-1', branch: 'factory/issue-1', threadId: 'session-1' },
@@ -124,7 +134,7 @@ async function building(
     kickoffMessage: null,
   });
   const committed = await commitDecisions(storage, {
-    factoryProjectId: PROJECT_ID,
+    factoryProjectId: projectId,
     workItemId: item.id,
     stage: 'execute',
     decisions: [{ type: 'invokeSkill', role: 'work', skillName: 'factory-build', goal, idempotencyKey: 'build' }],
@@ -134,7 +144,7 @@ async function building(
   const card = await storage.get({ orgId: 'org-1', id: item.id });
   await storage.commitTransition({
     orgId: 'org-1',
-    factoryProjectId: PROJECT_ID,
+    factoryProjectId: projectId,
     workItemId: item.id,
     expectedRevision: card!.revision,
     destinationStage: 'execute',
@@ -151,7 +161,7 @@ async function building(
     const current = await storage.get({ orgId: 'org-1', id: item.id });
     const moved = await transitionService.transition({
       orgId: 'org-1',
-      factoryProjectId: PROJECT_ID,
+      factoryProjectId: projectId,
       workItemId: item.id,
       board: 'work',
       stage: 'done',
@@ -169,7 +179,11 @@ function dispatcherFor(
   storage: WorkItemsStorage,
   transitionService: FactoryTransitionService,
   runtime: FactoryRuntimeSessions,
-  options: { state?: RuntimeThreadState; audit?: ReturnType<typeof auditLog>['audit'] } = {},
+  options: {
+    state?: RuntimeThreadState;
+    audit?: ReturnType<typeof auditLog>['audit'];
+    afterRunTurn?: (binding: FactoryRunBindingRecord) => Promise<void>;
+  } = {},
 ) {
   const sendSignal = vi.fn();
   return {
@@ -183,6 +197,7 @@ function dispatcherFor(
       runtimeSessions: runtime,
       ...(options.state ? { runtimeThreadState: async () => options.state } : {}),
       ...(options.audit ? { audit: options.audit as never } : {}),
+      ...(options.afterRunTurn ? { afterRunTurn: options.afterRunTurn } : {}),
     }),
   };
 }
@@ -580,5 +595,130 @@ describe('run records on another agent runtime', () => {
     ]);
     expect(records[0]).toMatchObject({ actorType: 'human', metadata: { kickoffId: 'factory-kickoff:start-1:1' } });
     expect(await state.ledger()).toEqual([]);
+  });
+});
+
+// fork(claude-agent): a pull request the run opened with its own `gh pr create` (Claude's Bash), which no
+// Factory tool result names, reaches the card after the turn, not minutes later from GitHub.
+describe("a pull request the run opened outside Factory's tools", () => {
+  async function seeded(head: { ref: string; repositoryId: number }) {
+    const seed = await createFactoryStorageForTests();
+    const storage = seed.workItems;
+    const sourceControl = seed.sourceControl.forIntegration('github');
+    const installation = await sourceControl.installations.upsert({
+      orgId: 'org-1',
+      connectedByUserId: 'user-1',
+      externalId: '7',
+    });
+    const repository = await sourceControl.repositories.upsert({
+      orgId: 'org-1',
+      input: { installationId: installation.id, externalId: '10', slug: 'acme/repo', defaultBranch: 'main' },
+    });
+    const project = await seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Acme' } });
+    const connection = await sourceControl.connections.create({
+      orgId: 'org-1',
+      factoryProjectId: project.id,
+      installationId: installation.id,
+      createdByUserId: 'user-1',
+    });
+    await sourceControl.projectRepositories.link({
+      orgId: 'org-1',
+      connectionId: connection.id,
+      repositoryId: repository.id,
+      createdByUserId: 'user-1',
+      sandboxProvider: 'local',
+      sandboxWorkdir: '/workspace',
+    });
+    // GitHub's REST API, the one thing that is not run: what it lists and reports for pull request #17.
+    const pullRequest = {
+      number: 17,
+      html_url: 'https://github.com/acme/repo/pull/17',
+      state: 'open',
+      updated_at: '2030-01-01T00:00:00Z',
+      head: { ref: head.ref, sha: 'b'.repeat(40), repo: { id: head.repositoryId } },
+      base: { ref: 'main', repo: { id: 10 } },
+    };
+    const list = vi.fn(async ({ head: filter }: { head: string }) => ({
+      data: filter === `acme:${head.ref}` ? [pullRequest] : [],
+    }));
+    const github = {
+      getInstallationOctokit: () => ({ pulls: { list, get: async () => ({ data: pullRequest }) } }),
+    } as never;
+    const card = await building(
+      storage,
+      { objective: OBJECTIVE, maxRuns: 3 },
+      'https://github.com/acme/repo/issues/1',
+      project.id,
+    );
+    const integrationStorage = seed.integrations.forIntegration<
+      Record<string, unknown>,
+      Record<string, unknown>,
+      FactoryPullRequestProvenanceData
+    >('github');
+    const processor = new FactoryPhaseStateProcessor({
+      configVersion: 'rules-v1',
+      boards,
+      storage,
+      transitionService: card.transitionService,
+      recordPullRequestProvenance: input =>
+        recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, storage, input),
+      findOwnBranchPullRequest: binding => findOwnBranchPullRequest(github, sourceControl, binding),
+    });
+    const decision = async () =>
+      (await storage.listDeferredDecisions('org-1', project.id)).find(row => row.idempotencyKey === 'build');
+    return { storage, card, processor, list, decision };
+  }
+
+  it('files it on the card and hands the card to review after the turn, so the goal is met with no re-kick', async () => {
+    const { storage, card, processor, list, decision } = await seeded({ ref: 'factory/issue-1', repositoryId: 10 });
+    const state = threadState();
+    const { runtime, kickoffs } = scriptedRuntime([() => ({ reason: 'complete' })]);
+    const { dispatcher } = dispatcherFor(storage, card.transitionService, runtime, {
+      state: state.store,
+      afterRunTurn: binding => processor.attachOwnBranchPullRequest(binding),
+    });
+
+    await dispatcher.runOnce(new Date());
+
+    expect(list).toHaveBeenCalledTimes(1);
+    const after = await storage.get({ orgId: 'org-1', id: card.item.id });
+    expect(after!.workItem.sources.map(source => source.sourceType)).toEqual(['issue', 'pull-request']);
+    expect(after).toMatchObject({ stages: ['pr-review'], metadata: { openPullRequestNumber: 17 } });
+    expect(kickoffs).toHaveLength(1);
+    expect(await decision()).toMatchObject({ status: 'succeeded', lastError: null });
+    expect(await state.goal()).toMatchObject({ status: 'done', runsUsed: 1 });
+  });
+
+  it("leaves off a fork's pull request named like the run's branch, and the goal goes on", async () => {
+    const { storage, card, processor } = await seeded({ ref: 'factory/issue-1', repositoryId: 99 });
+    const state = threadState();
+    const { runtime, kickoffs } = scriptedRuntime([
+      () => ({ reason: 'complete' }),
+      async () => {
+        await card.moveOn();
+        return { reason: 'complete' };
+      },
+    ]);
+    const { dispatcher } = dispatcherFor(storage, card.transitionService, runtime, {
+      state: state.store,
+      afterRunTurn: binding => processor.attachOwnBranchPullRequest(binding),
+    });
+
+    await dispatcher.runOnce(new Date());
+
+    const after = await storage.get({ orgId: 'org-1', id: card.item.id });
+    expect(after!.workItem.sources.map(source => source.sourceType)).toEqual(['issue']);
+    expect(kickoffs).toHaveLength(2);
+    expect(kickoffs[1]!.continuation).toMatch(/^\[Goal attempt 1\/3\]/);
+  });
+
+  it('asks GitHub nothing once the card holds an open pull request', async () => {
+    const { storage, card, processor, list } = await seeded({ ref: 'factory/issue-1', repositoryId: 10 });
+    const binding = (await storage.listActiveRunBindings()).find(row => row.workItemId === card.item.id);
+    expect(binding).toBeDefined();
+    await processor.attachOwnBranchPullRequest(binding!);
+    expect(list).toHaveBeenCalledTimes(1);
+    await processor.attachOwnBranchPullRequest(binding!);
+    expect(list).toHaveBeenCalledTimes(1);
   });
 });

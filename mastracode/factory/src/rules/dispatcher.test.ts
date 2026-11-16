@@ -3424,6 +3424,51 @@ describe('FactoryDecisionDispatcher', () => {
     expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({ status: 'succeeded' });
   });
 
+  // fork(claude-agent): a pull request the run opened on its branch without a tool result naming it.
+  it('lets a Mastra Code run file the pull request its branch has before judging the run incomplete', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      skillName: 'factory-build',
+      arguments: 'Build',
+      idempotencyKey: 'own-branch-pull-request',
+    });
+    await bindWorkRun(storage, item.id);
+    const { controller } = createSession(undefined, {
+      signalAccepted: Promise.resolve({ accepted: true, action: 'wake' }),
+      emitAgentEndDuringSignal: true,
+      agentEndReason: 'complete',
+    });
+    // As the processor files it: the card takes the pull request (and goes to review).
+    const afterRunTurn = vi.fn(async () => {
+      await storage.attachSource({
+        orgId: 'org-1',
+        id: item.id,
+        source: {
+          integrationId: 'github',
+          type: 'pull-request',
+          externalId: 'github:10:pull-request:17',
+          url: 'https://github.com/acme/repo/pull/17',
+        },
+        metadata: { state: 'open' },
+      });
+    });
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      boards: autoStartingBoards(),
+      transitionService,
+      storage,
+      ownerId: 'worker-1',
+      afterRunTurn,
+    });
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    expect(afterRunTurn).toHaveBeenCalledTimes(1);
+    expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]).toMatchObject({ status: 'succeeded' });
+  });
+
   it('accepts a PR reviewed on its own linked card without moving the Building card', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const { item, transitionService } = await queueDecision(storage, {

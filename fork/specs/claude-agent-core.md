@@ -346,6 +346,15 @@ Each slice: implement → focused tests → manual check where noted → commit.
      until it ends, parked or not) and in the audit log (`factory.run.started`/`ended`, with usage)
      from its kickoff to its end, one run however many re-kicks; a run live on another dispatcher
      hands the decision back, and a dead process's entries are swept.
+     After each turn of a card's run that ended on its own (either runtime: each Claude Agent turn,
+     a Mastra Code run's end), a card with no open pull request looks up the open pull requests of
+     its session's repository whose head is the run's own branch (one listing,
+     `head=<owner>:<branch>`; `findOwnBranchPullRequest`) and files the one it finds through the
+     same own-pull-request path as a tool result naming it (`attachOwnBranchPullRequest`): GitHub's
+     record must show a same-repository head on the card's or the run's branch, then provenance,
+     the attach and the hand-off to the board's pull request review. So a pull request Claude opened
+     with its own `gh pr create` (a `Bash` command, which reaches no phase processor) is on the card
+     before the turn is judged, rather than when GitHub's "opened" or a reconcile arrives.
      **One process runs Claude Agent sessions** per database (`session/claude-agent-host.ts`): their
      Claude Code, in-memory run state and ledger writes (whole-value, no compare-and-set) live in
      it. The holder is one process (host, Claude Agent home, pid, boot nonce), renewing every 10s;
