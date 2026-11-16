@@ -983,6 +983,7 @@ describe('MastraFactory.prepare', () => {
       'agent-sessions', // fork(claude-agent)
       'agent-interactions', // fork(claude-agent)
       'agent-messages', // fork(claude-agent)
+      'github-events', // fork(claude-agent)
       'integrations',
       'projects',
       'filesystem',
