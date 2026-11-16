@@ -6565,6 +6565,85 @@ describe('pull request cards on the Work board', () => {
       expect(cards.find(entry => entry.id === card.id)?.workItem.sources).toEqual([]);
     });
 
+    it('never moves a card for a pull request it holds but did not open, whatever its run echoes', async () => {
+      const harness = await workBoardHarness('read');
+      const { card, binding } = await ownCard(harness);
+      // A maintainer's pull request joined the card because it closes the card's issue.
+      await harness.workItems.attachSource({
+        orgId: 'org-1',
+        id: card.id,
+        source: {
+          integrationId: 'github',
+          type: 'pull-request',
+          externalId: 'github:10:pull-request:17',
+          url: 'https://github.com/acme/repo/pull/17',
+        },
+        metadata: {
+          githubRepositoryId: 10,
+          githubPullRequestNumber: 17,
+          state: 'open',
+          headBranch: 'maintainer/fix-it',
+        },
+      });
+      // An earlier read of the run's echo recorded provenance for it, naming this card and run.
+      await provenance(harness, card.id, binding.id);
+      const pullsGet = vi.fn().mockResolvedValue({
+        data: {
+          number: 17,
+          html_url: 'https://github.com/acme/repo/pull/17',
+          state: 'open',
+          head: { ref: 'maintainer/fix-it', sha: 'b'.repeat(40), repo: { id: 10 } },
+          base: { ref: 'main', repo: { id: 10 } },
+        },
+      });
+      const github = {
+        ...harness.github,
+        getInstallationOctokit: vi.fn(() => ({ pulls: { get: pullsGet } })),
+      } as unknown as GithubIntegration;
+      const boards = createBoardRegistry({ boards: [reviewBoard] });
+      const processor = new FactoryPhaseStateProcessor({
+        configVersion: 'factory-config-v1',
+        boards,
+        storage: harness.workItems,
+        transitionService: new FactoryTransitionService({
+          storage: harness.workItems,
+          configVersion: 'factory-config-v1',
+          boards,
+        }),
+        recordPullRequestProvenance: input =>
+          recordFactoryPullRequestProvenance(
+            github,
+            harness.sourceControl,
+            harness.integrationStorage as never,
+            harness.workItems,
+            input,
+          ),
+      });
+      const requestContext = new RequestContext();
+      requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+      requestContext.set('controller', {
+        resourceId: 'user-1',
+        threadId: `thread-${card.id}`,
+        sessionId: `session-${card.id}`,
+        getState: () => ({ factoryProjectId: harness.project.id }),
+      });
+
+      // The run is made to "open" that pull request: `gh pr create` and an echo of its URL.
+      for (const callId of ['toolu_echo-1', 'toolu_echo-2']) {
+        await processor.ingestRuntimeToolResult(requestContext, {
+          callId,
+          toolName: 'execute_command',
+          input: { command: 'gh pr create --fill; echo https://github.com/acme/repo/pull/17' },
+          status: 'success',
+          value: { stdout: 'https://github.com/acme/repo/pull/17\n' },
+        });
+      }
+
+      // The card stays in Building, and its head being someone else's branch needs no GitHub call.
+      expect(await harness.workItems.get({ orgId: 'org-1', id: card.id })).toMatchObject({ stages: ['execute'] });
+      expect(pullsGet).not.toHaveBeenCalled();
+    });
+
     it("still files someone else's pull request as its own card", async () => {
       const harness = await workBoardHarness('write');
       const { card } = await ownCard(harness);
