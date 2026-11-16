@@ -214,12 +214,12 @@ Runtimes never assume the checkout is on the Factory host: Claude Agent always l
 | Provider                     | `LocalFactorySandbox` (existing)       | `SpritesSandbox` from `@mastra/sprites` (existing, `workspaces/sprites`), wrapped as a `FactorySandbox`                                                   |
 | Isolation                    | none (host user)                       | Firecracker VM per session, persistent disk, auto-hibernate when idle                                                                                     |
 | `spawn`                      | `child_process.spawn`                  | `sprite.spawn()` from `@fly/sprites` — WebSocket exec with stdin/stdout/stderr, `kill`, `wait`                                                            |
-| Repo checkout                | `<root>/<sessionId>/<repo>`            | `/home/sprite/<repo>` (path TBD in slice), cloned by Factory's existing `materializeRepo` via `executeCommand`                                            |
-| Claude Code binary           | SDK-bundled                            | official installer in the sprite, **pinned to the SDK's bundled CLI version**, unmodified; installed once per sprite in the sandbox start hook            |
-| Credentials into sandbox     | process env                            | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`); never written to the sprite's disk by Factory                                               |
+| Repo checkout                | `<root>/<sessionId>/<repo>`            | `/home/sprite/<repo>` (the Sprite user's home, probed with `pwd`), cloned by Factory's existing materialization via `executeCommand`                      |
+| Claude Code binary           | SDK-bundled                            | official installer in the sprite, **pinned to the SDK's bundled CLI version**, unmodified, no auto-update; installed on first Claude Agent open           |
+| Credentials into sandbox     | process env                            | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`), over the exec's stdin; never in the exec URL, argv or the sprite's disk                     |
 | Lifecycle                    | dir per session                        | one sprite per session, named from the session id; created lazily; destroyed when the session closes or its work item reaches Done; hibernates in between |
-| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk → `resume: sessionId` works                                                                                 |
-| Server config                | —                                      | `SPRITES_TOKEN` (Fly token), optional `FACTORY_SPRITES_ORG`/region; Node ≥ 24 (required by `@fly/sprites`)                                                |
+| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk (`~/.factory/claude-agent/.claude`) → `resume: sessionId` works                                             |
+| Server config                | —                                      | `SPRITES_TOKEN` (the Fly org's Sprites token), optional `FACTORY_SPRITES_REGION`; Node ≥ 24 (required by `@fly/sprites`)                                  |
 
 Selection: `FACTORY_SANDBOX_PROVIDER=local|sprites` as the deployment default, overridable per
 project. Platform and E2B sandbox paths are left in place but unsupported by this fork.
@@ -395,6 +395,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
      and Sprites errors are rebuilt without the URL the SDK writes into them. `FACTORY_SPRITES_PREFIX`
      keeps deployments sharing a token apart; `scripts/list-orphan-sprites.mjs` lists Sprites no
      session owns; `stop()` kills the long-lived processes. Not yet checked against a live Sprite.
+   - **9b** ✅ Claude Agent on Sprites: `claude-agent-workspace.ts` runs Claude Code wherever the
+     session's sandbox can launch processes (`sessionSandboxProcesses`: the sandbox's own, or this
+     host's for a local one). In a Sprite, the first open installs Claude Code with the official
+     installer, pinned to the SDK's `claudeCodeVersion`, in `~/.factory/claude-agent` (once per
+     sandbox; a later open checks `--version`), and the workspace's `launch` gives the SDK that
+     binary and a `spawnClaudeCodeProcess` through the Sprite. The environment is
+     `claudeProcessEnv(…, { remote: true })`: Claude's credential, the sandbox's git credentials and
+     the locale, nothing of the host. Factory's skills plugin is written on the Sprite's
+     filesystem; the in-process MCP server needs nothing, as its traffic rides Claude Code's stdio
+     (checked with the real binary through a fake Sprite exec). Isolation is unchanged
+     (`settingSources`, `CLAUDE_AGENT_ISOLATION`, `strictMcpConfig`). Transcripts stay on the
+     Sprite's disk, so `resume` works after a restart. Deviation: the install runs on the first
+     Claude Agent open rather than in every Sprite's start hook, so Mastra Code sessions never
+     download it. Not yet checked against a live Sprite (`mastracode/sandbox-sprites/README.md`,
+     "Live check").
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
@@ -423,6 +438,9 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT` | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
 | `FACTORY_CLAUDE_AGENT_EXECUTABLE`     | bundled        | Path to an installed `claude`                                                 |
 | `CLAUDE_CODE_OAUTH_TOKEN`             | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
+| `FACTORY_SANDBOX_PROVIDER`            | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |
+| `SPRITES_TOKEN`                       | unset          | Sprites API token of the Fly.io organization, for `sprites`                   |
+| `FACTORY_SPRITES_REGION`              | unset          | Region new session Sprites are created in (Sprites default when unset)        |
 
 ## 9. Upstream
 

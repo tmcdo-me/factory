@@ -3,9 +3,11 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { SANDBOX_PROCESSES } from '@factory/agent-runtime';
+import type { SandboxProcesses } from '@factory/agent-runtime';
 import { RequestContext } from '@mastra/core/request-context';
 import type { WorkspaceSandbox } from '@mastra/core/workspace';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __clearSessionSandboxesForTests, getSessionSandbox } from '../sandbox/session-sandbox.js';
 import { claudeAgentRequestContext, createClaudeAgentWorkspaceResolver } from './claude-agent-workspace.js';
@@ -51,7 +53,127 @@ const resolverFor = (sandbox: unknown) =>
     getMastra: () => undefined,
   });
 
+/**
+ * A started Sprite sandbox as Factory's workspace hands it out: its checkout lives in the VM (not
+ * on this host), and it carries the seam's processes. Commands record what they run.
+ */
+function spriteSandbox(options: { checkout?: boolean } = {}) {
+  const commands: string[] = [];
+  const spawn = vi.fn();
+  const processes: SandboxProcesses = {
+    kind: 'sprite',
+    spawn,
+    files: {
+      mkdir: async () => {},
+      rm: async () => {},
+      writeFile: async () => {},
+      isDirectory: async path => options.checkout !== false && path === '/home/sprite/repo',
+    },
+  };
+  const sandbox = {
+    id: 'factory-row-1',
+    provider: 'sprites',
+    status: 'running',
+    ensureRunning: async () => {},
+    getEnv: () => ({ GH_TOKEN: 'ghs_x' }),
+    executeCommand: vi.fn(async (command: string) => {
+      commands.push(command);
+      return { exitCode: 0, stdout: '', stderr: '' };
+    }),
+    [SANDBOX_PROCESSES]: processes,
+  };
+  const entry = getSessionSandbox('row-1', 'acme/repo', () => sandbox as unknown as WorkspaceSandbox);
+  entry.workdir = '/home/sprite/repo'; // the start hook's probe, as after the clone
+  return { sandbox, processes, spawn, commands };
+}
+
+const installed = {
+  version: '2.1.325',
+  home: '/home/sprite/.factory/claude-agent',
+  executable: '/home/sprite/.factory/claude-agent/.local/bin/claude',
+};
+
 describe('Claude Agent workspace', () => {
+  it("runs Claude Code inside a Sprite: installed there once, launched through the sandbox's processes", async () => {
+    const { sandbox, spawn } = spriteSandbox();
+    const install = vi.fn(async (run: (script: string) => Promise<unknown>) => {
+      await run('install script');
+      return installed;
+    });
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: install,
+    });
+
+    const workspace = await resolve('agent-session-1', undefined);
+    expect(workspace).toMatchObject({
+      cwd: '/home/sprite/repo',
+      env: { GH_TOKEN: 'ghs_x' },
+      launch: { home: installed.home, remote: true, pathToClaudeCodeExecutable: installed.executable },
+      sessionWorkspace: { kind: 'sprite', checkoutDir: '/home/sprite/repo' },
+    });
+    // The install step ran in the sandbox, with room for a first download.
+    expect(sandbox.executeCommand).toHaveBeenCalledWith('install script', undefined, { timeout: 600_000 });
+
+    // Claude Code starts through the Sprite, never as a process on this host.
+    workspace.launch!.spawnClaudeCodeProcess!({
+      command: installed.executable,
+      args: ['--resume', 'claude-1'],
+      cwd: '/home/sprite/repo',
+      env: { HOME: installed.home },
+    });
+    expect(spawn).toHaveBeenCalledWith(installed.executable, ['--resume', 'claude-1'], {
+      cwd: '/home/sprite/repo',
+      env: { HOME: installed.home },
+      signal: undefined,
+    });
+
+    // A reopen (a restart of Claude Code, the next kickoff) doesn't install again.
+    await resolve('agent-session-1', undefined);
+    expect(install).toHaveBeenCalledTimes(1);
+  });
+
+  it('tries the install again on the next open when it failed', async () => {
+    const { sandbox } = spriteSandbox();
+    const install = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('curl: (6) Could not resolve host'))
+      .mockResolvedValue(installed);
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: install,
+    });
+    await expect(resolve('agent-session-1', undefined)).rejects.toThrow(/Could not resolve host/);
+    await expect(resolve('agent-session-1', undefined)).resolves.toMatchObject({ launch: { home: installed.home } });
+  });
+
+  it("checks a Sprite's checkout in the Sprite, not on this host", async () => {
+    const { sandbox } = spriteSandbox({ checkout: false });
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: async () => installed,
+    });
+    await expect(resolve('agent-session-1', undefined)).rejects.toThrow(/checkout is not ready/);
+  });
+
+  it("refuses a sandbox that can't run Claude Code", async () => {
+    const sandbox = { id: 'e2b-1', provider: 'e2b', ensureRunning: async () => {} };
+    await expect(resolverFor(sandbox)('agent-session-1', undefined)).rejects.toThrow(
+      /need a local or Sprites sandbox.*not e2b/,
+    );
+  });
+
+  it('runs a local sandbox on this host, as before: no install, no launch', async () => {
+    const { sandbox, finishClone } = startingSandbox();
+    await finishClone();
+    const workspace = await resolverFor(sandbox)('agent-session-1', undefined);
+    expect(workspace.launch).toBeUndefined();
+    expect(workspace.sessionWorkspace).toMatchObject({ kind: 'local', checkoutDir: join(root, 'row-1', 'repo') });
+  });
+
   it('waits for a start still cloning before handing out the checkout', async () => {
     const { sandbox, entry, finishClone } = startingSandbox();
     let resolved = false;

@@ -451,6 +451,74 @@ describe('ClaudeAgentSessions with Factory tools', () => {
     }
   });
 
+  it("runs Claude Code inside the session's sandbox when the workspace launches it there", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-home-'));
+    try {
+      const hostHome = join(root, 'never-created');
+      const source = new FactorySkillSource(new LocalSkillSource({ basePath: '/' }), [], undefined, async () => false);
+      const skills = new Workspace({ skillSource: source, skills: [FACTORY_SKILLS_MOUNT] }).skills;
+      const written = new Map<string, string>();
+      const files = {
+        mkdir: vi.fn(async () => {}),
+        rm: vi.fn(async () => {}),
+        writeFile: vi.fn(async (path: string, content: string | Uint8Array) => {
+          written.set(path, String(content));
+        }),
+      };
+      const spawn = vi.fn();
+      const spriteHome = '/home/sprite/.factory/claude-agent';
+      const fake = toolCallingQuery(async () => {});
+      const { sessions } = toolSetup(fake.fn, {
+        home: hostHome,
+        // After a Factory restart: the conversation's transcript is on the Sprite's disk.
+        sessions: memoryStore([claude('s1', { runtimeState: { claudeSessionId: 'claude-prev' } })]),
+        hostEnv: { HOME: '/home/u', PATH: '/usr/bin', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x' },
+        workspace: async () => ({
+          cwd: '/home/sprite/repo',
+          env: { GH_TOKEN: 'ghs_x' },
+          requestContext: claudeAgentRequestContext('s1'),
+          ...(skills ? { skills } : {}),
+          launch: {
+            home: spriteHome,
+            remote: true,
+            files,
+            spawnClaudeCodeProcess: spawn,
+            pathToClaudeCodeExecutable: `${spriteHome}/.local/bin/claude`,
+          },
+        }),
+      });
+      await sessions.commands().send('s1', { text: 'plan' }, { context: hostContext('user-a') });
+      await vi.waitFor(() => expect(fake.options).toHaveLength(1));
+
+      const plugin = `${spriteHome}/factory-skills/s1`;
+      expect(fake.options[0]).toMatchObject({
+        cwd: '/home/sprite/repo',
+        resume: 'claude-prev',
+        spawnClaudeCodeProcess: spawn,
+        pathToClaudeCodeExecutable: `${spriteHome}/.local/bin/claude`,
+        plugins: [{ type: 'local', path: plugin, skipMcpDiscovery: true }],
+        settingSources: ['project'],
+        strictMcpConfig: true,
+      });
+      // Nothing of this host's environment, only Claude's credential and the sandbox's.
+      expect(fake.options[0]!.env).toEqual({
+        CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
+        GH_TOKEN: 'ghs_x',
+        HOME: spriteHome,
+        CLAUDE_CONFIG_DIR: `${spriteHome}/.claude`,
+        DISABLE_AUTOUPDATER: '1',
+        CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
+      });
+      // The skills plugin is written in the sandbox; nothing is written on this host.
+      expect(written.get(`${plugin}/skills/factory-plan/SKILL.md`)).toContain('# Factory Plan');
+      await expect(stat(hostHome)).rejects.toThrow();
+      // Factory's in-process MCP server is served to it as for a local Claude Code.
+      expect(Object.keys(fake.options[0]!.mcpServers as object)).toEqual(['factory']);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('never uses an unsafe session id as the skills folder it deletes and rewrites', async () => {
     const home = await mkdtemp(join(tmpdir(), 'claude-home-'));
     try {

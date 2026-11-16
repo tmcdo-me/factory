@@ -13,6 +13,8 @@ through the Claude Agent SDK. Design and compliance constraints:
 | `skills.ts`        | `writeSkillsPlugin`: the host's chosen skills written as one local plugin (`factory:<name>`), skills only; `skillKickoffText` starts one for a board run                                 |
 | `builtin-tools.ts` | The allow-list of Claude Code's built-in tools, and the deny-list of those that act outside the session                                                                                  |
 | `env.ts`           | Subprocess environment allow-list: Claude's own credential passes through untouched; server secrets never do                                                                             |
+| `install.ts`       | `ensureClaudeCode`: the official installer in a sandbox, pinned to the SDK's bundled CLI version (`bundledClaudeCodeVersion`), once per sandbox                                          |
+| `launch.ts`        | `sandboxClaudeCodeLaunch`: Claude Code inside a sandbox, started through the sandbox's `spawn` (`spawnClaudeCodeProcess`)                                                                |
 
 Credentials: Factory never handles Claude credentials. The binary uses its own saved login
 (`claude /login`) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` set by the operator in the
@@ -35,6 +37,30 @@ Isolation: a session gets nothing of the operator's Claude setup beyond the mode
   list, web search and fetch. Schedules and wake-ups, notifications, remote triggers, messages to
   other sessions, workflows and worktrees stay off, as do Claude Code's own question and plan prompts
   (Factory's `ask_user` and `submit_plan` replace them). See `builtin-tools.ts`.
+
+## In a sandbox (Fly.io Sprites)
+
+A session whose sandbox carries `SANDBOX_PROCESSES` (`@factory/sandbox-sprites`) runs Claude Code
+inside it, with the same isolation as on the host:
+
+- **Binary:** `ensureClaudeCode` runs Anthropic's installer (`curl -fsSL https://claude.ai/install.sh
+| bash -s <version>`) in the sandbox the first time a Claude Agent session opens there. The
+  version is the SDK package's `claudeCodeVersion` (2.1.325 for SDK 0.3.325), never hard-coded.
+  It lives in a home of its own, `~/.factory/claude-agent`, and runs with `DISABLE_AUTOUPDATER=1`,
+  so it only changes when the SDK (and so the pin) does. Later opens check it with `--version`.
+- **Spawn:** `sandboxClaudeCodeLaunch` gives the SDK the installed path
+  (`pathToClaudeCodeExecutable`) and a `spawnClaudeCodeProcess` that starts it through the
+  sandbox. The SDK talks to it over stdio as to a local process; Factory's in-process MCP server and
+  the SDK's control requests ride the same stdio, so nothing in the sandbox calls back to Factory.
+- **Environment:** `claudeProcessEnv(…, { home, remote: true })`: Claude's credential
+  (`CLAUDE_CODE_OAUTH_TOKEN`), the sandbox's git credentials and the locale; nothing of this host
+  (`HOME`, `PATH`, `TMPDIR`, certificates, proxies). `HOME`/`CLAUDE_CONFIG_DIR` point at the
+  sandbox's Claude home. In a Sprite the environment travels over the process's stdin, never
+  in the exec request or on disk.
+- **Skills:** `writeSkillsPlugin(dir, skills, launch.files)` writes the plugin on the sandbox's
+  filesystem, under its Claude home.
+- **Resume:** transcripts stay in the sandbox's Claude home (on the Sprite's disk), so a restarted
+  Factory reopens the same Sprite and resumes the conversation by its session id.
 
 ```sh
 pnpm --filter @factory/runtime-claude-agent test

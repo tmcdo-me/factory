@@ -2,6 +2,7 @@ import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, normalize, sep } from 'node:path';
 
 import type { SdkPluginConfig } from '@anthropic-ai/claude-agent-sdk';
+import type { SandboxFiles } from '@factory/agent-runtime';
 
 /** Factory's skills reach Claude Code as one local plugin of this name; skills are `factory:<name>`. */
 export const FACTORY_SKILLS_PLUGIN = 'factory';
@@ -24,17 +25,34 @@ export interface ClaudeAgentSkills {
 
 const SKILL_NAME = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/** Files on the machine Claude Code runs on: this host's, or a sandbox's (`SandboxFiles`). */
+export type SkillFiles = Pick<SandboxFiles, 'mkdir' | 'rm' | 'writeFile'>;
+
+/** This host's filesystem. */
+export const HOST_FILES: SkillFiles = {
+  mkdir: async path => {
+    await mkdir(path, { recursive: true });
+  },
+  rm: path => rm(path, { recursive: true, force: true }),
+  writeFile: (path, content) => writeFile(path, content),
+};
+
 /**
  * Write the session's skills as a local Claude Code plugin in `dir`, replacing what was there, so
- * a session sees exactly the skills Factory chose for it this time.
+ * a session sees exactly the skills Factory chose for it this time. `files` is the filesystem
+ * Claude Code runs on: this host's by default, a sandbox's when it runs inside one.
  *
  * The plugin carries skills only: no hooks, agents, commands or MCP servers, and its MCP discovery is
  * skipped. Skill names must be plain folder names; file paths must stay inside the skill's folder.
  */
-export async function writeSkillsPlugin(dir: string, skills: readonly ClaudeAgentSkill[]): Promise<ClaudeAgentSkills> {
-  await rm(dir, { recursive: true, force: true });
-  await mkdir(join(dir, '.claude-plugin'), { recursive: true });
-  await writeFile(
+export async function writeSkillsPlugin(
+  dir: string,
+  skills: readonly ClaudeAgentSkill[],
+  files: SkillFiles = HOST_FILES,
+): Promise<ClaudeAgentSkills> {
+  await files.rm(dir);
+  await files.mkdir(join(dir, '.claude-plugin'));
+  await files.writeFile(
     join(dir, '.claude-plugin', 'plugin.json'),
     `${JSON.stringify({ name: FACTORY_SKILLS_PLUGIN, version: '1.0.0', description: "Factory's skills" }, null, 2)}\n`,
   );
@@ -42,16 +60,16 @@ export async function writeSkillsPlugin(dir: string, skills: readonly ClaudeAgen
   for (const skill of skills) {
     if (!SKILL_NAME.test(skill.name)) throw new Error(`Skill name "${skill.name}" is not a plain folder name`);
     const root = join(dir, 'skills', skill.name);
-    await mkdir(root, { recursive: true });
-    await writeFile(join(root, 'SKILL.md'), skillMarkdown(skill));
+    await files.mkdir(root);
+    await files.writeFile(join(root, 'SKILL.md'), skillMarkdown(skill));
     for (const file of skill.files ?? []) {
       const relative = normalize(file.path);
       if (relative.startsWith('..') || relative.startsWith(sep) || relative === 'SKILL.md' || relative === '.') {
         throw new Error(`Skill "${skill.name}" file "${file.path}" is outside its folder`);
       }
       const target = join(root, relative);
-      await mkdir(dirname(target), { recursive: true });
-      await writeFile(target, file.content);
+      await files.mkdir(dirname(target));
+      await files.writeFile(target, file.content);
     }
     names.push(`${FACTORY_SKILLS_PLUGIN}:${skill.name}`);
   }

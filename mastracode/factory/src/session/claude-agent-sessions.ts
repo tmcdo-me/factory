@@ -203,9 +203,10 @@ export class ClaudeAgentSessions {
       );
     }
     const workspace = await this.#deps.workspace(sessionId, requestContext);
-    const { cwd, env } = workspace;
-    const home = this.#deps.home;
-    if (home) await mkdir(home, { recursive: true, mode: 0o700 });
+    const { cwd, env, launch } = workspace;
+    // fork(claude-agent): Claude Code runs on this host, or inside the session's sandbox (`launch`).
+    const home = launch ? launch.home : this.#deps.home;
+    if (home && !launch) await mkdir(home, { recursive: true, mode: 0o700 });
     const watchShell = this.#shellWatcher(sessionId, workspace);
     const publisher = new SessionPublisher(this.#deps.hub, sessionId, {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
@@ -222,7 +223,12 @@ export class ClaudeAgentSessions {
       sessionId,
       cwd,
       ...(untrusted ? { untrustedCheckout: true } : {}),
-      env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, home ? { home } : {}),
+      env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, {
+        ...(home ? { home } : {}),
+        ...(launch?.remote ? { remote: true } : {}),
+      }),
+      ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
+      ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
       ...(this.#deps.instructions ? { instructions: this.#deps.instructions } : {}),
@@ -304,7 +310,7 @@ export class ClaudeAgentSessions {
       return built;
     };
     const callRuns = new Map<string, string | undefined>();
-    const sessionWorkspace = localSessionWorkspace(workspace);
+    const sessionWorkspace = workspace.sessionWorkspace ?? localSessionWorkspace(workspace);
     const defs = claudeAgentToolDefs((await opening).tools, async (name, input, ctx: FactoryToolContext) => {
       const runId = callRuns.get(ctx.callId);
       callRuns.delete(ctx.callId);
@@ -365,20 +371,20 @@ export class ClaudeAgentSessions {
     };
   }
 
-  /** Factory's skills for the session, written as a plugin under Claude Code's home. */
+  /** Factory's skills for the session, written as a plugin under Claude Code's home (where it runs). */
   async #skills(
     sessionId: string,
     workspace: Awaited<ReturnType<ClaudeAgentSessionsDeps['workspace']>>,
     hostContext: unknown,
   ): Promise<ClaudeAgentSkills | undefined> {
-    const home = this.#deps.home;
+    const home = workspace.launch?.home ?? this.#deps.home;
     if (!home || !workspace.skills) return undefined;
     const skills = await factorySkillsOf(workspace.skills, workspace.requestContext?.(hostContext));
     if (!skills.length) return undefined;
     // The folder is deleted and rewritten on every start, so its name must be one plain segment.
     if (!SAFE_SEGMENT.test(sessionId))
       throw new Error(`Session id ${JSON.stringify(sessionId)} is not a safe folder name`);
-    return writeSkillsPlugin(join(home, 'factory-skills', sessionId), skills);
+    return writeSkillsPlugin(join(home, 'factory-skills', sessionId), skills, workspace.launch?.files);
   }
 
   /**

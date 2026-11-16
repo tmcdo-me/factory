@@ -25,7 +25,12 @@ Fly.io Sprites as Factory's session sandbox (fork-only). Design:
   (`/home/sprite/<repo>`, probed with `pwd`).
 - **Mastra Code** uses the sandbox's command and file API only.
 - **Processes** (`SANDBOX_PROCESSES` from `@factory/agent-runtime`): runtimes that launch their own
-  agent process (Claude Agent runs Claude Code inside the Sprite) get `spawn` and `files`.
+  agent process get `spawn` and `files`.
+- **Claude Agent** runs Claude Code inside the Sprite: the first Claude Agent open installs it with
+  Anthropic's installer, pinned to the Agent SDK's bundled CLI version, in
+  `~/.factory/claude-agent` (its home: config, transcripts, Factory's skills plugin), and the SDK
+  starts it through `spawn`. Factory's MCP server stays in Factory; its traffic rides Claude Code's
+  stdio. See `@factory/runtime-claude-agent` ("In a sandbox").
 
 ## Environment and credentials
 
@@ -62,3 +67,44 @@ Factory's `source_control_sessions` table to the script; it lists only, and dele
 pnpm --filter @factory/sandbox-sprites build
 SPRITES_TOKEN=… FACTORY_SPRITES_PREFIX=factory node mastracode/sandbox-sprites/scripts/list-orphan-sprites.mjs < session-ids.txt
 ```
+
+## Tests
+
+```sh
+pnpm --filter @factory/sandbox-sprites test   # fakes only: a fake Sprite exec that speaks stdio
+# the real Claude Code binary (the SDK's bundled one) through the fake Sprite exec; no Fly, no login:
+FACTORY_SPRITES_E2E=1 pnpm --filter @factory/sandbox-sprites exec vitest run src/claude-code.e2e.test.ts
+```
+
+## Live check
+
+Nothing here has run against a real Sprite yet. What it needs:
+
+1. **In Fly.io:** an organization with Sprites enabled ([sprites.dev](https://sprites.dev)), and a
+   Sprites API token for it. The token selects the organization; Sprites are created there as
+   `factory-<session id>` (and `factory-live-*` by the live test).
+2. **On the Factory host:** Node ≥ 24, and in its environment:
+   - `FACTORY_SANDBOX_PROVIDER=sprites`, `SPRITES_TOKEN=<token>`, optionally `FACTORY_SPRITES_REGION`;
+   - `CLAUDE_CODE_OAUTH_TOKEN` from `claude setup-token` (Claude Agent sessions; passed to the
+     binary in the Sprite over the exec's stdin, never stored);
+   - the GitHub App as usual, so Factory can clone into the Sprite.
+3. **In the Sprite's image** (the Sprites default has these): `sh`, `bash`, `curl`, `git`, and
+   outbound HTTPS to `claude.ai` and its download host (installer), `api.anthropic.com` and
+   `github.com`.
+
+Then:
+
+```sh
+# install, env over stdin, MCP + skills in the Sprite (no turn; deletes its Sprite afterwards):
+FACTORY_SPRITES_LIVE=1 SPRITES_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
+# plus one turn and a resume in a new Claude Code process (a few cents):
+FACTORY_SPRITES_LIVE=1 FACTORY_SPRITES_LIVE_TURN=1 SPRITES_TOKEN=… CLAUDE_CODE_OAUTH_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
+```
+
+And in Factory: a project whose default runtime is Claude Agent, a session on it, one message.
+Check that the Sprite `factory-<session id>` exists with the checkout in `/home/sprite/<repo>`,
+that the turn completes, that a restart of Factory resumes the conversation, and that deleting the
+session deletes the Sprite. Two things only a live Sprite can show: Claude Code refuses
+`bypassPermissions` when it runs as root (`bypass_root`), so the exec must run as the Sprite's
+ordinary user; and if Claude Code exits as soon as it starts, reporting a malformed first message,
+the Sprite's `sh` read past the environment preamble (see `stdin-env.ts`).
