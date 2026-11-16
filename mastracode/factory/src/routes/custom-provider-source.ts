@@ -71,7 +71,10 @@ class OrgCustomProvidersSnapshot {
     // fork(claude-agent)
     this.#contextWindows = new Map(
       records.flatMap(record =>
-        Object.entries(record.modelContextWindows).map(([model, tokens]) => [`${record.providerId}/${model}`, tokens]),
+        Object.entries(record.modelContextWindows).map(([model, { tokens }]) => [
+          `${record.providerId}/${model}`,
+          tokens,
+        ]),
       ),
     );
     this.#fetchedAt = Date.now();

@@ -17,8 +17,8 @@ export function observeSessionAgentEvents(
   session: MirrorableSession,
   hub: SessionEventHub,
   options: {
-    /** The context window of the model the session runs now, when known (a custom provider's model). */
-    contextWindow?: () => number | undefined;
+    /** The context window of the model that produced a step, when known (a custom provider's model). */
+    contextWindow?: (modelId: string | undefined) => number | undefined;
   } = {},
 ): void {
   if (mirrored.has(session)) return;
@@ -47,6 +47,21 @@ export function observeSessionAgentEvents(
 export function sessionModelContextWindow(session: {
   state: { get(): { factoryOrgId?: string } };
   model: { get(): string | undefined };
-}): () => number | undefined {
-  return () => customModelContextWindow(session.state.get().factoryOrgId, session.model.get());
+}): (modelId: string | undefined) => number | undefined {
+  return replyModelId => {
+    const current = session.model.get();
+    return customModelContextWindow(session.state.get().factoryOrgId, stepModelId(replyModelId, current));
+  };
+}
+
+/**
+ * The model that produced a step: the one its reply names, else the one the session runs now. A
+ * reply names its model as the provider knows it (`qwen3.8-27b`, no provider prefix), so a bare id
+ * is the session's model when that ends with it; one that doesn't (the reply came before a model
+ * switch) has no window to meter against.
+ */
+export function stepModelId(replyModelId: string | undefined, current: string | undefined): string | undefined {
+  if (!replyModelId) return current;
+  if (replyModelId.includes('/')) return replyModelId;
+  return current === replyModelId || current?.endsWith(`/${replyModelId}`) ? current : undefined;
 }

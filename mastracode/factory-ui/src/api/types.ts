@@ -111,6 +111,8 @@ export interface ProvidersResponse {
 
 export interface CustomProvidersResponse {
   providers: CustomProviderInfo[];
+  /** fork(claude-agent): whether the viewer may add, change or remove them (an org admin). */
+  canManage?: boolean;
 }
 
 export interface DefaultModelResponse {
@@ -176,6 +178,8 @@ export interface SaveCustomProviderBody {
   models: string[];
   /** fork(claude-agent): a model's context window in tokens, for the context meter; unset models take the provider's. */
   contextWindows?: Record<string, number>;
+  /** fork(claude-agent): remove the stored key (a blank `apiKey` keeps it). */
+  clearApiKey?: true;
   /** When editing, the id of the provider being replaced. */
   previousId?: string;
 }

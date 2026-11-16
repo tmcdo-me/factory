@@ -15,7 +15,11 @@ import { useState } from 'react';
 import type { ReactNode } from 'react';
 
 import type { CustomProviderInfo } from '../../../../api/types';
-import { useCustomProvidersQuery, useRemoveCustomProvider } from '../../../../hooks/use-custom-providers';
+import {
+  useCanManageCustomProviders,
+  useCustomProvidersQuery,
+  useRemoveCustomProvider,
+} from '../../../../hooks/use-custom-providers';
 import { CustomProviderForm } from './CustomProviderForm';
 import { IconPlusMedium } from '@mastra/playground-ui/icons/central/IconPlusMedium';
 
@@ -26,6 +30,8 @@ import { IconPlusMedium } from '@mastra/playground-ui/icons/central/IconPlusMedi
  */
 export function CustomProvidersSection() {
   const providersQuery = useCustomProvidersQuery();
+  // fork(claude-agent): members see the org's providers; only an org admin changes them.
+  const canManage = useCanManageCustomProviders().data ?? false;
   const removeMutation = useRemoveCustomProvider();
   const [error, setError] = useState<string | null>(null);
   const [draft, setDraft] = useState<CustomProviderInfo | 'new' | null>(null);
@@ -44,11 +50,12 @@ export function CustomProvidersSection() {
     }
   };
 
-  const addProvider = draft ? undefined : (
-    <Button size="sm" icon={<IconPlusMedium />} onClick={() => setDraft('new')} disabled={busy}>
-      Add provider
-    </Button>
-  );
+  const addProvider =
+    draft || !canManage ? undefined : (
+      <Button size="sm" icon={<IconPlusMedium />} onClick={() => setDraft('new')} disabled={busy}>
+        Add provider
+      </Button>
+    );
 
   return (
     <>
@@ -102,12 +109,16 @@ export function CustomProvidersSection() {
                 Key saved
               </Badge>
             )}
-            <Button size="sm" disabled={busy} onClick={() => setDraft(provider)}>
-              Edit
-            </Button>
-            <Button size="sm" disabled={busy} onClick={() => void remove(provider.id)}>
-              Remove
-            </Button>
+            {canManage && (
+              <>
+                <Button size="sm" disabled={busy} onClick={() => setDraft(provider)}>
+                  Edit
+                </Button>
+                <Button size="sm" disabled={busy} onClick={() => void remove(provider.id)}>
+                  Remove
+                </Button>
+              </>
+            )}
           </SettingsItem>
         ))}
     </>

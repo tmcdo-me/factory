@@ -2264,7 +2264,7 @@ describe('custom provider routes', () => {
 
   function buildApp(
     user: { workosId: string; organizationId?: string } | null,
-    opts: { withStorage?: boolean; authEnabled?: boolean } = {},
+    opts: { withStorage?: boolean; authEnabled?: boolean; admin?: boolean } = {},
   ) {
     const app = new Hono();
     app.use('*', async (c, next) => {
@@ -2274,7 +2274,10 @@ describe('custom provider routes', () => {
     mountApiRoutes(
       app as any,
       new ConfigRoutes({
-        auth: fakeRouteAuth({ enabled: opts.authEnabled !== false }),
+        auth: fakeRouteAuth({
+          enabled: opts.authEnabled !== false,
+          isOrganizationAdmin: async () => opts.admin !== false,
+        }),
         controller,
         ...(opts.withStorage === false ? {} : { customProviders: seed.customProviders }),
         onCustomProvidersChanged,
@@ -2385,6 +2388,26 @@ describe('custom provider routes', () => {
     const res = await buildApp(userA, { withStorage: false }).request('/web/config/custom-providers');
     expect(res.status).toBe(503);
     expect((await res.json()).error).toBe('custom_providers_unavailable');
+  });
+
+  // fork(claude-agent): a provider's key and URL are the org's: members see them listed, admins change them.
+  it('lets members read the providers but only org admins add, change or remove one', async () => {
+    const created = await postProvider(buildApp(userA), providerBody);
+    const { provider } = await created.json();
+    const member = buildApp(userA, { admin: false });
+
+    const listed = await (await member.request('/web/config/custom-providers')).json();
+    expect(listed).toMatchObject({ providers: [{ id: provider.id, hasApiKey: true }], canManage: false });
+    expect((await postProvider(member, { ...providerBody, url: 'https://attacker.example/v1' })).status).toBe(403);
+    expect((await member.request(`/web/config/custom-providers/${provider.id}`, { method: 'DELETE' })).status).toBe(
+      403,
+    );
+    expect(await seed.customProviders.list({ orgId: 'org1' })).toMatchObject([
+      { url: 'https://llm.example.com/v1', apiKey: 'sk-x' },
+    ]);
+    expect(await (await buildApp(userA).request('/web/config/custom-providers')).json()).toMatchObject({
+      canManage: true,
+    });
   });
 
   it('validates the payload', async () => {

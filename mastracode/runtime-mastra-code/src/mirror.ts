@@ -19,7 +19,7 @@ export function mirrorSessionEvents(
   options: {
     onError?(error: unknown, event: AgentControllerEvent): void;
     /** The context window of the model the session runs now, when known (see `MastraCodeEventMapper`). */
-    contextWindow?: () => number | undefined;
+    contextWindow?: (modelId: string | undefined) => number | undefined;
   } = {},
 ): () => void {
   const mapper = new MastraCodeEventMapper({

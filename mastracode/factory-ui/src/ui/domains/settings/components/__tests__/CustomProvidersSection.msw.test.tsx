@@ -105,7 +105,13 @@ describe('CustomProvidersSection', () => {
 
   describe("when a model's context window is set", () => {
     it('sends it with the models, leaves blank ones for the provider to report, and shows what was stored', async () => {
-      const stored: CustomProviderInfo = { ...myLlm, contextWindows: { 'model-a': 131072, 'model-b': 32768 } };
+      const stored: CustomProviderInfo = {
+        ...myLlm,
+        contextWindows: {
+          'model-a': { tokens: 131072, source: 'set' },
+          'model-b': { tokens: 32768, source: 'reported' },
+        },
+      };
       let providers: CustomProviderInfo[] = [myLlm];
       let postBody: unknown;
       server.use(
@@ -135,8 +141,12 @@ describe('CustomProvidersSection', () => {
         }),
       );
 
+      // A typed window fills its field; a reported one is shown, and read again on the next save.
       await user.click(await screen.findByRole('button', { name: 'Edit' }));
-      expect(screen.getByRole('textbox', { name: 'model-b context window' })).toHaveValue('32768');
+      expect(screen.getByRole('textbox', { name: 'model-a context window' })).toHaveValue('131072');
+      const reportedField = screen.getByRole('textbox', { name: 'model-b context window' });
+      expect(reportedField).toHaveValue('');
+      expect(reportedField).toHaveAttribute('placeholder', '32,768 (reported by the provider)');
     });
 
     it('refuses a window that is not a whole number of tokens, sending nothing', async () => {
@@ -160,6 +170,42 @@ describe('CustomProvidersSection', () => {
         await screen.findByText('The context window for model-a must be a whole number of tokens.'),
       ).toBeInTheDocument();
       expect(posted).toBe(false);
+    });
+  });
+
+  describe("when the provider's key is removed", () => {
+    it('asks the server to remove it rather than keep it', async () => {
+      let postBody: unknown;
+      server.use(
+        http.get(LIST_URL, () => listResponse([myLlm])),
+        http.post(LIST_URL, async ({ request }) => {
+          postBody = await request.json();
+          return HttpResponse.json({ ok: true, provider: { ...myLlm, hasApiKey: false } });
+        }),
+      );
+
+      const user = userEvent.setup();
+      renderWithProviders(<CustomProvidersSection />);
+
+      await user.click(await screen.findByRole('button', { name: 'Edit' }));
+      await user.click(screen.getByRole('button', { name: 'Remove key' }));
+      await user.click(screen.getByRole('button', { name: 'Save' }));
+
+      await waitFor(() => expect(postBody).toMatchObject({ clearApiKey: true, previousId: 'my-llm' }));
+      expect(postBody).not.toHaveProperty('apiKey');
+    });
+  });
+
+  describe('for a member who is not an org admin', () => {
+    it('lists the providers without the controls to change them', async () => {
+      server.use(http.get(LIST_URL, () => HttpResponse.json({ providers: [myLlm], canManage: false })));
+
+      renderWithProviders(<CustomProvidersSection />);
+
+      expect(await screen.findByText('my-llm')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Remove' })).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Add provider' })).not.toBeInTheDocument();
     });
   });
 

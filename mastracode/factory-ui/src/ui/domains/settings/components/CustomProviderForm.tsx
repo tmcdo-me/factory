@@ -39,11 +39,20 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
     url: provider?.url ?? '',
     apiKey: '',
     models: provider?.models.join(', ') ?? '',
+    // Only a window someone typed fills its field; a reported one is shown beside it and read again on save.
     contextWindows: Object.fromEntries(
-      Object.entries(provider?.contextWindows ?? {}).map(([model, tokens]) => [model, String(tokens)]),
+      Object.entries(provider?.contextWindows ?? {}).flatMap(([model, window]) =>
+        window.source === 'set' ? [[model, String(window.tokens)]] : [],
+      ),
     ),
   });
+  // fork(claude-agent): the stored key goes on the next save.
+  const [removeKey, setRemoveKey] = useState(false);
   const listedModels = modelNames(draft.models);
+  const reported = (model: string) => {
+    const window = provider?.contextWindows[model];
+    return window?.source === 'reported' ? window.tokens : undefined;
+  };
 
   const save = async () => {
     const name = draft.name.trim();
@@ -78,6 +87,7 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
       models,
       ...(Object.keys(contextWindows).length > 0 ? { contextWindows } : {}),
       ...(apiKey ? { apiKey } : {}),
+      ...(!apiKey && removeKey ? { clearApiKey: true as const } : {}),
       ...(provider ? { previousId: provider.id } : {}),
     };
 
@@ -117,14 +127,24 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
         />
       </Field>
       <Field className="gap-1">
-        <FieldLabel>API key {provider ? '(leave blank to keep)' : '(optional)'}</FieldLabel>
+        <FieldLabel>
+          API key {provider?.hasApiKey ? '(leave blank to keep; re-enter it if you change the URL)' : '(optional)'}
+        </FieldLabel>
         <Input
           type="password"
           size="sm"
-          placeholder="Paste API key"
+          placeholder={removeKey ? 'The saved key will be removed' : 'Paste API key'}
           value={draft.apiKey}
           onChange={event => setDraft({ ...draft, apiKey: event.target.value })}
         />
+        {/* fork(claude-agent) */}
+        {provider?.hasApiKey && (
+          <div>
+            <Button size="sm" variant="ghost" onClick={() => setRemoveKey(!removeKey)}>
+              {removeKey ? 'Keep key' : 'Remove key'}
+            </Button>
+          </div>
+        )}
       </Field>
       <Field className="gap-1">
         <FieldLabel>Models (comma-separated)</FieldLabel>
@@ -149,7 +169,11 @@ export function CustomProviderForm({ provider, requireModels = false, onCancel, 
               <Input
                 size="sm"
                 inputMode="numeric"
-                placeholder="e.g. 131072"
+                placeholder={
+                  reported(model)
+                    ? `${reported(model)!.toLocaleString('en-US')} (reported by the provider)`
+                    : 'e.g. 131072'
+                }
                 value={draft.contextWindows[model] ?? ''}
                 onChange={event =>
                   setDraft({ ...draft, contextWindows: { ...draft.contextWindows, [model]: event.target.value } })

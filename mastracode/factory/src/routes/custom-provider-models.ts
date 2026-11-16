@@ -70,10 +70,48 @@ export function contextWindowsFromModelList(body: unknown): Record<string, numbe
   return windows;
 }
 
+/** The most of a `/v1/models` body read (1 MB): a list of models is far smaller. */
+const MAX_MODELS_BODY_BYTES = 1024 * 1024;
+
+/** The provider's model-list URL: `<base>/models`, keeping the base URL's query (e.g. `api-version`). */
+export function modelsUrl(base: string): string {
+  const url = new URL(base);
+  url.pathname = `${url.pathname.replace(/\/+$/, '')}/models`;
+  return url.toString();
+}
+
+/** The body as text, or undefined once it passes `max` bytes. */
+async function cappedText(response: Response, max: number): Promise<string | undefined> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > max) return undefined;
+  const reader = response.body?.getReader();
+  if (!reader) return '';
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > max) {
+      await reader.cancel().catch(() => {});
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 /**
- * Ask the provider for its models and read the context windows it reports for `models`. Best
- * effort: a provider that can't be reached in time, refuses, or reports none gives no windows, and
- * the save goes on. The key goes only to the provider's own URL, as model calls send it.
+ * Ask the provider for its models and read the context windows it reports for `models`: what it
+ * reports (possibly none), or `undefined` when the list couldn't be read (unreachable within the
+ * timeout, refused, a redirect, a body over 1 MB, not JSON). The save goes on either way.
+ *
+ * Risk: this is a request from the Factory server to a URL a person typed. It goes only to that
+ * provider's own base URL, the one model calls already reach with the same key; redirects are
+ * refused, so the key never follows one elsewhere; it waits at most 5 seconds and reads at most
+ * 1 MB. Only org admins may save providers. What remains is what model calls already allow: an
+ * admin can point Factory at a host its network reaches (an internal one included) and see whether
+ * it answered with a model list.
  */
 export async function readProviderContextWindows({
   url,
@@ -87,18 +125,23 @@ export async function readProviderContextWindows({
   models: readonly string[];
   fetch?: typeof fetch;
   timeoutMs?: number;
-}): Promise<Record<string, number>> {
+}): Promise<Record<string, number> | undefined> {
   if (models.length === 0) return {};
   try {
-    const response = await fetchImpl(`${url.replace(/\/+$/, '')}/models`, {
+    const response = await fetchImpl(modelsUrl(url), {
       headers: { Accept: 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
       signal: AbortSignal.timeout(timeoutMs),
       redirect: 'error',
     });
-    if (!response.ok) return {};
-    const reported = contextWindowsFromModelList(await response.json());
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => {});
+      return undefined;
+    }
+    const text = await cappedText(response, MAX_MODELS_BODY_BYTES);
+    if (text === undefined) return undefined;
+    const reported = contextWindowsFromModelList(JSON.parse(text));
     return Object.fromEntries(models.flatMap(model => (reported[model] ? [[model, reported[model]]] : [])));
   } catch {
-    return {};
+    return undefined;
   }
 }
