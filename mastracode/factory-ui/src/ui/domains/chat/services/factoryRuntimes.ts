@@ -39,7 +39,10 @@ async function json<T>(response: Response, what: string): Promise<T> {
   if (response.ok) return (await response.json()) as T;
   // A route's `message` is for people; its `error` may be a code (`organization_required`).
   const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
-  throw new Error(body.message ?? body.error ?? `${what} failed (${response.status})`);
+  // fork(claude-agent): the route's code stays on the error, for callers that act on it.
+  throw Object.assign(new Error(body.message ?? body.error ?? `${what} failed (${response.status})`), {
+    ...(body.error ? { code: body.error } : {}),
+  });
 }
 
 export const fetchRuntimeCatalog = async (baseUrl: string) =>

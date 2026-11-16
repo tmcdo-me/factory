@@ -597,7 +597,10 @@ Each slice: implement → focused tests → manual check where noted → commit.
     "Queued (#n)" from the run queue (`claudeAgent` in `GET …/run-queue`). Stopping a waiting turn
     ends it without starting Claude Code, and so does the process stopping its sessions (shutdown,
     host lease lost). Only an organization administrator may see or change the setting (the route
-    answers 403 `organization_admin_required`, and Settings leaves the row out). The dispatcher's
+    answers 403 `organization_admin_required`, and Settings leaves the row out). The cap is the
+    deployment's, so on a deployment with several organizations any of their administrators may
+    change it; a deployment-operator role would fit better, but this deployment has one
+    organization and Factory has no such role yet. The dispatcher's
     own `maxInFlight` (10) still applies on top, and a board run waiting for a Claude Agent slot
     holds a dispatcher run slot while it waits. A turn that hangs holds its slot until it ends:
     the dispatcher's overdue timeout stops watching such a run, it does not stop the turn, so a
@@ -635,21 +638,21 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 
 ## 8. Config
 
-| Setting                                  | Default        | Meaning                                                                       |
-| ---------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
-| `FACTORY_RUNTIMES`                       | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                             |
-| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`    | unset (no cap) | Default cap on Claude Agent turns at once (Settings override); see slice 13   |
-| `FACTORY_CLAUDE_AGENT_EXECUTABLE`        | bundled        | Path to an installed `claude`                                                 |
-| `CLAUDE_CODE_OAUTH_TOKEN`                | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
-| `FACTORY_SANDBOX_PROVIDER`               | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |
-| `SPRITES_TOKEN`                          | unset          | Sprites API token of the Fly.io organization, for `sprites`                   |
-| `FACTORY_SPRITES_REGION`                 | unset          | Region new session Sprites are created in (Sprites default when unset)        |
-| `FACTORY_SPRITES_PREFIX`                 | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)    |
-| `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`     | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
-| `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` | 60 minutes     | Stop a Claude Code kept running only by background work after this long       |
-| `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | on             | `0`: trusted sessions' Bash outside Claude Code's sandbox (9c)                |
-| `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's file tools and commands may not read (comma list)    |
-| `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)   |
+| Setting                                  | Default        | Meaning                                                                      |
+| ---------------------------------------- | -------------- | ---------------------------------------------------------------------------- |
+| `FACTORY_RUNTIMES`                       | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                            |
+| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`    | unset (no cap) | Default cap on Claude Agent turns at once (Settings override); see slice 13  |
+| `FACTORY_CLAUDE_AGENT_EXECUTABLE`        | bundled        | Path to an installed `claude`                                                |
+| `CLAUDE_CODE_OAUTH_TOKEN`                | unset          | Operator-supplied; passed through, never read/stored/logged by Factory       |
+| `FACTORY_SANDBOX_PROVIDER`               | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                |
+| `SPRITES_TOKEN`                          | unset          | Sprites API token of the Fly.io organization, for `sprites`                  |
+| `FACTORY_SPRITES_REGION`                 | unset          | Region new session Sprites are created in (Sprites default when unset)       |
+| `FACTORY_SPRITES_PREFIX`                 | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)   |
+| `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`     | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes |
+| `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` | 60 minutes     | Stop a Claude Code kept running only by background work after this long      |
+| `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | on             | `0`: trusted sessions' Bash outside Claude Code's sandbox (9c)               |
+| `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's file tools and commands may not read (comma list)   |
+| `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)  |
 
 ## 9. Upstream
 

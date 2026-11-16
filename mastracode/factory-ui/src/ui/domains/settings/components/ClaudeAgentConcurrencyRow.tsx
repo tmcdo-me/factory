@@ -61,7 +61,7 @@ export function ClaudeAgentConcurrencyRow() {
   };
 
   // Only an organization administrator may see or change the server's limit.
-  if (current.error instanceof Error && /administrator/i.test(current.error.message)) return null;
+  if ((current.error as { code?: unknown } | null)?.code === 'organization_admin_required') return null;
   return (
     <SettingsRow
       label="Claude Agent runs at once"
