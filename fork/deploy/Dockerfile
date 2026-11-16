@@ -46,7 +46,9 @@ ARG WORKSPACE_FILTER="--filter mastra-turbo \
 # and fork/deploy/stage-runtime.mjs hard-links what the server loads into /app before /src goes.
 # turbo's cache is a cache mount, so a retried build reuses the packages it built.
 #  - The machine-global virtual store the checkouts use (pnpm-workspace.yaml) would leave node_modules
-#    pointing outside the image, so it is off here.
+#    pointing outside the image, so it is off here; `hoist: false` keeps what that store gives the
+#    checkouts, no hoisted fallback (with pnpm's default hoisting, TypeScript in @mastra/playground-ui's
+#    build picks up other versions of hoisted @types packages and fails).
 #  - @mastra/connect's build regenerates the docs site's provider pages and formats them with the docs
 #    package's tools, which are not installed; the server reads none of it.
 #  - Left out of /app: the Agent SDK's own Claude Code binaries (~330 MB; Claude Code runs inside each
@@ -60,8 +62,10 @@ RUN --mount=type=bind,target=/context \
     --mount=type=cache,id=factory-turbo-cache,target=/turbo-cache \
     set -eux; \
     cp -a /context/. /src/; \
-    sed -i 's/^enableGlobalVirtualStore: true$/enableGlobalVirtualStore: false/' \
-      pnpm-workspace.yaml mastracode/web/pnpm-workspace.yaml; \
+    for f in pnpm-workspace.yaml mastracode/web/pnpm-workspace.yaml; do \
+      sed -i 's/^enableGlobalVirtualStore: true$/enableGlobalVirtualStore: false/' "$f"; \
+      printf '\nhoist: false\n' >> "$f"; \
+    done; \
     node -e 'const f="packages/connect/package.json",fs=require("fs"),j=JSON.parse(fs.readFileSync(f));j.scripts["generate:provider-docs"]="echo provider docs: not built in the image";fs.writeFileSync(f,JSON.stringify(j,null,2))'; \
     store=/src/.pnpm-store; \
     pnpm install --frozen-lockfile --store-dir "$store" --package-import-method hardlink ${WORKSPACE_FILTER}; \
