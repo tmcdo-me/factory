@@ -179,6 +179,12 @@ export class MastraCodeEventMapper {
               ? { cachedInputTokens: event.usage.cachedInputTokens }
               : {}),
             ...(event.usage.reasoningTokens !== undefined ? { reasoningTokens: event.usage.reasoningTokens } : {}),
+            // `usage_update` reports one model step, so its prompt is what the model had in context
+            // for that step: AI SDK's total input (cache reads and writes included; `prompt_tokens`
+            // for an OpenAI-compatible provider). No `contextWindow`: Mastra's model catalog doesn't
+            // carry one (the registry drops models.dev's `limit.context`; custom providers list
+            // model ids only).
+            contextTokens: event.usage.promptTokens,
           },
         ];
       case 'error': {

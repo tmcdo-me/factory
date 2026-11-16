@@ -14,7 +14,7 @@ import {
   useSessionRuntimeQuery,
 } from '../hooks/useSessionRuntime';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
-import { CLAUDE_AGENT_RUNTIME, MASTRA_CODE_RUNTIME, runtimeKeys } from '../services/factoryRuntimes';
+import { CLAUDE_AGENT_RUNTIME, MASTRA_CODE_RUNTIME, runtimeKeys, runtimeLabel } from '../services/factoryRuntimes';
 import type { SessionRuntime } from '../services/factoryRuntimes';
 
 /** The runtime the composer is on: the draft's choice, or the live session's. */
@@ -25,6 +25,12 @@ export function useChatRuntime(): SessionRuntime & { draft: boolean } {
   const live = useSessionRuntimeQuery(draftSessionId ? undefined : sessionId).data;
   if (draftSessionId) return { runtimeId: draft.runtimeId, modelId: draft.modelId, draft: true };
   return { runtimeId: live?.runtimeId ?? MASTRA_CODE_RUNTIME, modelId: live?.modelId, draft: false };
+}
+
+/** The display name of the runtime the composer is on, e.g. "Claude Agent". */
+export function useChatRuntimeLabel(): string {
+  const { runtimeId } = useChatRuntime();
+  return runtimeLabel(useRuntimeCatalog().data, runtimeId);
 }
 
 /** Pick the runtime for a new session. Fixed once the session starts, so live sessions show nothing. */
@@ -44,7 +50,7 @@ export function RuntimePicker() {
       }
     >
       <SelectTrigger size="sm" aria-label="Agent runtime">
-        {catalog.runtimes.find(runtime => runtime.id === draft.runtimeId)?.label ?? draft.runtimeId}
+        {runtimeLabel(catalog, draft.runtimeId)}
       </SelectTrigger>
       <SelectContent>
         {catalog.runtimes.map(runtime => (

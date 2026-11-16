@@ -199,6 +199,23 @@ describe('transcript reducer', () => {
     expect(transcript.usage).toEqual({ inputTokens: 10, outputTokens: 2, reasoningTokens: 1 });
   });
 
+  // fork(claude-agent): the context meter reads the latest report; contexts are snapshots, not sums.
+  it('keeps only the latest usage report, context included', () => {
+    const transcript = buildTranscript(
+      's',
+      envelopes(
+        { type: 'usage', inputTokens: 40, outputTokens: 2, contextTokens: 40_000, contextWindow: 200_000 },
+        { type: 'usage', inputTokens: 12, outputTokens: 3, contextTokens: 52_000, contextWindow: 200_000 },
+      ),
+    );
+    expect(transcript.usage).toEqual({
+      inputTokens: 12,
+      outputTokens: 3,
+      contextTokens: 52_000,
+      contextWindow: 200_000,
+    });
+  });
+
   it('keeps identity of untouched items so UI memoization works', () => {
     const [m1, m2, d2] = envelopes(
       { type: 'message.started', messageId: 'm1', role: 'user' },

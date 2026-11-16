@@ -2,6 +2,17 @@
 export const MASTRA_CODE_RUNTIME = 'mastra-code';
 export const CLAUDE_AGENT_RUNTIME = 'claude-agent';
 
+/** Names to show before the catalog loads. Claude Agent is never called "Claude Code" in the UI. */
+const RUNTIME_LABELS: Record<string, string> = {
+  [MASTRA_CODE_RUNTIME]: 'Mastra Code',
+  [CLAUDE_AGENT_RUNTIME]: 'Claude Agent',
+};
+
+/** A runtime's display name: the catalog's label, else the built-in one, else its id. */
+export function runtimeLabel(catalog: FactoryRuntimeCatalog | undefined, runtimeId: string): string {
+  return catalog?.runtimes.find(runtime => runtime.id === runtimeId)?.label ?? RUNTIME_LABELS[runtimeId] ?? runtimeId;
+}
+
 export interface FactoryRuntime {
   id: string;
   label: string;

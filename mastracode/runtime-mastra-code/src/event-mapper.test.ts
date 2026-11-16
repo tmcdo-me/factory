@@ -116,6 +116,8 @@ describe('MastraCodeEventMapper', () => {
       inputTokens: 1200,
       outputTokens: 300,
       cachedInputTokens: 800,
+      // fork(claude-agent): the step's whole prompt is what the model had in context.
+      contextTokens: 1200,
     });
   });
 
@@ -280,7 +282,7 @@ describe('richer Mastra events', () => {
       },
       { type: 'subagent.started', callId: 's1', agentType: 'explore', task: 'look', modelId: 'm' },
       { type: 'subagent.ended', callId: 's1', error: 'nope' },
-      { type: 'usage', inputTokens: 5, outputTokens: 2, reasoningTokens: 1 },
+      { type: 'usage', inputTokens: 5, outputTokens: 2, reasoningTokens: 1, contextTokens: 5 },
       {
         type: 'error',
         message: 'Sign in to continue',

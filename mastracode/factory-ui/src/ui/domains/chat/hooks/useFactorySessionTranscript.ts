@@ -12,6 +12,7 @@ import type { MastraMessagePart } from '@mastra/core/agent-controller';
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 
 import { useApiConfig } from '../../../../api/config';
+import { contextFromFactoryUsage } from '../services/contextUsage';
 import { projectTranscript } from '../services/factory-transcript-projection';
 import { fetchFactoryTranscript, streamFactorySessionEvents } from '../services/factorySessionEvents';
 import { createLocalMessageId } from '../services/transcript';
@@ -151,6 +152,8 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
   }, [baseUrl, sessionId]);
 
   const projected = useMemo(() => projectTranscript(state.transcript), [state.transcript]);
+  const usage = state.transcript.usage;
+  const context = useMemo(() => contextFromFactoryUsage(usage), [usage]);
 
   const transcript: TranscriptState = useMemo(() => {
     const userTexts = projected.entries.flatMap(entry =>
@@ -178,8 +181,9 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
       pending: projected.running || (waitingOnSend && !state.pendingCleared),
       threadId: sessionId,
       tasks: projected.tasks,
+      ...(context ? { context } : {}),
     };
-  }, [projected, state.locals, state.notices, state.hidden, state.pendingCleared, sessionId]);
+  }, [projected, state.locals, state.notices, state.hidden, state.pendingCleared, sessionId, context]);
 
   const userMessageCount = useRef(0);
   userMessageCount.current = projected.entries.filter(e => e.kind === 'message' && e.message.role === 'user').length;
