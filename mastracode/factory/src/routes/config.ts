@@ -1,5 +1,6 @@
 import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
 import { MastraCodeGateway } from '@mastra/code-sdk/agents/mastracode-gateway';
+import { isClaudeSubscriptionCredential } from '@mastra/code-sdk/auth/claude-subscription-policy';
 import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
 import { MIN_OBSERVATION_THRESHOLD } from '@mastra/code-sdk/constants';
 import { resolveAutoOMModelId } from '@mastra/code-sdk/onboarding/packs';
@@ -107,6 +108,15 @@ export interface ProviderInfo {
   orgCredential?: 'oauth' | 'api_key';
   /** Tenant mode: the shared org sign-in could not be renewed and must be redone. */
   orgCredentialExpired?: true;
+  /**
+   * fork(claude-agent): a Claude subscription credential (Anthropic sign-in, or
+   * an `sk-ant-oat…` token saved as a key) stored at the caller's own scope
+   * (local mode: `auth.json`), which Mastra Code refuses. Kept so the user can
+   * remove it; it is never counted in `source` or `userCredential`.
+   */
+  userCredentialRefused?: 'oauth' | 'api_key';
+  /** fork(claude-agent): the same, for the shared org credential. */
+  orgCredentialRefused?: 'oauth' | 'api_key';
   /** Web OAuth sign-in capability, when the provider supports it. */
   oauth?: { supported: true; modes: LoginSessionKind[] };
   /** The provider is a stored custom OpenAI-compatible endpoint. */
@@ -192,6 +202,9 @@ export async function listProviders({
 }): Promise<ProviderInfo[]> {
   const models = await listCatalogModels(controller, tenantCredentials);
   const seen = new Map<string, ProviderInfo>();
+  // fork(claude-agent): refused Claude subscription rows are reported, never counted as a source.
+  const storedTenantCredentials = tenantCredentials;
+  tenantCredentials = usableTenantCredentials(tenantCredentials);
 
   for (const model of models) {
     if (seen.has(model.provider)) continue;
@@ -213,6 +226,21 @@ export async function listProviders({
     let userCredentialExpired = false;
     let orgCredential: ProviderInfo['orgCredential'];
     let orgCredentialExpired = false;
+    let userCredentialRefused: ProviderInfo['userCredentialRefused'];
+    let orgCredentialRefused: ProviderInfo['orgCredentialRefused'];
+    if (storedTenantCredentials) {
+      const refused = (scope: CredentialRecord['scope']) =>
+        storedTenantCredentials.find(
+          r =>
+            r.scope === scope &&
+            r.provider === authProviderId &&
+            isClaudeSubscriptionCredential(r.provider, r.credential),
+        )?.credential.type;
+      userCredentialRefused = refused('user');
+      orgCredentialRefused = refused('org');
+    } else if (authStorage) {
+      userCredentialRefused = refusedLocalCredential(authStorage, authProviderId);
+    }
     if (tenantCredentials) {
       const userRec = tenantCredentials.find(r => r.scope === 'user' && r.provider === authProviderId);
       const orgRec = tenantCredentials.find(r => r.scope === 'org' && r.provider === authProviderId);
@@ -231,11 +259,18 @@ export async function listProviders({
       } else if (orgRec?.credential.type === 'api_key') {
         source = 'stored-org';
       }
-    } else if (authStorage?.isLoggedIn(authProviderId)) {
+    } else if (
+      authStorage?.isLoggedIn(authProviderId) &&
+      !isClaudeSubscriptionCredential(authProviderId, authStorage.get(authProviderId))
+    ) {
       source = 'oauth';
-    } else if (authStorage?.hasStoredApiKey(model.provider)) {
+    } else if (authStorage?.hasStoredApiKey(model.provider) && !refusedLocalKey(authStorage, model.provider)) {
       source = 'stored';
-    } else if (model.apiKeyEnvVar && process.env[model.apiKeyEnvVar]) {
+    } else if (
+      model.apiKeyEnvVar &&
+      process.env[model.apiKeyEnvVar] &&
+      !isClaudeSubscriptionCredential(model.provider, { type: 'api_key', key: process.env[model.apiKeyEnvVar]! })
+    ) {
       source = 'env';
     } else if (model.hasApiKey) {
       source = 'env';
@@ -251,6 +286,8 @@ export async function listProviders({
       ...(userCredentialExpired ? { userCredentialExpired: true as const } : {}),
       ...(orgCredential ? { orgCredential } : {}),
       ...(orgCredentialExpired ? { orgCredentialExpired: true as const } : {}),
+      ...(userCredentialRefused ? { userCredentialRefused } : {}),
+      ...(orgCredentialRefused ? { orgCredentialRefused } : {}),
       ...(flowKind ? { oauth: { supported: true as const, modes: [flowKind] } } : {}),
       ...(tenantCredentials && connectWithMastraAccount && model.provider === MASTRA_GATEWAY_CATALOG_PROVIDER
         ? { connectWithMastraAccount: true as const }
@@ -396,6 +433,28 @@ export function resolveDeploymentModelProviders(providers: readonly string[] | u
   return resolved;
 }
 
+/**
+ * fork(claude-agent): tenant rows Mastra Code may use. Claude subscription
+ * credentials (spec §2) stay stored but grant no provider access and no source.
+ */
+function usableTenantCredentials(records: CredentialRecord[] | undefined): CredentialRecord[] | undefined {
+  return records?.filter(record => !isClaudeSubscriptionCredential(record.provider, record.credential));
+}
+
+/** fork(claude-agent): a refused Claude subscription key in local `auth.json` (`apikey:<provider>`). */
+function refusedLocalKey(authStorage: AuthStorage, provider: string): boolean {
+  if (!authStorage.hasStoredApiKey(provider)) return false;
+  const key = authStorage.getStoredApiKey(provider);
+  return key !== undefined && isClaudeSubscriptionCredential(provider, { type: 'api_key', key });
+}
+
+/** fork(claude-agent): the refused Claude subscription credential in local `auth.json`, if any. */
+function refusedLocalCredential(authStorage: AuthStorage, authProviderId: string): 'oauth' | 'api_key' | undefined {
+  const slot = authStorage.get(authProviderId);
+  if (isClaudeSubscriptionCredential(authProviderId, slot)) return slot?.type;
+  return refusedLocalKey(authStorage, authProviderId) ? 'api_key' : undefined;
+}
+
 function grantingTenantRecord(records: CredentialRecord[], authProviderId: string) {
   return (
     records.find(r => r.scope === 'user' && r.provider === authProviderId) ??
@@ -411,7 +470,7 @@ function tenantModelCredential(
 ): { credentialLabel?: string; credentialHolder?: ModelCredentialHolder } {
   if (!records) return {};
   if (isDeploymentModelProvider(provider)) return { credentialHolder: 'deployment' };
-  const record = grantingTenantRecord(records, getAuthProviderId(provider));
+  const record = grantingTenantRecord(usableTenantCredentials(records) ?? [], getAuthProviderId(provider));
   if (!record) return {};
   return {
     credentialLabel: credentialLabel(provider, record.credential.type),
@@ -436,6 +495,7 @@ export async function buildProviderAccess({
   deploymentProviders?: ReadonlySet<string>;
 }): Promise<ProviderAccess> {
   const models = await listCatalogModels(controller, tenantCredentials);
+  tenantCredentials = usableTenantCredentials(tenantCredentials); // fork(claude-agent)
   const hasModelKey = (provider: string) => models.some(m => m.provider === provider && m.hasApiKey);
   const accessLevel = (provider: string): ProviderAccessLevel => {
     const authProviderId = getAuthProviderId(provider);
@@ -454,10 +514,19 @@ export async function buildProviderAccess({
     }
 
     const oauthCredential = authStorage?.get(authProviderId);
-    if (oauthCredential?.type === 'oauth') return 'oauth';
-    if (authStorage?.hasStoredApiKey(provider)) return 'apikey';
+    // fork(claude-agent): a refused Claude subscription sign-in or key grants nothing.
+    if (oauthCredential?.type === 'oauth' && !isClaudeSubscriptionCredential(authProviderId, oauthCredential)) {
+      return 'oauth';
+    }
+    if (authStorage?.hasStoredApiKey(provider) && !refusedLocalKey(authStorage, provider)) return 'apikey';
     const directCredential = authStorage?.get(provider);
-    if (directCredential?.type === 'api_key' && directCredential.key.trim().length > 0) return 'apikey';
+    if (
+      directCredential?.type === 'api_key' &&
+      directCredential.key.trim().length > 0 &&
+      !isClaudeSubscriptionCredential(provider, directCredential)
+    ) {
+      return 'apikey';
+    }
     return hasModelKey(provider) ? 'apikey' : false;
   };
   const access: ProviderAccess = {
@@ -1059,6 +1128,17 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
           }
           const key = typeof body.key === 'string' ? body.key.trim() : '';
           if (!key) return c.json({ error: 'Missing required field: key' }, 400);
+          // fork(claude-agent): a Claude subscription token is not an API key, and Mastra Code refuses it.
+          if (isClaudeSubscriptionCredential(getAuthProviderId(provider), { type: 'api_key', key })) {
+            return c.json(
+              {
+                error: 'claude_subscription_token',
+                message:
+                  'This is a Claude subscription token, not an API key. Mastra Code needs a Claude API key from the Claude Console; to use your Claude subscription, run the session on Claude Agent.',
+              },
+              400,
+            );
+          }
           const envVar = typeof body.envVar === 'string' ? body.envVar : undefined;
           const scope = body.scope === 'org' ? 'org' : 'user';
           try {

@@ -1,3 +1,4 @@
+// fork(claude-agent): the personal sign-in case uses xAI device-code sign-in; Anthropic takes an API key only now.
 import { act, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -849,25 +850,35 @@ describe('Account presets', () => {
           providers: [
             { provider: 'openai', source: 'stored-org', orgCredential: 'api_key' },
             {
-              provider: 'anthropic',
-              envVar: 'ANTHROPIC_API_KEY',
-              oauth: { supported: true, modes: ['paste-code'] },
+              provider: 'xai',
+              envVar: 'XAI_API_KEY',
+              oauth: { supported: true, modes: ['device-code'] },
               ...(signedIn ? { source: 'oauth', userCredential: 'oauth' } : { source: 'none' }),
             },
           ],
         }),
       ),
-      http.post(`${TEST_BASE_URL}/web/config/providers/anthropic/oauth/start`, async ({ request }) => {
+      http.get(`${TEST_BASE_URL}/web/config/models`, () =>
+        HttpResponse.json({
+          models: [
+            { id: model.modelId, provider: 'openai', modelName: 'gpt-5.6-sol', hasApiKey: true },
+            { id: 'xai/grok-5', provider: 'xai', modelName: 'grok-5', hasApiKey: signedIn },
+          ],
+        }),
+      ),
+      http.post(`${TEST_BASE_URL}/web/config/providers/xai/oauth/start`, async ({ request }) => {
         signInStarts.push(await request.json());
         return HttpResponse.json({
           sessionId: 'sign-in-1',
-          kind: 'paste-code',
-          url: 'https://example.com/authorize',
-          instructions: 'Paste code',
+          kind: 'device-code',
+          url: 'https://example.com/device',
+          userCode: 'GROK-1234',
+          instructions: 'Enter this code.',
           expiresAt: Date.now() + 600_000,
+          nextPollMs: 10,
         });
       }),
-      http.post(`${TEST_BASE_URL}/web/config/providers/anthropic/oauth/complete`, () => {
+      http.post(`${TEST_BASE_URL}/web/config/providers/xai/oauth/poll`, () => {
         signedIn = true;
         return HttpResponse.json({ status: 'complete' });
       }),
@@ -876,16 +887,13 @@ describe('Account presets', () => {
     const user = userEvent.setup();
     renderOnboarding();
     const sessions = within(await screen.findByRole('group', { name: 'Your sessions' }));
-    await chooseSubscription(user, 'Continue with Anthropic', sessions);
-    const dialog = within(await screen.findByRole('dialog'));
-    await user.type(dialog.getByLabelText('Authorization code'), 'demo-code');
-    await user.click(dialog.getByRole('button', { name: 'Complete sign in' }));
+    await chooseSubscription(user, 'Continue with xAI', sessions);
     await sessions.findByRole('combobox');
-    expect(signInStarts).toEqual([{ mode: 'paste-code', scope: 'user' }]);
+    expect(signInStarts).toEqual([{ mode: 'device-code', scope: 'user' }]);
     await user.click(await enabledCreateButton());
     await screen.findByRole('heading', { name: 'Factory ready' });
     expect(writes.find(item => item.path === 'create')?.body).toEqual({ name: repo.name, modelScope: 'hybrid' });
-    expect(writes.find(item => item.path === 'personal-model')?.body).toEqual({ modelId: personalModel.modelId });
+    expect(writes.find(item => item.path === 'personal-model')?.body).toEqual({ modelId: 'xai/grok-5' });
   });
 
   it('requires a personal model in hybrid even when the shared model is ready', async () => {

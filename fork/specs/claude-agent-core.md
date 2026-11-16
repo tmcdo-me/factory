@@ -448,8 +448,29 @@ Each slice: implement → focused tests → manual check where noted → commit.
        git still works).
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
-12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
-    `anthropic` OAuth creds). Can land any time; scheduled early if convenient.
+12. ✅ **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
+    `anthropic` OAuth creds). The Anthropic paste-code flow is gone with everything only it used:
+    its `WEB_OAUTH_PROVIDERS` entry, the `/oauth/complete` route, the `paste-code` login-session
+    kind and the UI's paste-code dialog, so `POST …/providers/anthropic/oauth/start` answers 404
+    `oauth_not_supported` and Settings offers Anthropic as an API key only (OpenAI, Copilot and xAI
+    keep their device-code sign-ins). Stored Claude subscription credentials (an `anthropic` OAuth
+    row, or an `sk-ant-oat…` token saved as a key) are refused, not deleted:
+    `MastraFactory`'s constructor turns on the code-sdk's `refuseClaudeSubscriptionCredentials()`
+    policy (`@mastra/code-sdk/auth/claude-subscription-policy`, off by default so the TUI is
+    unchanged), under which the gateway never treats such a credential as auth, never falls back to
+    the Claude Max provider, refuses those tokens in `auth.json` and `ANTHROPIC_API_KEY`, and the
+    OAuth registry has no `anthropic` provider, so nothing can read or refresh the token; the
+    tenant store also leaves those rows out of its snapshot and never serves or refreshes them. An
+    `anthropic/*` model without an API key fails with `ClaudeSubscriptionRefusedError` ("add a
+    Claude API key, or run the session on Claude Agent"; run-error title "Anthropic API key
+    required"), which account rotation does not answer with a token refresh. Settings lists a
+    refused credential (`userCredentialRefused` / `orgCredentialRefused`) as "Not usable" with its
+    Sign out / Remove key action and never counts it as a source, connection or model access;
+    saving an `sk-ant-oat…` token as a key is a 400. Nothing hands `CLAUDE_CODE_OAUTH_TOKEN` to
+    Mastra Code's model layer (only `runtime-claude-agent` reads it, for Claude Code). Checked
+    through the real `resolveModel` against real storage and a stand-in Anthropic API
+    (`routes/claude-subscription-refusal.test.ts`), not against the live server. The TUI's own
+    `/login anthropic` (`mastracode/tui`) is untouched.
 13. **Concurrency cap + docs.**
 
 Inventory to migrate (non-test): **67** files in `mastracode/factory/src` import

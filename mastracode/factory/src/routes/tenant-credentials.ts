@@ -14,6 +14,11 @@
  * after the web auth gate) so the first model call of a request already sees
  * the caller's credentials. This store explicitly disables the SDK's
  * environment fallback so server-shell credentials never leak into tenants.
+ *
+ * fork(claude-agent): Claude subscription credentials (an Anthropic OAuth
+ * sign-in, or an `sk-ant-oat…` token saved as a key) stay in the table but
+ * never enter the snapshot and are never served or refreshed: Mastra Code
+ * calls Anthropic models with an API key only.
  */
 
 import type {
@@ -25,6 +30,7 @@ import {
   resolveTenantFromRequestContext,
   setCredentialStoreProvider,
 } from '@mastra/code-sdk/agents/credential-resolver';
+import { isClaudeSubscriptionCredential } from '@mastra/code-sdk/auth/claude-subscription-policy';
 import { getOAuthProvider, PROVIDER_DEFAULT_MODELS } from '@mastra/code-sdk/auth/storage';
 import type { AuthCredential, CredentialStore, OAuthCredential } from '@mastra/code-sdk/auth/types';
 import { MASTRA_GATEWAY_PROVIDER } from '@mastra/code-sdk/onboarding/settings';
@@ -89,6 +95,7 @@ export class TenantCredentialStore implements CredentialStore {
     const next = new Map<string, AuthCredential>();
     const storageScope = this.#scope === 'factory' ? 'org' : 'user';
     for (const record of records.filter(r => r.scope === storageScope)) {
+      if (isClaudeSubscriptionCredential(record.provider, record.credential)) continue;
       next.set(record.provider, record.credential);
     }
     this.#snapshot = next;
@@ -136,7 +143,7 @@ export class TenantCredentialStore implements CredentialStore {
       provider,
       this.#scope === 'factory' ? 'org' : 'user',
     );
-    if (!resolved) {
+    if (!resolved || isClaudeSubscriptionCredential(provider, resolved.credential)) {
       this.#snapshot.delete(provider);
       return undefined;
     }
@@ -175,6 +182,7 @@ export class TenantCredentialStore implements CredentialStore {
       this.#scope === 'factory' ? 'org' : 'user',
     );
     if (resolved?.credential.type !== 'oauth') return undefined;
+    if (isClaudeSubscriptionCredential(provider, resolved.credential)) return undefined;
     const rejectedAccess = served?.type === 'oauth' ? served.access : resolved.credential.access;
     return this.#refreshOAuth(
       storage,

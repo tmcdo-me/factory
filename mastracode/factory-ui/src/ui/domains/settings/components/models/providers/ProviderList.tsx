@@ -8,9 +8,11 @@ import { MastraGatewayCreditsNotice } from '../../../../workspaces/components/Ma
 import { AddApiKeyDialog } from '../../AddApiKeyDialog';
 import { ProviderOAuthDialog } from '../../ProviderOAuthDialog';
 import {
+  CREDENTIAL_REFUSED_STATUS,
   CREDENTIAL_STATUS,
   SIGN_IN_EXPIRED_LABEL,
   credentialAt,
+  refusedCredentialAt,
   sharedSourceStatus,
   signInExpiredAt,
   useCredentialAccess,
@@ -35,6 +37,10 @@ interface ActiveOAuthSession {
 }
 
 function providerConnection(provider: ProviderInfo, scope: CredentialScope): ProviderConnection | undefined {
+  // fork(claude-agent): a refused Claude subscription credential is listed (to be removed) ahead of
+  // anything else at the scope, so the person sees why Anthropic models fail.
+  const refused = refusedCredentialAt(provider, scope);
+  if (refused) return { provider, status: CREDENTIAL_REFUSED_STATUS, credential: refused, signInExpired: false };
   const credential = credentialAt(provider, scope);
   if (credential) {
     const signInExpired = signInExpiredAt(provider, scope);

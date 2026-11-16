@@ -7,6 +7,7 @@ import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { getAppDataDir } from '../utils/project.js';
+import { ANTHROPIC_CREDENTIAL_ID, isClaudeSubscriptionRefused } from './claude-subscription-policy.js';
 import { anthropicOAuthProvider } from './providers/anthropic.js';
 import { githubCopilotOAuthProvider } from './providers/github-copilot.js';
 import { kimiCodingOAuthProvider } from './providers/kimi-coding.js';
@@ -67,6 +68,9 @@ const oauthProviderRegistry = new Map<string, OAuthProviderInterface>([
  * Get an OAuth provider by ID
  */
 export function getOAuthProvider(id: OAuthProviderId): OAuthProviderInterface | undefined {
+  // fork(claude-agent): with Claude subscription credentials refused, no stored Anthropic sign-in can be
+  // read, refreshed or logged into through the registry (every token read and refresh goes through here).
+  if (id === ANTHROPIC_CREDENTIAL_ID && isClaudeSubscriptionRefused()) return undefined;
   return oauthProviderRegistry.get(id);
 }
 

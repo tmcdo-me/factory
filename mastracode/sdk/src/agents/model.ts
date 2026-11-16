@@ -5,6 +5,11 @@ import type { GatewayLanguageModel, IdentifiedModelConfig, MastraModelGatewayInt
 import { RequestContext } from '@mastra/core/request-context';
 import { getRequestAccountSelection, isRequestAccountRoutingExhausted } from '../auth/account-routing-context.js';
 import type { RequestContextReader } from '../auth/account-routing-context.js';
+import {
+  ClaudeSubscriptionRefusedError,
+  isClaudeSubscriptionRefused,
+  isRefusedCredential,
+} from '../auth/claude-subscription-policy.js';
 import { ProviderAuthRequiredError } from '../auth/provider-auth-error.js';
 import type { CredentialStore, OAuthAccountRecord } from '../auth/types.js';
 import { MODEL_ROUTE_MAX_ENTRIES } from '../constants.js';
@@ -327,6 +332,10 @@ function resolveModelForRequest(modelId: string, options?: Parameters<typeof res
   });
 
   if (!auth && credentialStore?.allowEnvironmentFallback === false) {
+    // fork(claude-agent): say why an Anthropic model has no credential when subscriptions are refused.
+    if (providerId === 'anthropic' && isClaudeSubscriptionRefused()) {
+      throw new ClaudeSubscriptionRefusedError(normalizedModelId);
+    }
     // Scopes are exclusive, so name the one in effect: otherwise a user with a
     // personal sign-in can't tell why an organization-scoped Factory fails.
     throw new ProviderAuthRequiredError(
@@ -409,7 +418,10 @@ export function resolveProviderWebSearchRoute(
     tenantCredentialStore ?? getGlobalAuthStorage(),
     options?.requestContext,
   );
-  if (credentialStore.get(NATIVE_OAUTH_CREDENTIAL_IDS[providerId])?.type === 'oauth') return providerId;
+  const credentialId = NATIVE_OAUTH_CREDENTIAL_IDS[providerId];
+  const nativeCredential = credentialStore.get(credentialId);
+  // fork(claude-agent): a refused Claude subscription sign-in does not keep the native route.
+  if (nativeCredential?.type === 'oauth' && !isRefusedCredential(credentialId, nativeCredential)) return providerId;
   return mastraGatewayApiKey(tenantCredentialStore) ? 'mastra-gateway' : providerId;
 }
 

@@ -169,6 +169,10 @@ DATABASE_URL=postgres://user:pass@localhost:54329/mastracode_web
 REDIS_URL=redis://localhost:63799
 ```
 
+### Anthropic models and your Claude subscription
+
+Mastra Code calls Anthropic models with an Anthropic API key only: add one under **Settings → Models**, or set `ANTHROPIC_API_KEY` in local mode. Factory has no Claude Pro/Max sign-in. To work on your Claude subscription, run the session on **Claude Agent**, which runs Claude Code itself and uses its own login (see `mastracode/runtime-claude-agent/README.md`). A Claude sign-in saved before this change stays stored but is never used: Settings lists it as **Not usable** so you can remove it, and an Anthropic model without an API key fails with a message saying so. A Claude subscription token (`sk-ant-oat…`, from `claude setup-token`) is refused as an API key too.
+
 ### Amazon Bedrock
 
 Bedrock authenticates with the server's AWS credentials, not a key each account saves. With sign-in enabled, turn it on for every account by adding these values to `mastracode/web/.env`:

@@ -207,7 +207,8 @@ export interface SaveProviderKeyResponse {
 
 export interface OAuthStartResponse {
   sessionId: string;
-  kind: 'paste-code' | 'device-code';
+  // fork(claude-agent): device-code only; the Anthropic paste-code sign-in is gone.
+  kind: 'device-code';
   url: string;
   userCode?: string;
   instructions: string;

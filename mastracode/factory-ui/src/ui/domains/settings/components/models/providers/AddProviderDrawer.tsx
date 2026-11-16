@@ -18,9 +18,11 @@ import { useSidePanelDrawer } from '../../../../../lib/hooks/useSidePanelDrawer'
 import { MastraGatewayBilling } from '../../../../workspaces/components/MastraGatewayBilling';
 import {
   CREDENTIAL_LABEL,
+  CREDENTIAL_REFUSED_LABEL,
   SHARED_SOURCE,
   SIGN_IN_EXPIRED_LABEL,
   credentialAt,
+  refusedCredentialAt,
   signInExpiredAt,
   signInRequest,
 } from '../../provider-credential';
@@ -50,6 +52,7 @@ function takesApiKey(provider: ProviderInfo): boolean {
 }
 
 function connectionLabel(provider: ProviderInfo, scope: CredentialScope): string | undefined {
+  if (refusedCredentialAt(provider, scope)) return CREDENTIAL_REFUSED_LABEL; // fork(claude-agent)
   if (signInExpiredAt(provider, scope)) return SIGN_IN_EXPIRED_LABEL;
   const credential = credentialAt(provider, scope);
   if (credential) return CREDENTIAL_LABEL[credential];

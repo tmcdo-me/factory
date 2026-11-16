@@ -1,3 +1,4 @@
+// fork(claude-agent): scope tests sign in with a device-code provider; the Anthropic paste-code sign-in is gone.
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
@@ -9,10 +10,11 @@ import type { ProviderInfo } from '../../../../../../../api/types';
 import { ProviderList } from '../ProviderList';
 import {
   PROVIDERS_URL,
+  completeOnPoll,
+  deviceCodeSession,
   keyUrl,
   oauthUrl,
   openAddProvider,
-  pasteCodeSession,
   pickRowAction,
   rowFor,
   saveKey,
@@ -20,6 +22,8 @@ import {
 } from './provider-list-test-utils';
 
 const ORG_SHARED_CAPTION = 'Shared with every Factory in your organization.';
+/** Long enough that a test which only checks how a sign-in starts never reaches the first poll. */
+const NO_POLL_MS = 60_000;
 
 function enableAuth() {
   window.__MASTRACODE_CONFIG__ = { authEnabled: true };
@@ -103,30 +107,31 @@ describe('ProviderList credential scopes', () => {
           HttpResponse.json({
             providers: [
               {
-                provider: 'anthropic',
+                provider: 'openai',
                 source: 'oauth-org',
                 orgCredential: 'oauth',
-                oauth: { supported: true, modes: ['paste-code'] },
+                oauth: { supported: true, modes: ['device-code'] },
               },
             ],
           }),
         ),
-        http.post(oauthUrl('anthropic', 'start'), async ({ request }) => {
+        http.post(oauthUrl('openai', 'start'), async ({ request }) => {
           startBody = await request.json();
-          return HttpResponse.json(pasteCodeSession('session-personal'));
+          return HttpResponse.json(deviceCodeSession('session-personal', 'USER-123', NO_POLL_MS));
         }),
       );
       const user = userEvent.setup();
       const lists = renderBothLists();
 
-      await waitFor(() => expect(within(lists.factory()).getByText('Anthropic')).toBeInTheDocument());
-      expect(within(lists.personal()).queryByText('Anthropic')).not.toBeInTheDocument();
+      await waitFor(() => expect(within(lists.factory()).getByText('OpenAI')).toBeInTheDocument());
+      expect(within(lists.personal()).queryByText('OpenAI')).not.toBeInTheDocument();
 
       const dialog = await openAddProvider(user, lists.personal());
       expect(dialog).toHaveTextContent('Only you can use it.');
-      await user.click(within(dialog).getByRole('button', { name: 'Sign in to Anthropic' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Sign in to OpenAI' }));
 
-      await waitFor(() => expect(startBody).toEqual({ mode: 'paste-code', scope: 'user' }));
+      await waitFor(() => expect(startBody).toEqual({ mode: 'device-code', scope: 'user' }));
+      expect(await screen.findByText('USER-123')).toBeInTheDocument();
     });
 
     it('starts an org sign-in at org scope from the Factory list', async () => {
@@ -134,12 +139,12 @@ describe('ProviderList credential scopes', () => {
       server.use(
         http.get(PROVIDERS_URL, () =>
           HttpResponse.json({
-            providers: [{ provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } }],
+            providers: [{ provider: 'openai', source: 'none', oauth: { supported: true, modes: ['device-code'] } }],
           }),
         ),
-        http.post(oauthUrl('anthropic', 'start'), async ({ request }) => {
+        http.post(oauthUrl('openai', 'start'), async ({ request }) => {
           startBody = await request.json();
-          return HttpResponse.json(pasteCodeSession('session-org'));
+          return HttpResponse.json(deviceCodeSession('session-org', 'ORG-123', NO_POLL_MS));
         }),
       );
       const user = userEvent.setup();
@@ -147,9 +152,10 @@ describe('ProviderList credential scopes', () => {
 
       expect(await within(lists.factory()).findByText(ORG_SHARED_CAPTION)).toBeInTheDocument();
       const dialog = await openAddProvider(user, lists.factory());
-      await user.click(within(dialog).getByRole('button', { name: 'Sign in to Anthropic' }));
+      await user.click(within(dialog).getByRole('button', { name: 'Sign in to OpenAI' }));
 
-      await waitFor(() => expect(startBody).toEqual({ mode: 'paste-code', scope: 'org' }));
+      await waitFor(() => expect(startBody).toEqual({ mode: 'device-code', scope: 'org' }));
+      expect(await screen.findByText('ORG-123')).toBeInTheDocument();
     });
 
     it('signs out of an org sign-in at org scope from the Factory list', async () => {
@@ -159,16 +165,16 @@ describe('ProviderList credential scopes', () => {
           HttpResponse.json({
             providers: [
               {
-                provider: 'anthropic',
+                provider: 'openai',
                 source: 'oauth-org',
                 orgKey: true,
                 orgCredential: 'oauth',
-                oauth: { supported: true, modes: ['paste-code'] },
+                oauth: { supported: true, modes: ['device-code'] },
               },
             ],
           }),
         ),
-        http.delete(`${PROVIDERS_URL}/anthropic/oauth`, ({ request }) => {
+        http.delete(`${PROVIDERS_URL}/openai/oauth`, ({ request }) => {
           signOutScope = new URL(request.url).searchParams.get('scope');
           return HttpResponse.json({ ok: true });
         }),
@@ -176,8 +182,8 @@ describe('ProviderList credential scopes', () => {
       const user = userEvent.setup();
       const { client } = renderWithProviders(<ProviderList credentialScope="org" />);
 
-      await screen.findByText('Anthropic');
-      await pickRowAction(user, 'anthropic', 'Sign out');
+      await screen.findByText('OpenAI');
+      await pickRowAction(user, 'openai', 'Sign out');
 
       await waitForMutationsIdle(client);
       expect(signOutScope).toBe('org');
@@ -186,52 +192,50 @@ describe('ProviderList credential scopes', () => {
     it('flags only the expired personal sign-in and renews it at user scope from its row', async () => {
       const providers: ProviderInfo[] = [
         {
-          provider: 'anthropic',
+          provider: 'openai',
           source: 'oauth-user',
           userCredential: 'oauth',
           userCredentialExpired: true,
           orgKey: true,
           orgCredential: 'oauth',
-          oauth: { supported: true, modes: ['paste-code'] },
+          oauth: { supported: true, modes: ['device-code'] },
         },
       ];
       let startBody: unknown;
       server.use(
         http.get(PROVIDERS_URL, () => HttpResponse.json({ providers })),
-        http.post(oauthUrl('anthropic', 'start'), async ({ request }) => {
+        http.post(oauthUrl('openai', 'start'), async ({ request }) => {
           startBody = await request.json();
-          return HttpResponse.json(pasteCodeSession('session-renew'));
-        }),
-        http.post(oauthUrl('anthropic', 'complete'), () => {
-          providers[0] = { ...providers[0], userCredentialExpired: undefined };
-          return HttpResponse.json({ status: 'complete', ok: true });
+          return HttpResponse.json(deviceCodeSession('session-renew', 'RENEW-123'));
         }),
       );
+      completeOnPoll('openai', () => {
+        providers[0] = { ...providers[0], userCredentialExpired: undefined };
+      });
       const user = userEvent.setup();
       const lists = renderBothLists();
 
       expect(await within(lists.personal()).findByText('Sign-in expired')).toBeInTheDocument();
-      expect(within(rowFor('anthropic', lists.factory())).getByText('Signed in')).toBeInTheDocument();
+      expect(within(rowFor('openai', lists.factory())).getByText('Signed in')).toBeInTheDocument();
 
-      await pickRowAction(user, 'anthropic', 'Sign in again', lists.personal());
-      await user.type(await screen.findByLabelText('Authorization code'), 'code#state');
-      await user.click(screen.getByRole('button', { name: 'Complete sign in' }));
+      await pickRowAction(user, 'openai', 'Sign in again', lists.personal());
 
-      expect(startBody).toEqual({ mode: 'paste-code', scope: 'user' });
+      await waitFor(() => expect(startBody).toEqual({ mode: 'device-code', scope: 'user' }));
       await waitFor(() =>
-        expect(within(rowFor('anthropic', lists.personal())).getByText('Signed in')).toBeInTheDocument(),
+        expect(within(rowFor('openai', lists.personal())).getByText('Signed in')).toBeInTheDocument(),
       );
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     });
 
     it('shows members the Factory list read-only with the reason', async () => {
       stubProviders(
         [
           {
-            provider: 'anthropic',
+            provider: 'openai',
             source: 'oauth-org',
             orgKey: true,
             orgCredential: 'oauth',
-            oauth: { supported: true, modes: ['paste-code'] },
+            oauth: { supported: true, modes: ['device-code'] },
           },
         ],
         false,
@@ -243,9 +247,7 @@ describe('ProviderList credential scopes', () => {
       ).toBeInTheDocument();
       expect(within(lists.factory()).queryByText(ORG_SHARED_CAPTION)).not.toBeInTheDocument();
       expect(within(lists.factory()).getByRole('button', { name: 'Add provider' })).toBeDisabled();
-      expect(
-        within(rowFor('anthropic', lists.factory())).getByRole('button', { name: 'Anthropic actions' }),
-      ).toBeDisabled();
+      expect(within(rowFor('openai', lists.factory())).getByRole('button', { name: 'OpenAI actions' })).toBeDisabled();
       expect(within(lists.personal()).getByRole('button', { name: 'Add provider' })).toBeEnabled();
     });
   });

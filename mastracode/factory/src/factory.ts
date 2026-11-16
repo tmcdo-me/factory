@@ -28,6 +28,7 @@ import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
 import type { MastraCodeConfig } from '@mastra/code-sdk';
 import { getDynamicMemory } from '@mastra/code-sdk/agents/memory';
+import { refuseClaudeSubscriptionCredentials } from '@mastra/code-sdk/auth/claude-subscription-policy';
 import { getGlobalMcpPath } from '@mastra/code-sdk/mcp/config';
 import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentControllerRequestContext, BuiltinToolId } from '@mastra/core/agent-controller';
@@ -661,6 +662,10 @@ export class MastraFactory {
           "new LibSQLFactoryStorage({ url }) from '@mastra/libsql' for local dev.",
       );
     }
+    // fork(claude-agent): Mastra Code never uses a Claude subscription (spec §2): stored Anthropic
+    // sign-ins and `sk-ant-oat…` tokens are refused for every model call in this process, local
+    // (auth.json, environment) and tenant alike. Claude Agent runs Claude Code for subscriptions.
+    refuseClaudeSubscriptionCredentials();
     if (config.includeDefaultBoards !== undefined) warnIncludeDefaultBoards();
     this.#boards = createBoardRegistry({ boards: config.boards });
     warnDefinedBoards(this.#boards);

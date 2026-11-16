@@ -6,26 +6,13 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 // Mock the SDK flow primitives at the module boundary; the routes' session
 // bookkeeping, tenancy scoping, and rate limiting are what's under test.
 
-const {
-  startAnthropicLogin,
-  completeAnthropicLogin,
-  startCodexDeviceLogin,
-  pollCodexDeviceLogin,
-  startGitHubCopilotDeviceLogin,
-  pollGitHubCopilotDeviceLogin,
-} = vi.hoisted(() => ({
-  startAnthropicLogin: vi.fn(),
-  completeAnthropicLogin: vi.fn(),
-  startCodexDeviceLogin: vi.fn(),
-  pollCodexDeviceLogin: vi.fn(),
-  startGitHubCopilotDeviceLogin: vi.fn(),
-  pollGitHubCopilotDeviceLogin: vi.fn(),
-}));
-vi.mock('@mastra/code-sdk/auth/providers/anthropic', async importOriginal => ({
-  ...(await importOriginal<object>()),
-  startAnthropicLogin: (...args: unknown[]) => startAnthropicLogin(...args),
-  completeAnthropicLogin: (...args: unknown[]) => completeAnthropicLogin(...args),
-}));
+const { startCodexDeviceLogin, pollCodexDeviceLogin, startGitHubCopilotDeviceLogin, pollGitHubCopilotDeviceLogin } =
+  vi.hoisted(() => ({
+    startCodexDeviceLogin: vi.fn(),
+    pollCodexDeviceLogin: vi.fn(),
+    startGitHubCopilotDeviceLogin: vi.fn(),
+    pollGitHubCopilotDeviceLogin: vi.fn(),
+  }));
 vi.mock('@mastra/code-sdk/auth/providers/openai-codex', async importOriginal => ({
   ...(await importOriginal<object>()),
   startCodexDeviceLogin: (...args: unknown[]) => startCodexDeviceLogin(...args),
@@ -98,8 +85,6 @@ const CODEX_CREDS = { refresh: 'r-2', access: 'a-2', expires: Date.now() + 3_600
 beforeEach(async () => {
   seed = await createFactoryStorageForTests();
   authStorage = makeAuthStorage();
-  startAnthropicLogin.mockResolvedValue({ url: 'https://claude.ai/oauth/authorize?state=s', verifier: 'v-1' });
-  completeAnthropicLogin.mockResolvedValue(ANTHROPIC_CREDS);
   startCodexDeviceLogin.mockResolvedValue({
     deviceAuthId: 'da-1',
     userCode: 'ABCD-1234',
@@ -131,63 +116,44 @@ async function makePollable(sessionId: string) {
   await seed.credentials.touchLoginSession(sessionId, { nextPollAt: new Date(Date.now() - 1) });
 }
 
-// ── Paste-code flow (Anthropic) ──────────────────────────────────────────
+// ── No Claude subscription sign-in (Anthropic) ───────────────────────────
+// fork(claude-agent): Factory must not sign anyone in with their Claude subscription and store
+// it for Mastra Code (spec §2.6); only Claude Code, run as Claude Agent, may use a subscription.
 
-describe('paste-code flow (anthropic)', () => {
-  it('start returns session metadata without leaking the verifier', async () => {
-    const res = await post(buildApp(userA), '/web/config/providers/anthropic/oauth/start');
-    expect(res.status).toBe(200);
-    const json = await res.json();
-    expect(json.kind).toBe('paste-code');
-    expect(json.sessionId).toBeTruthy();
-    expect(json.url).toContain('https://claude.ai');
-    expect(JSON.stringify(json)).not.toContain('v-1');
+describe('Claude subscription sign-in is gone (anthropic)', () => {
+  it('refuses to start an Anthropic sign-in and records no login session', async () => {
+    const app = buildApp(userA);
+    const res = await post(app, '/web/config/providers/anthropic/oauth/start');
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ error: 'oauth_not_supported' });
+
+    // Nothing to poll or complete: the paste-code exchange route no longer exists.
+    const complete = await post(app, '/web/config/providers/anthropic/oauth/complete', {
+      sessionId: 'any',
+      code: 'code#state',
+    });
+    expect(complete.status).toBe(404);
+    const poll = await post(app, '/web/config/providers/anthropic/oauth/poll', { sessionId: 'any' });
+    expect(poll.status).toBe(404);
+    expect(await seed.credentials.listCredentials('org1', 'user-a')).toEqual([]);
   });
 
-  it('complete exchanges the code and stores a user-scoped credential', async () => {
-    const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
+  it('refuses an org-wide Anthropic sign-in the same way', async () => {
+    const res = await post(buildApp(userA), '/web/config/providers/anthropic/oauth/start', { scope: 'org' });
+    expect(res.status).toBe(404);
+  });
 
-    const res = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'code#state' });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ status: 'complete' });
-    expect(completeAnthropicLogin).toHaveBeenCalledWith('code#state', 'v-1');
-
-    const cred = await seed.credentials.getCredential(TENANT_A, 'anthropic');
-    expect(cred).toMatchObject({ type: 'oauth', access: 'a-1' });
-    // Server-side only: never written to the local auth.json in tenant mode.
+  it('refuses it in local mode, writing nothing to auth.json', async () => {
+    const res = await post(buildApp(null, { enabled: false }), '/web/config/providers/anthropic/oauth/start');
+    expect(res.status).toBe(404);
     expect(authStorage.addAccount).not.toHaveBeenCalled();
   });
 
-  it("keeps user A's credential invisible to user B", async () => {
-    const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-    await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-
-    expect(await seed.credentials.listCredentials('org1', 'user-b')).toEqual([]);
-    expect(await seed.credentials.resolveCredential('org1', 'user-b', 'anthropic', 'user')).toBeUndefined();
-  });
-
-  it('deletes the session after completion (replay returns 404)', async () => {
-    const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-    await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-
-    const replay = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-    expect(replay.status).toBe(404);
-  });
-
-  it('400s when the exchange rejects the pasted code', async () => {
-    completeAnthropicLogin.mockRejectedValue(new Error('Invalid authorization code'));
-    const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-
-    const res = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'bad' });
-    expect(res.status).toBe(400);
-    expect((await res.json()).error).toContain('Invalid authorization code');
-    // Session survives a bad paste so the user can retry.
-    const retry = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'bad' });
-    expect(retry.status).toBe(400);
+  it('still signs out a stored Anthropic sign-in so the person can remove it', async () => {
+    await seed.credentials.setCredential(TENANT_A, 'anthropic', { type: 'oauth', ...ANTHROPIC_CREDS });
+    const res = await buildApp(userA).request('/web/config/providers/anthropic/oauth', { method: 'DELETE' });
+    expect(res.status).toBe(200);
+    expect(await seed.credentials.getCredential(TENANT_A, 'anthropic')).toBeUndefined();
   });
 });
 
@@ -279,6 +245,17 @@ describe('device-code flow (openai)', () => {
     expect((await post(app, '/web/config/providers/openai/oauth/poll', { sessionId })).status).toBe(404);
   });
 
+  it("keeps user A's credential invisible to user B", async () => {
+    pollCodexDeviceLogin.mockResolvedValue({ status: 'complete', credentials: CODEX_CREDS });
+    const app = buildApp(userA);
+    const { sessionId } = await (await post(app, '/web/config/providers/openai/oauth/start')).json();
+    await makePollable(sessionId);
+    await post(app, '/web/config/providers/openai/oauth/poll', { sessionId });
+
+    expect(await seed.credentials.listCredentials('org1', 'user-b')).toEqual([]);
+    expect(await seed.credentials.resolveCredential('org1', 'user-b', 'openai-codex', 'user')).toBeUndefined();
+  });
+
   it("404s when another user polls someone else's session", async () => {
     const { sessionId } = await (await post(buildApp(userA), '/web/config/providers/openai/oauth/start')).json();
     await makePollable(sessionId);
@@ -364,15 +341,6 @@ describe('session cancel and sign-out', () => {
 // ── Org-scoped sign-in ───────────────────────────────────────────────────
 
 describe('provider login preserves OM selection intent', () => {
-  it('leaves automatic roles unset after paste-code completion', async () => {
-    const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-    await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-
-    expect(await seed.memorySettings.get(TENANT_A)).toBeNull();
-    expect(await seed.memorySettings.get({ orgId: 'org1', userId: 'user-b' })).toBeNull();
-  });
-
   it('leaves automatic roles unset after device-code completion', async () => {
     pollCodexDeviceLogin.mockResolvedValue({ status: 'complete', credentials: CODEX_CREDS });
     const app = buildApp(userA);
@@ -381,13 +349,16 @@ describe('provider login preserves OM selection intent', () => {
     await post(app, '/web/config/providers/openai/oauth/poll', { sessionId });
 
     expect(await seed.memorySettings.get(TENANT_A)).toBeNull();
+    expect(await seed.memorySettings.get({ orgId: 'org1', userId: 'user-b' })).toBeNull();
   });
 
   it('keeps an explicit role pinned without materializing the automatic sibling', async () => {
     await seed.memorySettings.patch({ ...TENANT_A, patch: { observerModelId: 'openai/gpt-5.4-mini' } });
+    pollCodexDeviceLogin.mockResolvedValue({ status: 'complete', credentials: CODEX_CREDS });
     const app = buildApp(userA);
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-    await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
+    const { sessionId } = await (await post(app, '/web/config/providers/openai/oauth/start')).json();
+    await makePollable(sessionId);
+    await post(app, '/web/config/providers/openai/oauth/poll', { sessionId });
 
     expect(await seed.memorySettings.get(TENANT_A)).toMatchObject({
       observerModelId: 'openai/gpt-5.4-mini',
@@ -397,25 +368,6 @@ describe('provider login preserves OM selection intent', () => {
 });
 
 describe('org-scoped sign-in', () => {
-  it('complete stores an org-scoped credential when the flow was started with scope org', async () => {
-    const app = buildApp(userA);
-    const { sessionId } = await (
-      await post(app, '/web/config/providers/anthropic/oauth/start', { scope: 'org' })
-    ).json();
-
-    const res = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-    expect(res.status).toBe(200);
-
-    // Written to the org row, not the caller's user row.
-    expect(await seed.credentials.getCredential(TENANT_A, 'anthropic')).toBeUndefined();
-    expect(await seed.credentials.getCredential({ orgId: 'org1' }, 'anthropic')).toMatchObject({
-      type: 'oauth',
-      access: 'a-1',
-    });
-    // Visible to other org members through factory-scoped resolution.
-    expect(await seed.credentials.resolveCredential('org1', 'user-b', 'anthropic', 'org')).toBeDefined();
-  });
-
   it('device-code poll stores an org-scoped credential when started with scope org', async () => {
     const app = buildApp(userA);
     const { sessionId } = await (await post(app, '/web/config/providers/openai/oauth/start', { scope: 'org' })).json();
@@ -428,18 +380,8 @@ describe('org-scoped sign-in', () => {
 
     expect(await seed.credentials.getCredential(TENANT_A, 'openai-codex')).toBeUndefined();
     expect(await seed.credentials.getCredential({ orgId: 'org1' }, 'openai-codex')).toMatchObject({ type: 'oauth' });
-  });
-
-  it('403s complete when admin access was revoked after the org-scoped flow started', async () => {
-    const { sessionId } = await (
-      await post(buildApp(userA), '/web/config/providers/anthropic/oauth/start', { scope: 'org' })
-    ).json();
-
-    // Admin at start, revoked before completion.
-    const revoked = buildApp(userA, { isOrganizationAdmin: async () => false });
-    const res = await post(revoked, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-    expect(res.status).toBe(403);
-    expect(await seed.credentials.getCredential({ orgId: 'org1' }, 'anthropic')).toBeUndefined();
+    // Visible to other org members through factory-scoped resolution.
+    expect(await seed.credentials.resolveCredential('org1', 'user-b', 'openai-codex', 'org')).toBeDefined();
   });
 
   it('403s device-code poll when admin access was revoked after the org-scoped flow started', async () => {
@@ -457,7 +399,7 @@ describe('org-scoped sign-in', () => {
 
   it('403s a non-admin starting an org-scoped flow', async () => {
     const app = buildApp(userA, { isOrganizationAdmin: async () => false });
-    const res = await post(app, '/web/config/providers/anthropic/oauth/start', { scope: 'org' });
+    const res = await post(app, '/web/config/providers/openai/oauth/start', { scope: 'org' });
     expect(res.status).toBe(403);
   });
 
@@ -488,13 +430,13 @@ describe('gating', () => {
   });
 
   it('401s unauthenticated requests when an auth provider is active', async () => {
-    const res = await post(buildApp(null), '/web/config/providers/anthropic/oauth/start');
+    const res = await post(buildApp(null), '/web/config/providers/openai/oauth/start');
     expect(res.status).toBe(401);
   });
 
   it('503s tenant writes when the credentials domain is unavailable', async () => {
     // Auth active + user present, but no credentials domain handle at all.
-    const res = await post(buildApp(userA, { noCredentials: true }), '/web/config/providers/anthropic/oauth/start');
+    const res = await post(buildApp(userA, { noCredentials: true }), '/web/config/providers/openai/oauth/start');
     expect(res.status).toBe(503);
     expect((await res.json()).error).toBe('credentials_unavailable');
   });
@@ -504,13 +446,20 @@ describe('gating', () => {
 
 describe('local mode', () => {
   // No auth enabled and no tenant user: requests fall back to AuthStorage.
-  it('completes a paste-code flow into the file-backed AuthStorage', async () => {
+  it('completes a device-code flow into the file-backed AuthStorage', async () => {
+    pollCodexDeviceLogin.mockResolvedValue({ status: 'complete', credentials: CODEX_CREDS });
     const app = buildApp(null, { enabled: false });
-    const { sessionId } = await (await post(app, '/web/config/providers/anthropic/oauth/start')).json();
-
-    const res = await post(app, '/web/config/providers/anthropic/oauth/complete', { sessionId, code: 'c' });
-    expect(res.status).toBe(200);
-    expect(authStorage.addAccount).toHaveBeenCalledWith('anthropic', ANTHROPIC_CREDS);
+    const { sessionId } = await (await post(app, '/web/config/providers/openai/oauth/start')).json();
+    // Local sessions live in a process-local store the test can't reach, so wait out the first interval.
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(Date.now() + 6000);
+    try {
+      const res = await post(app, '/web/config/providers/openai/oauth/poll', { sessionId });
+      expect(await res.json()).toMatchObject({ status: 'complete' });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(authStorage.addAccount).toHaveBeenCalledWith('openai-codex', CODEX_CREDS);
   });
 
   it('signs out via AuthStorage using the auth provider id', async () => {

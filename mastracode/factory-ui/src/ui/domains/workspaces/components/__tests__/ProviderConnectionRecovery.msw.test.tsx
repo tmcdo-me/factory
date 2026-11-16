@@ -79,7 +79,6 @@ describe('provider connection recovery', () => {
       await chooseSubscription(user, 'Continue with OpenAI');
       const dialog = within(await screen.findByRole('dialog'));
       expect(dialog.getByText(session.userCode)).toBeVisible();
-      expect(dialog.queryByRole('textbox', { name: 'Authorization code' })).not.toBeInTheDocument();
       expect(dialog.getByText(scope === 'org' ? /Everyone in your organization/ : /only for you/)).toBeVisible();
       expect(starts).toEqual([{ mode: 'device-code', scope }]);
       await waitFor(() => expect(pollStatuses).toContain('pending'));

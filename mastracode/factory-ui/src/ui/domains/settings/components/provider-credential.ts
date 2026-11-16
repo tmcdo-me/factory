@@ -10,6 +10,14 @@ export type CredentialScope = 'user' | 'org';
 
 export const CREDENTIAL_LABEL: Record<ProviderCredential, string> = { oauth: 'Signed in', api_key: 'Key saved' };
 export const SIGN_IN_EXPIRED_LABEL = 'Sign-in expired';
+/** fork(claude-agent): a stored Claude subscription credential, which Mastra Code refuses. */
+export const CREDENTIAL_REFUSED_LABEL = 'Not usable';
+export const CREDENTIAL_REFUSED_STATUS: StatusPresentation = {
+  label: CREDENTIAL_REFUSED_LABEL,
+  tone: 'error',
+  description:
+    'Mastra Code can’t use a Claude subscription. Remove it and add a Claude API key, or use Claude Agent for your subscription.',
+};
 const ORG_SCOPE_MEMBER_REASON = 'Only organization admins can manage org-wide credentials.';
 
 export const SHARED_SOURCE: Partial<Record<ProviderInfo['source'], { label: string; description: string }>> = {
@@ -66,6 +74,14 @@ export function credentialAt(provider: ProviderInfo, scope: CredentialScope): Pr
 /** The sign-in at this scope expired and could not be renewed, so requests fail until the user signs in again. */
 export function signInExpiredAt(provider: ProviderInfo, scope: CredentialScope): boolean {
   return (scope === 'org' ? provider.orgCredentialExpired : provider.userCredentialExpired) === true;
+}
+
+/**
+ * fork(claude-agent): the Claude subscription credential stored at this scope, if any. The server
+ * never counts it as a connection; it is listed only so it can be removed.
+ */
+export function refusedCredentialAt(provider: ProviderInfo, scope: CredentialScope): ProviderCredential | undefined {
+  return scope === 'org' ? provider.orgCredentialRefused : provider.userCredentialRefused;
 }
 
 export function isConnectedAt(provider: ProviderInfo, scope: CredentialScope): boolean {

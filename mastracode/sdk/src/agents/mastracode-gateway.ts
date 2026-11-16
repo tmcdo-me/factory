@@ -17,6 +17,13 @@ import type {
   ProviderConfig,
 } from '@mastra/core/llm';
 import { wrapLanguageModel } from 'ai';
+import {
+  ANTHROPIC_CREDENTIAL_ID,
+  ClaudeSubscriptionRefusedError,
+  isClaudeSubscriptionRefused,
+  isRefusedAnthropicKey,
+  isRefusedCredential,
+} from '../auth/claude-subscription-policy.js';
 import { AuthStorage } from '../auth/storage.js';
 import type { CredentialStore } from '../auth/types.js';
 import { getCustomProviderId, loadSettings, MASTRA_GATEWAY_PROVIDER } from '../onboarding/settings.js';
@@ -126,14 +133,15 @@ export function reloadAuthStorage() {
  */
 export function getAnthropicApiKey(credentials: CredentialStore = getGlobalAuthStorage()): string | undefined {
   const storedCred = credentials.get('anthropic');
-  if (storedCred?.type === 'api_key' && storedCred.key.trim().length > 0) {
+  // fork(claude-agent): a refused Claude subscription token is never an API key, wherever it is stored.
+  if (storedCred?.type === 'api_key' && storedCred.key.trim().length > 0 && !isRefusedAnthropicKey(storedCred.key)) {
     return storedCred.key.trim();
   }
   const dedicatedKey = credentials.getStoredApiKey('anthropic')?.trim();
-  if (dedicatedKey) return dedicatedKey;
-  return credentials.allowEnvironmentFallback === false
-    ? undefined
-    : process.env.ANTHROPIC_API_KEY?.trim() || undefined;
+  if (dedicatedKey && !isRefusedAnthropicKey(dedicatedKey)) return dedicatedKey;
+  const envKey =
+    credentials.allowEnvironmentFallback === false ? undefined : process.env.ANTHROPIC_API_KEY?.trim() || undefined;
+  return isRefusedAnthropicKey(envKey) ? undefined : envKey;
 }
 
 /**
@@ -191,12 +199,14 @@ function getProviderAuthKey(
   credentials: CredentialStore = getGlobalAuthStorage(),
 ): string | undefined {
   const authProviderId = getCredentialProviderId(providerId);
+  // fork(claude-agent): a refused Claude subscription token is never an Anthropic API key.
+  const usable = (key: string) => !(authProviderId === ANTHROPIC_CREDENTIAL_ID && isRefusedAnthropicKey(key));
   const storedCred = credentials.get(authProviderId);
-  if (storedCred?.type === 'api_key' && storedCred.key.trim().length > 0) {
+  if (storedCred?.type === 'api_key' && storedCred.key.trim().length > 0 && usable(storedCred.key)) {
     return storedCred.key.trim();
   }
   const dedicatedKey = credentials.getStoredApiKey(authProviderId)?.trim();
-  if (dedicatedKey) return dedicatedKey;
+  if (dedicatedKey && usable(dedicatedKey)) return dedicatedKey;
   // `/api-keys` stores keys under the catalog provider id (`kimi-code-plan-cn`),
   // which can differ from the credential id.
   const catalogKey = authProviderId !== providerId ? credentials.getStoredApiKey(providerId)?.trim() : undefined;
@@ -386,7 +396,8 @@ export class MastraCodeGateway extends MastraModelGateway {
 
     const authProviderId = getCredentialProviderId(request.providerId);
     const storedCred = credentials.get(authProviderId);
-    if (storedCred?.type === 'oauth') {
+    // fork(claude-agent): a refused Claude subscription sign-in does not authenticate anything.
+    if (storedCred?.type === 'oauth' && !isRefusedCredential(authProviderId, storedCred)) {
       return { bearerToken: 'oauth', source: 'gateway' };
     }
 
@@ -589,7 +600,12 @@ export class MastraCodeGateway extends MastraModelGateway {
     responsesWebSocket?: any;
   }): GatewayLanguageModel {
     const bareModelId = normalizeAnthropicModelId(args.modelId);
-    const storedCred = this.#credentials.get('anthropic');
+    // fork(claude-agent): under the Claude subscription policy a stored Anthropic sign-in (or a
+    // subscription token saved as a key) is treated as absent, so only an API key or the Mastra gateway
+    // key can reach Anthropic, and nothing falls back to the Claude Max provider below.
+    const subscriptionRefused = isClaudeSubscriptionRefused();
+    const rawCred = this.#credentials.get('anthropic');
+    const storedCred = isRefusedCredential(ANTHROPIC_CREDENTIAL_ID, rawCred) ? undefined : rawCred;
     const thinkingMiddleware = createAnthropicThinkingMiddleware(bareModelId, this.#thinkingLevel);
 
     if (this.#routeThroughMastraGateway) {
@@ -646,6 +662,8 @@ export class MastraCodeGateway extends MastraModelGateway {
         this.#anthropicPromptCacheScope,
       );
     }
+
+    if (subscriptionRefused) throw new ClaudeSubscriptionRefusedError(`anthropic/${bareModelId}`);
 
     // No stored credentials: use the OAuth-backed provider so the first request can trigger login.
     return opencodeClaudeMaxProvider(bareModelId, {

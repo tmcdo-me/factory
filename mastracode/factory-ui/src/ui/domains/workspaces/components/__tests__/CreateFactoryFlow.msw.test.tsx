@@ -833,7 +833,7 @@ function stubModelStepEndpoints(calls: string[], intakeConfig: Record<string, un
     ),
     http.get(`${TEST_BASE_URL}/web/config/providers`, () =>
       HttpResponse.json({
-        providers: [{ provider: 'anthropic', source: 'stored', oauth: { supported: true, modes: ['paste-code'] } }],
+        providers: [{ provider: 'anthropic', source: 'stored' }],
       }),
     ),
     http.get(`${TEST_BASE_URL}/web/config/models`, () =>
