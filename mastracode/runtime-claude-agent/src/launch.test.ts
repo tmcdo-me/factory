@@ -117,29 +117,31 @@ describe('claudeCodeLaunchScript', () => {
   async function fixture() {
     const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'claude-launch-'));
     const executable = join(root, 'claude');
-    const content = '#!/bin/sh\necho "args:$*|managed:${CLAUDE_CODE_MANAGED_SETTINGS_PATH:-unset}"\n';
+    const content = '#!/bin/sh\necho "args:$*|managed:${CLAUDE_CODE_MANAGED_SETTINGS_PATH:-unset}|path:$PATH"\n';
     await writeFile(executable, content);
     await chmod(executable, 0o755);
     const checksum = createHash('sha256').update(content).digest('hex');
     const managedDir = join(root, 'etc-claude-code');
+    const planted = join(root, 'planted');
+    const userPath = `${planted}:/usr/bin:/bin:/usr/sbin:/sbin`;
     const launch = (script: string) =>
       new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
         execFile(
           'sh',
           ['-c', script, 'claude', '--print', 'x'],
-          { env: { PATH: '/usr/bin:/bin:/usr/sbin:/sbin', CLAUDE_CODE_MANAGED_SETTINGS_PATH: '/tmp/evil.json' } },
+          { env: { PATH: userPath, CLAUDE_CODE_MANAGED_SETTINGS_PATH: '/tmp/evil.json' } },
           (error, stdout, stderr) =>
             resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
         );
       });
-    return { root, executable, checksum, managedDir, launch };
+    return { root, executable, checksum, managedDir, launch, planted, userPath };
   }
 
   it('runs the verified binary with the SDK arguments, with no managed-settings path', async () => {
-    const { root, executable, checksum, managedDir, launch } = await fixture();
+    const { root, executable, checksum, managedDir, launch, userPath } = await fixture();
     try {
       const result = await launch(claudeCodeLaunchScript({ executable, checksum }, { managedDir }));
-      expect(result).toMatchObject({ code: 0, stdout: 'args:--print x|managed:unset\n' });
+      expect(result).toMatchObject({ code: 0, stdout: `args:--print x|managed:unset|path:${userPath}\n` });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -153,6 +155,23 @@ describe('claudeCodeLaunchScript', () => {
       expect(result.code).toBe(LAUNCH_BINARY_MISMATCH);
       expect(result.stdout).toBe('');
       expect(result.stderr).toMatch(/no longer matches its release checksum/);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("checks with the system's own tools, not a sha256sum planted on the PATH", async () => {
+    const { root, executable, checksum, managedDir, launch, planted } = await fixture();
+    try {
+      await writeFile(executable, '#!/bin/sh\necho stolen\n');
+      await mkdir(planted);
+      for (const tool of ['sha256sum', 'shasum']) {
+        await writeFile(join(planted, tool), `#!/bin/sh\necho "${checksum}  $1"\n`);
+        await chmod(join(planted, tool), 0o755);
+      }
+      const result = await launch(claudeCodeLaunchScript({ executable, checksum }, { managedDir }));
+      expect(result.code).toBe(LAUNCH_BINARY_MISMATCH);
+      expect(result.stdout).toBe('');
     } finally {
       await rm(root, { recursive: true, force: true });
     }

@@ -79,7 +79,10 @@ const WORKSPACE_ID_PREFIX = 'mfw';
 // GitHub installation tokens live 60 minutes and minted access is cached for
 // up to 20, so replace an installed token well before it can expire. An
 // installed org PAT does not expire this way and is never age-refreshed.
-const GITHUB_TOKEN_REFRESH_AFTER_MS = 30 * 60_000;
+// fork(claude-agent): 10 minutes, not 30: a Claude Agent process takes the token it starts with
+// for its whole life (up to a 20-minute recycle plus its last run), so a start must get one with
+// most of its hour left.
+const GITHUB_TOKEN_REFRESH_AFTER_MS = 10 * 60_000;
 const isGithubTokenStale = (registration: { tokenIssuedAt: number; patInstalled: boolean }): boolean =>
   !registration.patInstalled && Date.now() - registration.tokenIssuedAt >= GITHUB_TOKEN_REFRESH_AFTER_MS;
 /** The Factory UI renders plans only from `.artifacts/`, so every session writes them there. */

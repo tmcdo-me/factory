@@ -2774,10 +2774,11 @@ describe('GitHub session workspace preparation', () => {
       return { installed, reuse };
     }
 
-    it('re-mints GH_TOKEN on reuse once it is 30 minutes old', async () => {
+    // fork(claude-agent): the re-mint threshold is 10 minutes (Claude Agent processes keep their token).
+    it('re-mints GH_TOKEN on reuse once it is 10 minutes old', async () => {
       const { installed, reuse } = await startSession();
 
-      vi.advanceTimersByTime(29 * 60_000);
+      vi.advanceTimersByTime(9 * 60_000);
       mocks.setEnv.mockClear();
       await reuse();
       expect(mocks.setEnv).not.toHaveBeenCalled();
@@ -2788,7 +2789,7 @@ describe('GitHub session workspace preparation', () => {
       expect(lastGhToken()).not.toBe(installed);
     });
 
-    it('re-mints GH_TOKEN before a command once it is 30 minutes old within one turn', async () => {
+    it('re-mints GH_TOKEN before a command once it is 10 minutes old within one turn', async () => {
       const { workspace } = await createLocalFactory();
       addProject();
       addSession({ id: 'session-a' });
@@ -2796,7 +2797,7 @@ describe('GitHub session workspace preparation', () => {
       const installed = lastGhToken();
       const sandbox = (resolved as any).sandbox;
 
-      vi.advanceTimersByTime(29 * 60_000);
+      vi.advanceTimersByTime(9 * 60_000);
       mocks.setEnv.mockClear();
       await sandbox.executeCommand('gh', ['pr', 'list']);
       expect(mocks.setEnv).not.toHaveBeenCalled();
@@ -2807,7 +2808,7 @@ describe('GitHub session workspace preparation', () => {
       expect(lastGhToken()).not.toBe(installed);
     });
 
-    it('re-mints GH_TOKEN before a background spawn once it is 30 minutes old', async () => {
+    it('re-mints GH_TOKEN before a background spawn once it is 10 minutes old', async () => {
       const { workspace } = await createLocalFactory();
       addProject();
       addSession({ id: 'session-a' });
@@ -2815,7 +2816,7 @@ describe('GitHub session workspace preparation', () => {
       const installed = lastGhToken();
       const sandbox = (resolved as any).sandbox;
 
-      vi.advanceTimersByTime(31 * 60_000);
+      vi.advanceTimersByTime(11 * 60_000);
       await sandbox.processes.spawn('gh pr checks --watch');
       expect(lastGhToken()).toMatch(/^minted-/);
       expect(lastGhToken()).not.toBe(installed);

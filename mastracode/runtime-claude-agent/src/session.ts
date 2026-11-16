@@ -35,9 +35,30 @@ export const CLAUDE_AGENT_ISOLATION = {
   autoMemoryEnabled: false,
 } as const;
 
+/** Claude's own credentials: what the Bash sandbox keeps from the commands Claude runs. */
+const CLAUDE_CREDENTIAL_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
+
+/**
+ * Claude Code's Bash sandbox as Factory runs it (`bashSandbox`): every Bash command sandboxed (no
+ * `dangerouslyDisableSandbox` escape), approved without a prompt as `bypassPermissions` approves
+ * everything else, with Claude's credentials unset inside (`deny`; `mask` would need TLS
+ * termination to work over HTTPS). Fail closed: if the sandbox can't start, Claude Code doesn't.
+ * The session's git credentials (`GH_TOKEN*`) stay: git and `gh` need them.
+ */
+export const CLAUDE_AGENT_BASH_SANDBOX = {
+  enabled: true,
+  failIfUnavailable: true,
+  allowUnsandboxedCommands: false,
+  autoAllowBashIfSandboxed: true,
+  credentials: { envVars: CLAUDE_CREDENTIAL_ENV.map(name => ({ name, mode: 'deny' as const })) },
+};
+
 /** Appended to the system prompt when the session has Factory's skills. */
 export const SKILLS_INSTRUCTIONS =
   "Factory's skills are the `factory:*` skills (`factory-plan` is `factory:factory-plan`). When a skill says to read one of its files with `skill_read`, read that file from the skill's folder with Read.";
+
+/** How long a stopped Claude Code may take to exit before a new one starts anyway. */
+const STOP_EXIT_TIMEOUT_MS = 10_000;
 
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
@@ -66,6 +87,13 @@ export interface ClaudeAgentSessionOptions {
    * `.claude/` settings, hooks included, could be anyone's, so none of them load.
    */
   untrustedCheckout?: boolean;
+  /**
+   * Run Claude Code's Bash tool inside Claude Code's own sandbox (`CLAUDE_AGENT_BASH_SANDBOX`), so
+   * the commands it runs (a repository's tests, scripts) don't see Claude's credential. Needs the
+   * sandbox's dependencies (bubblewrap and socat on Linux); without them Claude Code refuses to
+   * start rather than run unsandboxed.
+   */
+  bashSandbox?: boolean;
   /**
    * Subprocess environment; build it with `claudeProcessEnv`. A function is asked again each time
    * Claude Code starts (after an idle close or a recycle), so credentials refreshed since (a
@@ -168,8 +196,15 @@ export class ClaudeAgentSession {
   /** When the running Claude Code started. */
   #startedAt = 0;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
-  /** A start waiting on the environment (`env` as a function). */
+  /** A start waiting on the environment (`env` as a function), or on the previous process's exit. */
   #starting: Promise<void> | undefined;
+  /** A Claude Code stopped on purpose that is still exiting: a new one waits for it. */
+  #stopping: Promise<void> | undefined;
+  /**
+   * Background work Claude Code reports running (shells, subagents, monitors), from its
+   * `background_tasks_changed` level signal; the process is not stopped while there is any.
+   */
+  #background = new Set<string>();
 
   constructor(options: ClaudeAgentSessionOptions) {
     this.id = options.sessionId;
@@ -217,7 +252,7 @@ export class ClaudeAgentSession {
     }
     this.#clearIdle();
     const env = this.#options.env;
-    if (!this.#query && typeof env !== 'function') this.#start(env);
+    if (!this.#query && !this.#stopping && typeof env !== 'function') this.#start(env);
     else if (!this.#query || this.#starting) {
       // Turns sent while the environment is fetched queue behind the first, in order.
       try {
@@ -269,10 +304,10 @@ export class ClaudeAgentSession {
   /** Start Claude Code if it isn't running, asking `env` for the environment when it is a function. */
   async #ensureStarted(): Promise<void> {
     const env = this.#options.env;
-    if (typeof env !== 'function') return this.#start(env);
     if (this.#query && !this.#starting) return;
-    this.#starting ??= env()
-      .then(resolved => {
+    // Never two Claude Codes on one transcript: a stopped one finishes exiting first.
+    this.#starting ??= Promise.all([this.#stopping, typeof env === 'function' ? env() : env])
+      .then(([, resolved]) => {
         if (this.#closed) throw new Error(`Session ${this.id} is closed`);
         this.#start(resolved);
       })
@@ -287,10 +322,14 @@ export class ClaudeAgentSession {
     this.#idleTimer = undefined;
   }
 
-  /** After the last open run ended: recycle Claude Code now, or stop it once it stayed idle. */
+  /**
+   * After the last open run ended (or the last background task did): recycle Claude Code now, or
+   * stop it once it stayed idle. Never while it reports background work running: stopping it would
+   * kill that work; the stop is armed again when the work ends.
+   */
   #whenIdle(): void {
     this.#clearIdle();
-    if (this.#closed || this.#runs.length || !this.#query) return;
+    if (this.#closed || this.#runs.length || !this.#query || this.#background.size) return;
     const { recycleAfterMs, idleCloseMs } = this.#options;
     if (recycleAfterMs !== undefined && Date.now() - this.#startedAt >= recycleAfterMs) {
       this.#stopProcess();
@@ -299,7 +338,7 @@ export class ClaudeAgentSession {
     if (idleCloseMs === undefined || idleCloseMs <= 0) return;
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = undefined;
-      if (!this.#runs.length) this.#stopProcess();
+      if (!this.#runs.length && !this.#background.size) this.#stopProcess();
     }, idleCloseMs);
     this.#idleTimer.unref?.();
   }
@@ -311,11 +350,20 @@ export class ClaudeAgentSession {
   #stopProcess(): void {
     const query = this.#query;
     const input = this.#input;
+    const pump = this.#pump;
     if (!query) return;
     this.#query = undefined;
     this.#input = undefined;
     input?.close();
     query.close();
+    // Its messages end once the process exited; bounded, so a wedged exit can't hold the session.
+    const exited = Promise.race([
+      pump?.catch(() => undefined),
+      new Promise<void>(resolve => setTimeout(resolve, STOP_EXIT_TIMEOUT_MS).unref?.()),
+    ]).then(() => {
+      if (this.#stopping === exited) this.#stopping = undefined;
+    });
+    this.#stopping = exited;
   }
 
   #start(env: Record<string, string>): void {
@@ -350,7 +398,11 @@ export class ClaudeAgentSession {
         // Isolation: nothing of the operator's Claude account or install reaches the session beyond
         // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but Factory's,
         // no skills but Factory's (bundled and repository skills stay off), no auto-memory.
-        settings: { ...CLAUDE_AGENT_ISOLATION, claudeMdExcludes: instructionFilesAbove(options.cwd) },
+        settings: {
+          ...CLAUDE_AGENT_ISOLATION,
+          claudeMdExcludes: instructionFilesAbove(options.cwd),
+          ...(options.bashSandbox ? { sandbox: CLAUDE_AGENT_BASH_SANDBOX } : {}),
+        },
         strictMcpConfig: true,
         ...(factoryTools
           ? {
@@ -381,6 +433,8 @@ export class ClaudeAgentSession {
     });
     this.#query = query;
     this.#startedAt = Date.now();
+    // The background-task level is per process: a new one starts with none.
+    this.#background.clear();
     this.#pump = this.#drain(query);
   }
 
@@ -421,6 +475,13 @@ export class ClaudeAgentSession {
 
   #handle(message: SDKMessage): void {
     if (message.type === 'system' && message.subtype === 'init') this.#claudeSessionId = message.session_id;
+    if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+      // REPLACE semantics; ambient tasks (watchers, housekeeping) are not work.
+      const had = this.#background.size;
+      this.#background = new Set(message.tasks.filter(task => !task.ambient).map(task => task.task_id));
+      if (had && !this.#background.size && !this.#runs.length) this.#whenIdle();
+      else if (this.#background.size) this.#clearIdle();
+    }
     const runId = this.#runs[0];
     const stopping = this.#aborting;
     for (const event of this.#mapper.map(message, { ...(runId ? { runId } : {}), stopping })) this.#options.emit(event);

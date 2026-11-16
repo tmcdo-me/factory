@@ -120,6 +120,18 @@ export interface ClaudeAgentSessionsDeps {
   query?: QueryFn;
   /** fork(claude-agent): stop an idle Claude Code after this long (see `claudeAgentIdleCloseMs`). */
   idleCloseMs?: number;
+  /** fork(claude-agent): run Claude's Bash in Claude Code's own sandbox (see `claudeAgentBashSandbox`). */
+  bashSandbox?: boolean;
+}
+
+/**
+ * fork(claude-agent): whether Claude Agent sessions run their Bash commands in Claude Code's own
+ * sandbox, which keeps Claude's credential from them: `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1`. Off by
+ * default: it needs the sandbox's dependencies (bubblewrap and socat on Linux) and confines what
+ * commands may write and reach (see `CLAUDE_AGENT_BASH_SANDBOX`).
+ */
+export function claudeAgentBashSandbox(env: Record<string, string | undefined> = process.env): boolean {
+  return /^(1|true|on|yes)$/i.test(env.FACTORY_CLAUDE_AGENT_BASH_SANDBOX?.trim() ?? '');
 }
 
 /**
@@ -251,6 +263,7 @@ export class ClaudeAgentSessions {
         ? async () => claudeProcessEnv(hostEnv, await freshEnv(), envOptions)
         : claudeProcessEnv(hostEnv, env, envOptions),
       idleCloseMs: this.#deps.idleCloseMs ?? claudeAgentIdleCloseMs(),
+      ...((this.#deps.bashSandbox ?? claudeAgentBashSandbox()) ? { bashSandbox: true } : {}),
       recycleAfterMs: CLAUDE_AGENT_RECYCLE_AFTER_MS,
       ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
       ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),

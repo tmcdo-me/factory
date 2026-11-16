@@ -29,7 +29,7 @@ export function execUrl(request: ExecRequest): string {
  * a signal reaches the process, and `close` drops the connection (the process is reaped). Like the
  * real SDK, a failed connection's error carries the whole exec URL, `env` values included.
  */
-export function fakeSpriteExec(options: { connectDelayMs?: number; failConnect?: string } = {}) {
+export function fakeSpriteExec(options: { connectDelayMs?: number; failConnect?: string; path?: string } = {}) {
   const requests: ExecRequest[] = [];
   const signals: string[] = [];
   const spawnInSprite: SpriteSpawn = (command, args = [], spawnOptions = {}) => {
@@ -80,7 +80,7 @@ export function fakeSpriteExec(options: { connectDelayMs?: number; failConnect?:
       }
       child = spawn(command, args, {
         ...(typeof spawnOptions.cwd === 'string' ? { cwd: spawnOptions.cwd } : {}),
-        env: { PATH: process.env.PATH ?? '/usr/bin:/bin', ...spawnOptions.env },
+        env: { PATH: options.path ?? process.env.PATH ?? '/usr/bin:/bin', ...spawnOptions.env },
         stdio: 'pipe',
       });
       child.stdout!.on('data', chunk => stdout.write(chunk));

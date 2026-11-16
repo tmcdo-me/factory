@@ -24,6 +24,7 @@ import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
 import {
   ClaudeAgentSessions,
+  claudeAgentBashSandbox,
   claudeAgentHome,
   claudeAgentIdleCloseMs,
   lateAnswer,
@@ -155,6 +156,27 @@ describe('ClaudeAgentSessions', () => {
     await sessions.commands().send('s1', { text: 'again' }, { context: undefined });
     await vi.waitFor(() => expect(fake.options).toHaveLength(2));
     expect(fake.options[1]).toMatchObject({ env: { GH_TOKEN: 'ghs_fresh_2' }, resume: 'claude-xyz' });
+  });
+
+  it("runs Claude's Bash in Claude Code's sandbox only when FACTORY_CLAUDE_AGENT_BASH_SANDBOX says so", async () => {
+    expect(claudeAgentBashSandbox({})).toBe(false);
+    expect(claudeAgentBashSandbox({ FACTORY_CLAUDE_AGENT_BASH_SANDBOX: '1' })).toBe(true);
+    expect(claudeAgentBashSandbox({ FACTORY_CLAUDE_AGENT_BASH_SANDBOX: 'off' })).toBe(false);
+    const log = new InMemoryEventLog();
+    const fake = fakeQuery();
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      hostEnv: {},
+      query: fake.fn,
+      bashSandbox: true,
+    });
+    await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
+    await vi.waitFor(() => expect(fake.options).toHaveLength(1));
+    expect(fake.options[0]).toMatchObject({
+      settings: { sandbox: { enabled: true, allowUnsandboxedCommands: false } },
+    });
   });
 
   it('reads the idle timeout from FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS', () => {

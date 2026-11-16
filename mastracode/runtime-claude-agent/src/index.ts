@@ -1,5 +1,11 @@
 export { CLAUDE_AGENT_RUNTIME_ID, ClaudeAgentEventMapper } from './event-mapper';
-export { CLAUDE_AGENT_ISOLATION, ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
+export {
+  CLAUDE_AGENT_BASH_SANDBOX,
+  CLAUDE_AGENT_ISOLATION,
+  ClaudeAgentSession,
+  SKILLS_INSTRUCTIONS,
+  instructionFilesAbove,
+} from './session';
 export type {
   ClaudeAgentRuntimeState,
   ClaudeAgentSessionOptions,

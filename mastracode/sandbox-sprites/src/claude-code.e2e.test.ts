@@ -18,6 +18,7 @@ import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { defineFactoryTool } from '@factory/agent-runtime';
 import type { SandboxProcesses } from '@factory/agent-runtime';
 import {
+  CLAUDE_AGENT_BASH_SANDBOX,
   CLAUDE_AGENT_ISOLATION,
   HOST_FILES,
   claudeProcessEnv,
@@ -62,7 +63,7 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
       root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'factory-sprite-e2e-'));
     });
     afterEach(async () => {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5 });
     });
 
     it('starts, serves Factory tools over its stdio, and loads the skills plugin', { timeout: 120_000 }, async () => {
@@ -145,8 +146,8 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
         // (verified against its release checksum); no environment in the exec request.
         expect(raw.requests).toHaveLength(1);
         const [request] = raw.requests;
-        expect(request).toMatchObject({ command: 'sh', options: { cwd } });
-        expect(request!.args.slice(2, 4)).toEqual(['sh', '-c']);
+        expect(request).toMatchObject({ command: '/bin/sh', options: { cwd } });
+        expect(request!.args.slice(2, 4)).toEqual(['/bin/sh', '-c']);
         expect(request!.args[4]).toContain(launch.pathToClaudeCodeExecutable);
         expect(request!.options).not.toHaveProperty('env');
         expect(execUrl(request!)).not.toContain(MARKER);
@@ -155,5 +156,62 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
         claude.close();
       }
     });
+
+    /** Claude Code's permission mode at start, with these settings and this environment. */
+    async function startedMode(settings: Record<string, unknown>, extraEnv: Record<string, string> = {}) {
+      const raw = fakeSpriteExec();
+      const sprite = envOverStdin({ spawn: raw.spawn });
+      const processes: SandboxProcesses = {
+        kind: 'sprite',
+        spawn: (command, args, options) => spawnInSprite(sprite.spawn, command, args, options),
+        files: { ...HOST_FILES, isDirectory: async () => true },
+      };
+      const home = join(root, 'claude-home');
+      const cwd = join(root, 'repo');
+      await HOST_FILES.mkdir(cwd);
+      const launch = sandboxClaudeCodeLaunch(processes, { home, ...bundledBinary() });
+      let release!: () => void;
+      const idle = new Promise<void>(resolve => (release = resolve));
+      const prompt = (async function* (): AsyncGenerator<SDKUserMessage> {
+        await idle;
+      })();
+      const claude = query({
+        prompt,
+        options: {
+          cwd,
+          env: claudeProcessEnv(
+            {},
+            { CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', ...extraEnv },
+            { home, remote: true },
+          ),
+          pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable!,
+          spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess!,
+          permissionMode: 'bypassPermissions',
+          allowDangerouslySkipPermissions: true,
+          settingSources: [],
+          settings: { ...CLAUDE_AGENT_ISOLATION, ...settings } as never,
+          strictMcpConfig: true,
+        },
+      });
+      try {
+        // Not in the SDK's public types, but what Claude Code reports at start.
+        return ((await claude.initializationResult()) as { current_permission_mode?: string }).current_permission_mode;
+      } finally {
+        release();
+        claude.close();
+      }
+    }
+
+    it("accepts Factory's Bash sandbox settings and keeps bypassPermissions", { timeout: 120_000 }, async () => {
+      expect(await startedMode({ sandbox: CLAUDE_AGENT_BASH_SANDBOX })).toBe('bypassPermissions');
+    });
+
+    it(
+      'drops to the default permission mode under CLAUDE_CODE_SUBPROCESS_ENV_SCRUB (why Factory does not set it)',
+      { timeout: 120_000 },
+      async () => {
+        expect(await startedMode({}, { CLAUDE_CODE_SUBPROCESS_ENV_SCRUB: '1' })).toBe('default');
+      },
+    );
   },
 );

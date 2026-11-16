@@ -16,6 +16,7 @@ import {
   claudeCodeInstallScript,
   ensureClaudeCode,
   runInProcesses,
+  SYSTEM_PATH,
 } from './install';
 import type { RunInSandbox } from './install';
 
@@ -110,12 +111,26 @@ describe('ensureClaudeCode (in a fake sandbox)', () => {
       execFile(
         'sh',
         ['-c', script],
-        { cwd: '/', env: { HOME: join(root, 'home'), PATH: `${join(root, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin` } },
+        // The user's PATH also holds what a repository planted (`planted/`), ahead of everything.
+        {
+          cwd: '/',
+          env: {
+            HOME: join(root, 'home'),
+            PATH: `${join(root, 'planted')}:${join(root, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin`,
+          },
+        },
         (error, stdout, stderr) =>
           resolve({ exitCode: error ? Number((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
       );
     });
-  const ensure = (checksums = [sha(official)]) => ensureClaudeCode(run, { version: '2.1.325', checksums, managedDir });
+  // The fake `curl` sits ahead of the system's tools, standing in for the real one there.
+  const ensure = (checksums = [sha(official)]) =>
+    ensureClaudeCode(run, {
+      version: '2.1.325',
+      checksums,
+      managedDir,
+      systemPath: `${join(root, 'bin')}:${SYSTEM_PATH}`,
+    });
   const installerRuns = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
 
   it('installs the pinned version once, from its own home, and finds it verified after that', async () => {
@@ -151,6 +166,17 @@ describe('ensureClaudeCode (in a fake sandbox)', () => {
     expect(await ensure()).toEqual(installed);
     expect(installerRuns()).toHaveLength(2);
     expect(existsSync(ran)).toBe(false);
+  });
+
+  it("checks with the system's own tools, not ones a repository planted on the user's PATH", async () => {
+    await fakeInstaller(binary('tampered'));
+    // A planted `sha256sum` (and `shasum`) that vouches for anything.
+    await mkdir(join(root, 'planted'));
+    for (const tool of ['sha256sum', 'shasum']) {
+      await writeFile(join(root, 'planted', tool), `#!/bin/sh\necho "${sha(official)}  $1"\n`);
+      await chmod(join(root, 'planted', tool), 0o755);
+    }
+    await expect(ensure()).rejects.toThrow(/does not match its published checksum/);
   });
 
   it('fails, saying so, when the installer leaves a binary that is not the release', async () => {

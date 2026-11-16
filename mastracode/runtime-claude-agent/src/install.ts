@@ -83,6 +83,13 @@ export type RunInSandbox = (script: string) => Promise<{ exitCode: number; stdou
 
 const REPORT = /^factory-claude-code home=(\/\S*) bin=(\/\S*) sha256=([a-f0-9]{64})$/m;
 
+/**
+ * The system's own tool directories (root-owned): the install and the launch check run with PATH
+ * pinned to these, so a tool a repository planted on the user's PATH (a fake `sha256sum`, `curl` or
+ * `readlink`) is never what checks or fetches the binary.
+ */
+export const SYSTEM_PATH = '/usr/bin:/bin:/usr/sbin:/sbin';
+
 /** Shell: `sha256 FILE` prints the file's SHA-256 (coreutils, or `shasum` where that is missing). */
 export const SHA256_SHELL =
   'sha256() { if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -d" " -f1; }';
@@ -104,7 +111,7 @@ export function managedSettingsCheck(managedDir: string, exitCode: number): stri
 export function claudeCodeInstallScript(
   version: string,
   checksums: readonly string[],
-  options: { managedDir?: string } = {},
+  options: { managedDir?: string; systemPath?: string } = {},
 ): string {
   if (!VERSION.test(version)) throw new Error(`Not a Claude Code version: ${JSON.stringify(version)}`);
   if (!checksums.length || !checksums.every(checksum => SHA256.test(checksum))) {
@@ -112,8 +119,12 @@ export function claudeCodeInstallScript(
   }
   const managedDir = options.managedDir ?? CLAUDE_CODE_MANAGED_DIR;
   if (!/^\/[A-Za-z0-9._/-]+$/.test(managedDir)) throw new Error(`Not a plain path: ${managedDir}`);
+  const systemPath = options.systemPath ?? SYSTEM_PATH;
+  if (!/^\/[A-Za-z0-9._/:-]+$/.test(systemPath)) throw new Error(`Not a plain PATH: ${systemPath}`);
   return [
     'set -eu',
+    `PATH='${systemPath}'`,
+    'export PATH',
     'home="${HOME:?}/.factory/claude-agent"',
     'link="$home/.local/bin/claude"',
     `want='${version}'`,
@@ -140,12 +151,15 @@ export function claudeCodeInstallScript(
  */
 export async function ensureClaudeCode(
   run: RunInSandbox,
-  options: { version?: string; checksums?: readonly string[]; managedDir?: string } = {},
+  options: { version?: string; checksums?: readonly string[]; managedDir?: string; systemPath?: string } = {},
 ): Promise<InstalledClaudeCode> {
   const version = options.version ?? bundledClaudeCodeVersion();
   const checksums = options.checksums ?? bundledClaudeCodeChecksums();
   const result = await run(
-    claudeCodeInstallScript(version, checksums, options.managedDir ? { managedDir: options.managedDir } : {}),
+    claudeCodeInstallScript(version, checksums, {
+      ...(options.managedDir ? { managedDir: options.managedDir } : {}),
+      ...(options.systemPath ? { systemPath: options.systemPath } : {}),
+    }),
   );
   const report = result.exitCode === 0 ? REPORT.exec(result.stdout) : null;
   if (!report) {
