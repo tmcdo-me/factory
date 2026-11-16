@@ -219,6 +219,18 @@ describe('transcript reducer', () => {
     });
   });
 
+  it('keeps the latest name Factory gave the session', () => {
+    const transcript = buildTranscript(
+      's',
+      envelopes(
+        { type: 'session.renamed', title: 'Fix the login bug' },
+        { type: 'session.renamed', title: 'Fix the login redirect' },
+      ),
+    );
+    expect(transcript.title).toBe('Fix the login redirect');
+    expect(transcript.items).toEqual([]);
+  });
+
   it('keeps identity of untouched items so UI memoization works', () => {
     const [m1, m2, d2] = envelopes(
       { type: 'message.started', messageId: 'm1', role: 'user' },

@@ -66,6 +66,22 @@ function createDependencies(rowTitle: string | null = null): ThreadTitleMirrorDe
 }
 
 describe('observeSessionThreadTitle', () => {
+  // fork(claude-agent): the open session's tab and the sidebar learn the new title from this.
+  it('says the session was renamed once the row carries the title, and not when it already did', async () => {
+    const renamed: string[] = [];
+    const first = createSession();
+    observeSessionThreadTitle(first.session, { ...createDependencies('fix it'), onRenamed: t => renamed.push(t) });
+    first.emit({ type: 'thread_title_updated', threadId: 'thread-1', title: 'Fix the login redirect' });
+    await vi.waitFor(() => expect(renamed).toEqual(['Fix the login redirect']));
+
+    const second = createSession();
+    const unchanged = { ...createDependencies('Fix the login redirect'), onRenamed: (t: string) => renamed.push(t) };
+    observeSessionThreadTitle(second.session, unchanged);
+    second.emit({ type: 'thread_title_updated', threadId: 'thread-1', title: 'Fix the login redirect' });
+    await vi.waitFor(() => expect(unchanged.sourceControl.sessions.getBySessionId).toHaveBeenCalled());
+    expect(renamed).toEqual(['Fix the login redirect']);
+  });
+
   it('caps an overlong generated title the way the session row stores it', async () => {
     const overlong = `Rewrite the log parser ${'so it streams instead of buffering '.repeat(4)}`;
     const capped = 'Rewrite the log parser so it streams instead of buffering so it streams instead';

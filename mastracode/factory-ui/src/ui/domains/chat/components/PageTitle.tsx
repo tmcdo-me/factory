@@ -5,7 +5,7 @@ import { useParams } from 'react-router';
 import { queryKeys } from '../../../../api/keys';
 import { useDocumentTitle } from '../../../../hooks/useDocumentTitle';
 import { useRouteSessionId } from '../../../../hooks/useRouteSessionId';
-import { useUserSessionQuery } from '../../../../hooks/useWorkspaces';
+import { setCachedSessionTitle, useUserSessionQuery } from '../../../../hooks/useWorkspaces';
 import { useSessionCard } from '../../factory/hooks/useSessionCard';
 import { useSessionRepository } from '../../factory/hooks/useSessionRepository';
 import { workItemReference } from '../../factory/services/relationships';
@@ -20,11 +20,22 @@ export function PageTitle() {
   // fork(claude-agent): a session is one conversation, so its title is the session's own, which the
   // server writes when the agent names the conversation.
   const sessionTitle = useUserSessionQuery(routeSessionId).data?.title?.trim();
+  const namedTitle = useShowNameGivenWhileOpen(factoryId, routeSessionId);
   useRefreshSessionAfterRun(factoryId, routeSessionId);
 
   const reference = item && workItemReference(item, repository?.slug);
-  useDocumentTitle(reference ?? (sessionTitle || undefined));
+  useDocumentTitle(reference ?? (namedTitle || sessionTitle || undefined));
   return null;
+}
+
+/** The name the session was given while open (its rename event), shown in the header and sidebar too. */
+function useShowNameGivenWhileOpen(factoryId: string | undefined, sessionId: string | undefined) {
+  const queryClient = useQueryClient();
+  const title = useChatTranscript().transcript.title;
+  useEffect(() => {
+    if (title && sessionId) setCachedSessionTitle(queryClient, factoryId, sessionId, title);
+  }, [factoryId, queryClient, sessionId, title]);
+  return title;
 }
 
 /** A run can name its session; read the session again once the run ends so the new title shows. */

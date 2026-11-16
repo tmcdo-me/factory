@@ -79,4 +79,34 @@ describe('the tab title of a session', () => {
 
     await waitFor(() => expect(document.title).toBe('Fix the login bug | Mastra Factory'));
   });
+
+  it('shows the name the agent gives the conversation as soon as it is given, in the tab and the session row', async () => {
+    const session = stubPreparingSession({ autoAgentEnd: false, materialized: true });
+    const { client } = renderWithProviders(
+      <MemoryRouter initialEntries={[`/factories/${FACTORY_ID}/user/threads/${SESSION_ID}`]}>
+        <Routes>
+          <Route
+            path="/factories/:factoryId/user/threads/:threadId"
+            element={
+              <SidebarProvider storageKey="page-title-test">
+                <ChatSessionTestProvider threadId={SESSION_ID} userScoped deferUntilMessagesReady={false}>
+                  <OverlaysProvider>
+                    <PageTitle />
+                  </OverlaysProvider>
+                </ChatSessionTestProvider>
+              </SidebarProvider>
+            }
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+    session.finishWorkspace();
+
+    // Another thread's title is not this session's.
+    await session.emit({ type: 'thread_title_updated', threadId: 'other-thread', title: 'Not this one' });
+    await session.emit({ type: 'thread_title_updated', threadId: SESSION_ID, title: '  Fix   the login bug ' });
+
+    await waitFor(() => expect(document.title).toBe('Fix the login bug | Mastra Factory'));
+    expect(client.getQueryData<{ title?: string }>(['user-session', SESSION_ID])?.title).toBe('Fix the login bug');
+  });
 });

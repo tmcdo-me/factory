@@ -103,6 +103,25 @@ const UNMATERIALIZED_POLL_WINDOW_MS = 10 * 60_000;
  * with no poll the cached `null` never resolved and dots wedged on
  * "initializing".
  */
+/** fork(claude-agent): show a name the server just gave a session wherever its row is cached. */
+export function setCachedSessionTitle(
+  queryClient: QueryClient,
+  factoryId: string | undefined,
+  sessionId: string,
+  title: string,
+) {
+  const rename = (session: FactoryUserSession) =>
+    session.sessionId === sessionId && session.title !== title ? { ...session, title } : session;
+  queryClient.setQueryData<FactoryUserSession>(queryKeys.userSession(sessionId), current =>
+    current ? rename(current) : current,
+  );
+  queryClient.setQueryData<WorkspacesData>(queryKeys.sessions(factoryId), current =>
+    current
+      ? { ...current, workspaces: current.workspaces.map(rename), userSessions: current.userSessions.map(rename) }
+      : current,
+  );
+}
+
 export function sessionsRefetchInterval(data: WorkspacesData | undefined, now = Date.now()): number | false {
   if (!data) return false;
   const unresolved = [...data.workspaces, ...data.userSessions].some(

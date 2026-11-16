@@ -3,7 +3,7 @@ import { EmptyState } from '@mastra/playground-ui/components/EmptyState';
 import { cn } from '@mastra/playground-ui/utils/cn';
 import type { ReactNode } from 'react';
 import { useRef } from 'react';
-import { Navigate, useNavigate, useParams } from 'react-router';
+import { Navigate, useLocation, useNavigate, useParams } from 'react-router';
 
 import { ChatPageLayout } from '../domains/chat/components/ChatPageLayout';
 import { EmptyThreadState } from '../domains/chat/components/EmptyThreadState';
@@ -40,8 +40,22 @@ const SESSION_PANEL: WorkspacePanelPage = {
 };
 
 export function ThreadPage() {
-  const { factoryId, threadId } = useParams<{ factoryId: string; threadId?: string }>();
+  const { factoryId, sessionId, threadId } = useParams<{ factoryId: string; sessionId?: string; threadId?: string }>();
+  const { search, state } = useLocation();
   const workspace = useThreadWorkspacePath();
+
+  // fork(claude-agent): a session is one conversation, its own thread. A link to another of its threads
+  // (from before multi-thread sessions were dropped) opens the session, so nothing is sent to a thread
+  // it isn't on. A chat-only Slack session (`channel`, named by `?sessionId=`) keeps its thread link.
+  if (factoryId && sessionId && sessionId !== 'channel' && threadId && threadId !== sessionId) {
+    return (
+      <Navigate
+        replace
+        state={state}
+        to={`/factories/${factoryId}/workspaces/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(sessionId)}${search}`}
+      />
+    );
+  }
 
   if (workspace.error instanceof DraftSessionCreateError) {
     return (

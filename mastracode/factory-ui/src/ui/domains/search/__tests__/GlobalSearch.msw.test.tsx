@@ -1362,12 +1362,12 @@ describe('Global search', () => {
   it.each([
     {
       title: 'Add universal command search',
-      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-work/threads/thread-work-linked`,
+      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-work/threads/session-work`,
       preservesOrigin: true,
     },
     {
       title: 'Review command palette PR',
-      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-review/threads/thread-review-linked`,
+      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-review/threads/session-review`,
       preservesOrigin: true,
     },
     {

@@ -142,7 +142,7 @@ function renderThreadRoute(path = `/factories/${FACTORY_ID}/user/threads/${SESSI
   const router = createMemoryRouter(createAppRoutes(), {
     initialEntries: [path],
   });
-  return renderWithProviders(<RouterProvider router={router} />);
+  return { ...renderWithProviders(<RouterProvider router={router} />), router };
 }
 
 describe('ThreadPage loading shell', () => {
@@ -198,6 +198,20 @@ describe('ThreadPage loading shell', () => {
     messagesGate.resolve();
     await waitFor(() => expect(screen.queryByRole('status', { name: 'Preparing session' })).not.toBeInTheDocument());
     expect(await findPageHeader()).toBeInTheDocument();
+  });
+
+  // fork(claude-agent): a session is one conversation; an old link to another of its threads opens it.
+  it('opens the session itself from a link to one of its other threads, so nothing is sent there', async () => {
+    stubThreadRoute();
+    const { router } = renderThreadRoute(
+      `/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/thread-2?from=card`,
+    );
+
+    await waitFor(() =>
+      expect(`${router.state.location.pathname}${router.state.location.search}`).toBe(
+        `/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${SESSION_ID}?from=card`,
+      ),
+    );
   });
 
   it('reveals loaded history without briefly rendering the empty thread state', async () => {
