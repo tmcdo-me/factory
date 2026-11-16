@@ -127,7 +127,8 @@ describe('ClaudeAgentSessions', () => {
       cwd: '/sandboxes/s1/repo',
       model: 'claude-sonnet-5-5',
       env: { HOME: '/home/u', GH_TOKEN: 'ghs_x' },
-      systemPrompt: { append: 'Factory instructions' },
+      // Factory's instructions first; with Claude's Bash sandboxed, how to push follows them.
+      systemPrompt: { append: expect.stringMatching(/^Factory instructions(\n\n|$)/) },
     });
     expect(fake.options[0]!.env).not.toHaveProperty('DATABASE_URL');
     await vi.waitFor(() => expect(store.setRuntimeState).toHaveBeenCalledWith('s1', { claudeSessionId: 'claude-xyz' }));
