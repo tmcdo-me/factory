@@ -4,11 +4,39 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import { SessionPublisher } from '@factory/agent-runtime';
-import type { CommandResult, SessionCommands, SessionEventHub } from '@factory/agent-runtime';
-import { CLAUDE_AGENT_RUNTIME_ID, ClaudeAgentSession, claudeProcessEnv } from '@factory/runtime-claude-agent';
-import type { QueryFn } from '@factory/runtime-claude-agent';
+import type {
+  CommandResult,
+  FactoryToolContext,
+  InteractionBroker,
+  InteractionRecord,
+  InteractionResponse,
+  SessionCommands,
+  SessionEventHub,
+  SendInput,
+} from '@factory/agent-runtime';
+import {
+  CLAUDE_AGENT_RUNTIME_ID,
+  ClaudeAgentSession,
+  claudeProcessEnv,
+  writeSkillsPlugin,
+} from '@factory/runtime-claude-agent';
+import type { ClaudeAgentFactoryTools, ClaudeAgentSkills, QueryFn } from '@factory/runtime-claude-agent';
+import type { RequestContext } from '@mastra/core/request-context';
 
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
+import { factorySkillsOf } from './claude-agent-skills.js';
+import {
+  INTERACTIVE_TOOLS,
+  claudeAgentToolDefs,
+  localSessionWorkspace,
+  runMastraTool,
+  toolIdentity,
+} from './claude-agent-tools.js';
+import type { MastraTools } from './claude-agent-tools.js';
+import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
+
+/** A session id usable as one folder name: no separators, no `.`/`..`. */
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
 
 export interface ClaudeAgentSessionsDeps {
   hub: SessionEventHub;
@@ -21,7 +49,20 @@ export interface ClaudeAgentSessionsDeps {
    * The session's working directory and sandbox environment. Starting the sandbox clones the
    * repository, so this can take a while on first use. Rejects when the caller may not use it.
    */
-  workspace(sessionId: string, requestContext: unknown): Promise<{ cwd: string; env: Record<string, string> }>;
+  workspace(
+    sessionId: string,
+    requestContext: unknown,
+  ): Promise<Pick<ClaudeAgentWorkspace, 'cwd' | 'env'> & Partial<ClaudeAgentWorkspace>>;
+  /**
+   * Factory's tools for one turn, exactly as a Mastra Code session gets them (`extraTools`), built
+   * from the turn's request context. Without it the session has only Claude Code's own tools.
+   */
+  tools?(requestContext: RequestContext): Promise<MastraTools>;
+  /**
+   * Where `ask_user` and `submit_plan` wait for the human. Without it those two tools are not
+   * offered: a question nobody can answer would hang the turn.
+   */
+  interactions?: InteractionBroker;
   /** Factory's instructions for every Claude Agent session. */
   instructions?: string;
   /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
@@ -46,6 +87,8 @@ export function claudeAgentHome(env: Record<string, string | undefined> = proces
 export class ClaudeAgentSessions {
   readonly #deps: ClaudeAgentSessionsDeps;
   readonly #live = new Map<string, Promise<ClaudeAgentSession | undefined>>();
+  /** The host request context each open run was sent with, by run id. */
+  readonly #runContexts = new Map<string, unknown>();
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
@@ -69,12 +112,15 @@ export class ClaudeAgentSessions {
       this.#live.delete(sessionId);
       return undefined;
     }
-    const { cwd, env } = await this.#deps.workspace(sessionId, requestContext);
+    const workspace = await this.#deps.workspace(sessionId, requestContext);
+    const { cwd, env } = workspace;
     const home = this.#deps.home;
     if (home) await mkdir(home, { recursive: true, mode: 0o700 });
     const publisher = new SessionPublisher(this.#deps.hub, sessionId, {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
     });
+    const factoryTools = await this.#factoryTools(sessionId, workspace, requestContext);
+    const skills = await this.#skills(sessionId, workspace);
     let savedState = JSON.stringify(record.runtimeState ?? {});
     const resume = (record.runtimeState as { claudeSessionId?: string } | undefined)?.claudeSessionId;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
@@ -85,8 +131,14 @@ export class ClaudeAgentSessions {
       ...(resume ? { resume } : {}),
       ...(this.#deps.instructions ? { instructions: this.#deps.instructions } : {}),
       ...(this.#deps.query ? { query: this.#deps.query } : {}),
+      ...(factoryTools ? { factoryTools: factoryTools.tools } : {}),
+      ...(skills ? { skills } : {}),
       emit: event => {
         publisher.emit(event);
+        if (event.type === 'run.ended') {
+          this.#runContexts.delete(event.runId);
+          factoryTools?.endRun(event.runId);
+        }
         if (event.type !== 'model.changed' && event.type !== 'run.ended') return;
         const state = JSON.stringify(session.runtimeState());
         if (state === savedState) return;
@@ -101,26 +153,136 @@ export class ClaudeAgentSessions {
     return session;
   }
 
+  /**
+   * The session's Factory tools. Which tools Claude Code lists is decided when it starts, from the
+   * opening turn; each call then runs the tool as built for the call's own turn, so the turn's caller,
+   * its interactive marker and the card's current phase apply, as in Mastra Code.
+   */
+  async #factoryTools(
+    sessionId: string,
+    workspace: Awaited<ReturnType<ClaudeAgentSessionsDeps['workspace']>>,
+    openContext: unknown,
+  ): Promise<{ tools: ClaudeAgentFactoryTools; endRun(runId: string): void } | undefined> {
+    const build = this.#deps.tools;
+    const contextFor = workspace.requestContext;
+    if (!build || !contextFor) return undefined;
+    const broker = this.#deps.interactions;
+    const interactive = broker ? INTERACTIVE_TOOLS : {};
+    // The tools close over the context they were built with; calls run with that same context.
+    const forContext = async (hostContext: unknown) => {
+      const requestContext = contextFor(hostContext);
+      return { requestContext, tools: { ...interactive, ...(await build(requestContext)) } };
+    };
+    const opening = forContext(openContext);
+    const perRun = new Map<string, ReturnType<typeof forContext>>();
+    const turn = (runId: string | undefined) => {
+      if (!runId || !this.#runContexts.has(runId)) return opening;
+      let built = perRun.get(runId);
+      if (!built) {
+        built = forContext(this.#runContexts.get(runId));
+        perRun.set(runId, built);
+      }
+      return built;
+    };
+    const callRuns = new Map<string, string | undefined>();
+    const sessionWorkspace = localSessionWorkspace(workspace);
+    const defs = claudeAgentToolDefs((await opening).tools, async (name, input, ctx: FactoryToolContext) => {
+      const runId = callRuns.get(ctx.callId);
+      callRuns.delete(ctx.callId);
+      const current = await turn(runId);
+      const tool = current.tools[name];
+      if (!tool) throw new Error(`Factory tool ${name} is not available in this turn`);
+      return runMastraTool(name, tool, input, ctx, {
+        requestContext: current.requestContext,
+        cwd: workspace.cwd,
+        sessionId,
+      });
+    });
+    return {
+      tools: {
+        defs,
+        context: async call => {
+          callRuns.set(call.callId, call.runId);
+          const { requestContext } = await turn(call.runId);
+          return {
+            sessionId,
+            callId: call.callId,
+            ...toolIdentity(requestContext),
+            workspace: sessionWorkspace,
+            signal: call.signal,
+            interact: request => {
+              if (!broker) throw new Error('Nobody can answer questions in this session');
+              return broker.request(sessionId, request, { callId: call.callId, signal: call.signal });
+            },
+          };
+        },
+      },
+      endRun: runId => perRun.delete(runId),
+    };
+  }
+
+  /** Factory's skills for the session, written as a plugin under Claude Code's home. */
+  async #skills(
+    sessionId: string,
+    workspace: Awaited<ReturnType<ClaudeAgentSessionsDeps['workspace']>>,
+  ): Promise<ClaudeAgentSkills | undefined> {
+    const home = this.#deps.home;
+    if (!home || !workspace.skills) return undefined;
+    const skills = await factorySkillsOf(workspace.skills);
+    if (!skills.length) return undefined;
+    // The folder is deleted and rewritten on every start, so its name must be one plain segment.
+    if (!SAFE_SEGMENT.test(sessionId))
+      throw new Error(`Session id ${JSON.stringify(sessionId)} is not a safe folder name`);
+    return writeSkillsPlugin(join(home, 'factory-skills', sessionId), skills);
+  }
+
+  /** Start a turn, remembering the request it came with so its tool calls act as that caller. */
+  async #send(session: ClaudeAgentSession, input: SendInput, context: unknown): Promise<void> {
+    // Set before Claude Code reads the turn: `send` queues it and returns without yielding to it.
+    const { runId } = await session.send(input);
+    this.#runContexts.set(runId, context);
+  }
+
   commands(): SessionCommands {
     const notFound: CommandResult = { ok: false, reason: 'session_not_found' };
+    const notPending: CommandResult = { ok: false, reason: 'not_pending', message: 'no_pending_interaction' };
     return {
       send: async (sessionId, input, request) => {
         const session = await this.open(sessionId, request.context);
         if (!session) return notFound;
-        await session.send(input);
+        await this.#send(session, input, request.context);
         return { ok: true };
       },
       abort: async (sessionId, request) => {
         const session = await this.open(sessionId, request.context);
         if (!session) return notFound;
+        // A question or plan the turn waits on goes with it.
+        await this.#deps.interactions?.cancelSession(sessionId, 'aborted');
         await session.abort();
         return { ok: true };
       },
-      // Claude Agent sessions ask nothing of the human yet; Factory's interactions land with its tools.
-      answer: async (sessionId, _target, _response, request) =>
-        (await this.open(sessionId, request.context))
-          ? { ok: false, reason: 'not_pending', message: 'no_pending_interaction' }
-          : notFound,
+      answer: async (sessionId, target, response, request) => {
+        const session = await this.open(sessionId, request.context);
+        if (!session) return notFound;
+        const broker = this.#deps.interactions;
+        if (!broker) return notPending;
+        const pending = (await broker.listPending({ sessionId })).find(record =>
+          target.interactionId ? record.id === target.interactionId : record.callId === target.callId,
+        );
+        if (!pending) return notPending;
+        if (pending.request.kind !== response.kind) {
+          return { ok: false, reason: 'invalid', message: `expected a ${pending.request.kind} answer` };
+        }
+        const outcome = await broker.resolve(pending.id, response, {
+          resolvedBy: toolIdentity(contextOf(request.context)).userId,
+        });
+        if (outcome.status === 'not_pending') return notPending;
+        // Nobody waits any more (the server restarted while the human decided): Claude Code's call
+        // is gone, so the answer reaches the conversation as a message instead.
+        if (outcome.status === 'queued')
+          await this.#send(session, { text: lateAnswer(pending, response) }, request.context);
+        return { ok: true };
+      },
       setModel: async (sessionId, model, request) => {
         const session = await this.open(sessionId, request.context);
         if (!session) return notFound;
@@ -138,6 +300,31 @@ export class ClaudeAgentSessions {
       sessions.flatMap(result => (result.status === 'fulfilled' && result.value ? [result.value.close()] : [])),
     );
   }
+}
+
+/** A request context's `get`, or none (tests and hosts may pass anything). */
+function contextOf(context: unknown): RequestContext {
+  return (
+    context && typeof (context as { get?: unknown }).get === 'function' ? context : { get: () => undefined }
+  ) as RequestContext;
+}
+
+/** An answer whose tool call no longer waits, told to Claude as a message. */
+export function lateAnswer(record: InteractionRecord, response: InteractionResponse): string {
+  if (response.kind === 'question' && record.request.kind === 'question') {
+    const answer = Array.isArray(response.answer) ? response.answer.join(', ') : response.answer;
+    return `Earlier you asked: "${record.request.question}". That call was interrupted before the answer arrived. The answer is: ${answer}`;
+  }
+  if (response.kind === 'plan_approval' && record.request.kind === 'plan_approval') {
+    const plan = `\`${record.request.planPath}\``;
+    if (response.action === 'approved') {
+      return `Your plan ${plan} was approved after its submit_plan call was interrupted. Proceed with implementation following the approved plan.`;
+    }
+    return response.feedback
+      ? `Your plan ${plan} was not approved. Feedback: ${response.feedback}\n\nRevise the plan and submit it again with submit_plan.`
+      : `Your plan ${plan} was not approved. Wait for the person to send revision instructions.`;
+  }
+  return `A tool call was interrupted before its answer arrived: ${JSON.stringify(response)}`;
 }
 
 /**
