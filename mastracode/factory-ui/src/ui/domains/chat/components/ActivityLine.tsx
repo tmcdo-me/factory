@@ -2,7 +2,6 @@ import { useState } from 'react';
 
 import { useChatRuntime } from '../context/useChatRuntime';
 import { useChatTranscript } from '../context/useChatTranscript';
-import { omWork } from '../services/om';
 import { lineState, runActivity, spokenByStretch } from '../services/run-activity';
 import { RunLine } from './RunLine';
 
@@ -18,7 +17,7 @@ export function ActivityLine({ stretchLive }: { stretchLive: boolean }) {
   const live = busy || activity === 'waiting';
   const run = runtime.runsStarted;
   const [settledRun, setSettledRun] = useState(live ? undefined : run);
-  const state = lineState(activity, busy, Object.values(omWork(runtime)).includes('blocking'));
+  const state = lineState(activity, busy);
   if (state === 'writing' || (stretchLive && spokenByStretch(state))) return null;
   if (!live && settledRun === run) return null;
   return <RunLine state={state} live={live} onSettled={() => setSettledRun(run)} />;

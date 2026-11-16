@@ -182,8 +182,18 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
       threadId: sessionId,
       tasks: projected.tasks,
       ...(context ? { context } : {}),
+      ...(state.transcript.title ? { title: state.transcript.title } : {}),
     };
-  }, [projected, state.locals, state.notices, state.hidden, state.pendingCleared, sessionId, context]);
+  }, [
+    projected,
+    state.locals,
+    state.notices,
+    state.hidden,
+    state.pendingCleared,
+    sessionId,
+    context,
+    state.transcript.title,
+  ]);
 
   const userMessageCount = useRef(0);
   userMessageCount.current = projected.entries.filter(e => e.kind === 'message' && e.message.role === 'user').length;

@@ -1,4 +1,4 @@
-import type { AgentControllerSessionSettings, ToolCategory } from '@mastra/client-js';
+import type { AgentControllerSessionSettings } from '@mastra/client-js';
 import {
   getAvailableThinkingLevelsForModel,
   parseThinkCommand,
@@ -7,12 +7,6 @@ import {
 } from '@mastra/code-sdk/thinking';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
-import {
-  useClearAgentControllerGoalMutation,
-  usePauseAgentControllerGoalMutation,
-  useResumeAgentControllerGoalMutation,
-  useSetAgentControllerGoalMutation,
-} from '../../../../hooks/useAgentControllerGoalMutations';
 import { useAbortSessionMutation } from '../../../../hooks/useSessionCommandMutations';
 import { useAgentControllerSettings } from '../../../../hooks/useAgentControllerSettings';
 import { useModelReasoningOptions } from '../../../../hooks/useAvailableModels';
@@ -26,13 +20,10 @@ import { DEFAULT_SOURCE_LABELS, THINKING_LEVEL_LABELS } from '../services/thinki
 import type { ThinkingDefault } from '../services/thinkingLevels';
 import { useChatModels } from './useChatModels';
 import { useChatModelScope } from './useChatModelScope';
-import { useChatPermissions } from './useChatPermissions';
 import { useChatSessionContext } from './useChatSessionContext';
 import { useChatThinking } from './useChatThinking';
 import { useChatRuntime } from './useChatRuntime';
 import { useChatTranscript } from './useChatTranscript';
-
-const TOOL_CATEGORIES: ToolCategory[] = ['read', 'edit', 'execute', 'mcp', 'other'];
 
 function describeThinkingDefault({ level, origin }: ThinkingDefault): string {
   return `${level} (${DEFAULT_SOURCE_LABELS[origin]})`;
@@ -45,7 +36,7 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
   const location = useLocation();
   const { sessionId, sessionEnabled, baseUrl, modelLockedReason } = useChatSessionContext();
   const { transcript, busy, pushNotice } = useChatTranscript();
-  const { usage, omPhase } = useChatRuntime();
+  const { usage } = useChatRuntime();
   const { activeModelId, setModel } = useChatModels();
   const { catalogTarget, modelScope } = useChatModelScope();
   const activeModelReasoningOptions = useModelReasoningOptions(activeModelId, catalogTarget);
@@ -57,14 +48,9 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
     baseUrl,
     enabled: sessionEnabled,
   };
-  const clearGoalMutation = useClearAgentControllerGoalMutation(hookArgs);
-  const pauseGoalMutation = usePauseAgentControllerGoalMutation(hookArgs);
-  const resumeGoalMutation = useResumeAgentControllerGoalMutation(hookArgs);
-  const setGoalMutation = useSetAgentControllerGoalMutation(hookArgs);
   const abortMutation = useAbortSessionMutation({ sessionId, baseUrl });
   const settingsQuery = useAgentControllerSettings(hookArgs);
   const updateSettingsMutation = useUpdateAgentControllerSettingsMutation(hookArgs);
-  const { permissions, permissionsLoading, setPermissionForCategory } = useChatPermissions();
   const { thinkingDefault } = useChatThinking();
 
   const openSessionDefaults = () => {
@@ -108,68 +94,6 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
         if (!rawArguments) return;
         if (modelLockedReason) return pushNotice(modelLockedReason);
         await setModel(rawArguments);
-      },
-    },
-    {
-      name: 'goal',
-      args: '<objective>',
-      description: 'Set a goal',
-      requiresSession: true,
-      execute: async rawArguments => {
-        if (rawArguments) await setGoalMutation.mutateAsync(rawArguments);
-      },
-    },
-    {
-      name: 'goal-clear',
-      description: 'Clear the active goal',
-      requiresSession: true,
-      execute: async () => {
-        await clearGoalMutation.mutateAsync();
-      },
-    },
-    {
-      name: 'goal-pause',
-      description: 'Pause the active goal',
-      requiresSession: true,
-      execute: async () => {
-        await pauseGoalMutation.mutateAsync();
-      },
-    },
-    {
-      name: 'goal-resume',
-      description: 'Resume the paused goal',
-      requiresSession: true,
-      execute: async () => {
-        await resumeGoalMutation.mutateAsync();
-      },
-    },
-    {
-      name: 'permissions',
-      description: 'Show permission rules',
-      requiresSession: true,
-      execute: async () => {
-        if (permissionsLoading) return;
-        const rules = permissions ?? { categories: {}, tools: {} };
-        const categories =
-          Object.entries(rules.categories ?? {})
-            .map(([key, value]) => `  ${key}: ${value}`)
-            .join('\n') || '  (none)';
-        const tools =
-          Object.entries(rules.tools ?? {})
-            .map(([key, value]) => `  ${key}: ${value}`)
-            .join('\n') || '  (none)';
-        pushNotice(`Categories:\n${categories}\nTools:\n${tools}`);
-      },
-    },
-    {
-      name: 'yolo',
-      description: 'Auto-allow all tool categories',
-      requiresSession: true,
-      execute: async () => {
-        for (const category of TOOL_CATEGORIES) {
-          await setPermissionForCategory(category, 'allow');
-        }
-        pushNotice('YOLO mode: all tool categories set to auto-allow');
       },
     },
     {
@@ -230,12 +154,6 @@ export function useChatCommandRegistry(prefillComposer: (draft: string) => void)
           throw error;
         }
       },
-    },
-    {
-      name: 'om',
-      description: 'Show observational-memory phase',
-      requiresSession: false,
-      execute: async () => pushNotice(`Observational memory phase: ${omPhase}`),
     },
     {
       name: 'settings',

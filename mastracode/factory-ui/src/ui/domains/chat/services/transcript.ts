@@ -116,6 +116,8 @@ export interface TranscriptState {
   tasks: AgentControllerTaskSnapshot[];
   /** fork(claude-agent): how full the model's context is, when the transcript source reports it. */
   context?: ContextUsage;
+  /** fork(claude-agent): the name the session was given while open (the session row has it too). */
+  title?: string;
 }
 
 export const initialTranscript: TranscriptState = {

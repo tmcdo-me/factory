@@ -323,6 +323,15 @@ Each slice: implement → focused tests → manual check where noted → commit.
        its HTTP status, so a refused first prompt is still told apart from one that may have
        landed. `/follow-up` (Mastra's queued follow-up, which the seam has no command for) is gone.
        Thinking-level changes (`/think`, the thinking picker) still write Mastra's session settings.
+     - ✅ Dropped Mastra-only UI removed, with its client code: chat goals (`/goal*`, the goal bar
+       and status; board phase goals are server-side and unchanged), observational memory (the
+       Memory settings section, the composer's memory budgets and "saving memory" activity,
+       `/om`), tool permissions (the Tool permissions settings and auto-approve, `/permissions`,
+       `/yolo`; approving a waiting tool call stays) and multi-thread sessions (the Factory chat at
+       `/new` and a session's new-thread composer at `/workspaces/:id` now redirect to a new session
+       and to the session; route thread switching and thread lists are gone, and the tab title is
+       the session's own). Server routes for these stay. A chat-only Slack channel session's
+       threads (`?sessionId=channel:…`) can no longer be switched between in the UI.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,

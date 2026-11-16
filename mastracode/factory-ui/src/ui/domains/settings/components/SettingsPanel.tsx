@@ -2,7 +2,6 @@ import type { AgentControllerSessionSettings } from '@mastra/client-js';
 import { useParams } from 'react-router';
 import { toast } from '@mastra/playground-ui/components/Toaster';
 
-import { useChatPermissions } from '../../chat/context/useChatPermissions';
 import { useChatSessionContext } from '../../chat/context/useChatSessionContext';
 import { useSettingsSection } from '../hooks/useSettingsSection';
 import { useAgentControllerSettings } from '../../../../hooks/useAgentControllerSettings';
@@ -20,7 +19,6 @@ import { IntakeRoutesSection } from './IntakeRoutesSection';
 import { IntakeSection } from './IntakeSection';
 import { RepositoriesSection } from './RepositoriesSection';
 import { BehaviorSettings, GeneralSettings } from './SettingsPanel.parts';
-import { MemorySettings } from './MemorySettings';
 import { ModelsSettings } from './models/ModelsSettings';
 
 function getSettingsUpdateErrorMessage(error: unknown): string {
@@ -32,8 +30,7 @@ function getSettingsUpdateErrorMessage(error: unknown): string {
 export function SettingsPanel() {
   const section = useSettingsSection();
   const { factoryId } = useParams<{ factoryId: string }>();
-  const { sessionId: chatSessionId, sessionThreadId, resourceId, resourceEnabled, baseUrl } = useChatSessionContext();
-  const { permissions, setPermissionForCategory } = useChatPermissions();
+  const { sessionId: chatSessionId, resourceEnabled, baseUrl } = useChatSessionContext();
   const hookArgs = {
     agentControllerId: AGENT_CONTROLLER_ID,
     sessionId: chatSessionId,
@@ -44,7 +41,6 @@ export function SettingsPanel() {
   const settingsQuery = useAgentControllerSettings(hookArgs);
   const updateSettingsMutation = useUpdateAgentControllerSettingsMutation(hookArgs);
   const settings = settingsQuery.data ?? null;
-  const sessionId = resourceEnabled ? chatSessionId : undefined;
 
   const onBehaviorChange = (updates: Partial<AgentControllerSessionSettings>) => {
     if (!settings) return Promise.resolve();
@@ -68,24 +64,9 @@ export function SettingsPanel() {
         </div>
       )}
       {section === 'models' && factoryId && <ModelsSettings factoryId={factoryId} />}
-      {section === 'memory' && factoryId && (
-        <MemorySettings
-          factoryId={factoryId}
-          sessionId={sessionId}
-          threadId={sessionId ? (sessionThreadId ?? sessionId) : undefined}
-          resourceId={resourceId}
-        />
-      )}
       {section === 'tools' && <ConnectToolsSection />}
       {section === 'debug' && <DebugSection />}
-      {section === 'behavior' && (
-        <BehaviorSettings
-          settings={settings}
-          onBehaviorChange={onBehaviorChange}
-          permissions={permissions ?? null}
-          setPermissionForCategory={setPermissionForCategory}
-        />
-      )}
+      {section === 'behavior' && <BehaviorSettings settings={settings} onBehaviorChange={onBehaviorChange} />}
     </>
   );
 }

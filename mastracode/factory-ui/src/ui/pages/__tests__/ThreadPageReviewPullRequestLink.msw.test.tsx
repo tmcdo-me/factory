@@ -17,7 +17,8 @@ import { createAppRoutes } from '../../router';
 const FACTORY_ID = 'fp-1';
 const REPO_ID = 'ghp-1';
 const SESSION_ID = 'sess-1';
-const THREAD_ID = 'thread-1';
+// fork(claude-agent): a session is one conversation, its own thread.
+const THREAD_ID = SESSION_ID;
 const ISSUE_NUMBER = 20337;
 const ISSUE_URL = `https://github.com/mastra-ai/mastra/issues/${ISSUE_NUMBER}`;
 const PULL_REQUEST_NUMBER = 20338;
@@ -194,7 +195,8 @@ function renderThreadRoute(
 }
 
 async function findSessionPanel(name: 'Card' | 'Pull requests' = 'Card') {
-  const panel = await screen.findByTestId('workspace-files-card');
+  // The first test in the file pays for loading the thread page's code, slow on a CI runner.
+  const panel = await screen.findByTestId('workspace-files-card', {}, { timeout: 10_000 });
   await within(panel).findByRole('region', { name });
   return panel;
 }

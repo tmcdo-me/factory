@@ -16,7 +16,6 @@ import { assistantOnlyThreadMessages, threadRailMessagesWithEcho } from './fixtu
 const FACTORY_ID = 'fp-1';
 const REPO_ID = 'ghp-1';
 const SESSION_ID = 'sess-1';
-const ROUTE_THREAD_ID = 'thread-2';
 const AC = `${TEST_BASE_URL}/api/agent-controller/code`;
 
 const userSession: FactoryUserSession = {
@@ -143,7 +142,7 @@ function renderThreadRoute(path = `/factories/${FACTORY_ID}/user/threads/${SESSI
   const router = createMemoryRouter(createAppRoutes(), {
     initialEntries: [path],
   });
-  return renderWithProviders(<RouterProvider router={router} />);
+  return { ...renderWithProviders(<RouterProvider router={router} />), router };
 }
 
 describe('ThreadPage loading shell', () => {
@@ -201,6 +200,20 @@ describe('ThreadPage loading shell', () => {
     expect(await findPageHeader()).toBeInTheDocument();
   });
 
+  // fork(claude-agent): a session is one conversation; an old link to another of its threads opens it.
+  it('opens the session itself from a link to one of its other threads, so nothing is sent there', async () => {
+    stubThreadRoute();
+    const { router } = renderThreadRoute(
+      `/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/thread-2?from=card`,
+    );
+
+    await waitFor(() =>
+      expect(`${router.state.location.pathname}${router.state.location.search}`).toBe(
+        `/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${SESSION_ID}?from=card`,
+      ),
+    );
+  });
+
   it('reveals loaded history without briefly rendering the empty thread state', async () => {
     const { sessionGate, messagesGate } = stubThreadRoute({ messages: assistantOnlyThreadMessages });
     renderThreadRoute();
@@ -234,20 +247,6 @@ describe('ThreadPage loading shell', () => {
     expect(screen.getByText('Review the implementation plan')).toBeInTheDocument();
     expect(document.body).toHaveTextContent('The implementation is ready to review.');
     expect(screen.queryByRole('status', { name: 'Preparing session' })).not.toBeInTheDocument();
-  });
-
-  it('waits for sandbox readiness before synchronizing an existing route thread', async () => {
-    const { sessionGate, onSwitchThread } = stubThreadRoute({
-      initialThreadId: 'thread-1',
-      threads: [{ id: 'thread-1' }, { id: ROUTE_THREAD_ID }],
-    });
-    renderThreadRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${ROUTE_THREAD_ID}`);
-
-    expect(await screen.findByRole('status', { name: 'Preparing session' })).toBeInTheDocument();
-    expect(onSwitchThread).not.toHaveBeenCalled();
-
-    sessionGate.resolve();
-    await waitFor(() => expect(onSwitchThread).toHaveBeenCalledWith(ROUTE_THREAD_ID));
   });
 });
 

@@ -1,4 +1,3 @@
-import type { MastraDBMessage } from '@mastra/core/agent-controller';
 import {
   ComposerAnnotations,
   formatAnnotatedMessage,
@@ -20,14 +19,11 @@ import {
 } from '@mastra/playground-ui/components/Composer';
 import type { ComposerInputProps } from '@mastra/playground-ui/components/Composer';
 import { useOptionalMessageScroller } from '@mastra/playground-ui/components/MessageScroller';
-import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useEffectEvent, useState } from 'react';
 import type { KeyboardEvent, ReactNode } from 'react';
-import { useMatch, useNavigate, useParams } from 'react-router';
+import { useMatch, useParams } from 'react-router';
 
-import { INITIAL_THREAD_MESSAGE_LIMIT, queryKeys } from '../../../../api/keys';
 import { useAbortSessionMutation, useSendSessionMessageMutation } from '../../../../hooks/useSessionCommandMutations';
-import { useCreateAgentControllerThreadMutation } from '../../../../hooks/useAgentControllerThreadMutations';
 import { useChatCommands } from '../context/ChatCommandsProvider';
 import type { PendingImage } from '../context/ComposerImagesContext';
 import { useChatConnection } from '../context/useChatConnection';
@@ -41,7 +37,6 @@ import { usePendingPlanFeedback } from '../hooks/usePendingPlanFeedback';
 import { usePreparingThreadId } from '../hooks/usePreparingThreadId';
 import { CLAUDE_AGENT_RUNTIME } from '../services/factoryRuntimes';
 import { commandRequiresReadySession, isSlashCommand } from '../services/commands';
-import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { mergeDictation } from '../services/dictation';
 import { ClaudeModelPicker, RuntimePicker, useChatRuntime, useChatRuntimeLabel } from './RuntimePicker';
 import { ComposerConnectionNotice } from './ComposerConnectionNotice';
@@ -77,14 +72,11 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
   const { factoryId } = useParams<{ factoryId: string }>();
   const chatRuntime = useChatRuntime(); // fork(claude-agent)
   const runtimeName = useChatRuntimeLabel(); // fork(claude-agent)
-  const onDraftComposer = useMatch('/factories/:factoryId/new') !== null;
   const onUserDraft = useMatch('/factories/:factoryId/user/new/:draftSessionId') !== null;
-  const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const { status } = useChatConnection();
   const connectionNotice = useComposerConnectionNotice(status);
   const connectionLost = connectionNotice !== undefined;
-  const { busy, phase, localUser, failLocalUser, reset, clearPending, pushNotice } = useChatTranscript();
+  const { busy, phase, localUser, failLocalUser, clearPending, pushNotice } = useChatTranscript();
   const chatPreparing = phase === 'initializing';
   const scroller = useOptionalMessageScroller();
   const { isLoading: modelLoading, error: modelError } = useChatModels();
@@ -97,14 +89,7 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
     runComposerCommand,
   } = useChatCommands();
 
-  const hookArgs = {
-    agentControllerId: AGENT_CONTROLLER_ID,
-    sessionId,
-    baseUrl,
-    enabled: sessionEnabled,
-  };
   const { annotations, takeAnnotations, restoreAnnotations } = useChatAnnotations();
-  const createThreadMutation = useCreateAgentControllerThreadMutation(hookArgs);
   const sendMutation = useSendSessionMessageMutation({ sessionId, baseUrl });
   const abortMutation = useAbortSessionMutation({ sessionId, baseUrl });
   const planFeedback = usePendingPlanFeedback();
@@ -154,43 +139,9 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
     dictating,
   });
 
-  const createThread = async () => {
-    const thread = await createThreadMutation.mutateAsync(undefined);
-    reset(thread.id);
-    return thread.id;
-  };
-
-  const seedThreadMessageCache = (threadId: string, text: string, files: PendingImage[]) => {
-    const message: MastraDBMessage = {
-      id: `local-${Date.now()}`,
-      role: 'user',
-      createdAt: new Date(),
-      content: {
-        format: 2,
-        parts: [
-          { type: 'text', text },
-          ...files.map(f => ({ type: 'file' as const, data: f.data, mimeType: f.mediaType })),
-        ],
-      },
-    };
-    queryClient.setQueryData(
-      queryKeys.agentControllerThreadMessages(AGENT_CONTROLLER_ID, sessionId, threadId, INITIAL_THREAD_MESSAGE_LIMIT),
-      [message],
-    );
-  };
-
   const send = async (text: string, files: PendingImage[]) => {
     if (!text.trim() && files.length === 0) return;
     const outgoing = files.map(f => ({ data: f.data, mediaType: f.mediaType, filename: f.filename }));
-    if (onDraftComposer) {
-      const threadId = await createThread();
-      localUser(text, false, outgoing);
-      await sendMutation.mutateAsync({ text, files: outgoing });
-      clearPendingHandoff(sessionId);
-      seedThreadMessageCache(threadId, text, files);
-      void navigate(`/factories/${factoryId}/threads/${threadId}`, { replace: true });
-      return;
-    }
     localUser(text, false, outgoing);
     await sendMutation.mutateAsync({ text, files: outgoing });
     clearPendingHandoff(sessionId);

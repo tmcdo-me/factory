@@ -1,6 +1,6 @@
 import type { AgentControllerEvent, AgentControllerSessionState } from '@mastra/client-js';
 import { isKnownAgentControllerEvent } from '@mastra/client-js';
-import { useMutationState, useQueryClient } from '@tanstack/react-query';
+import { useQueryClient } from '@tanstack/react-query';
 import { useEffect, useRef, useState } from 'react';
 import { queryKeys } from '../../../../api/keys';
 import type { FactorySessionState } from '../context/ChatSessionContext';
@@ -9,7 +9,6 @@ import { useAgentControllerEvents } from './useAgentControllerEvents';
 import { useAgentControllerSessionInit } from '../../../../hooks/useAgentControllerSessionInit';
 import { useAgentControllerSessionSync } from '../../../../hooks/useAgentControllerSessionSync';
 import type { AgentControllerLiveState } from '../../../../hooks/useAgentControllerSessionSync';
-import { switchThreadMutationKey } from '../../../../hooks/useAgentControllerThreadMutations';
 
 export type ConnectionStatus = 'connecting' | 'ready' | 'reconnecting' | 'error';
 type SseConnectionState = 'never' | 'connected' | 'dropped';
@@ -172,16 +171,10 @@ export function useAgentControllerConnection({
     hasEverConnected,
     syncFailureCount: syncQuery.failureCount,
   });
-  // State is read for the session's primary thread and echoes it back, so only a switch moves the binding.
-  const switchedThreadId = useMutationState({
-    filters: { mutationKey: switchThreadMutationKey(agentControllerId, sessionId), status: 'success' },
-    select: mutation => (typeof mutation.state.variables === 'string' ? mutation.state.variables : undefined),
-  }).at(-1);
-
   return {
     status,
     state: syncQuery.data,
-    threadId: switchedThreadId ?? syncQuery.data?.threadId ?? initQuery.data?.threadId ?? undefined,
+    threadId: syncQuery.data?.threadId ?? initQuery.data?.threadId ?? undefined,
   };
 }
 

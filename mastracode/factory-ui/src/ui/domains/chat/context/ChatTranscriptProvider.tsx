@@ -1,7 +1,9 @@
 import type { AgentControllerEvent } from '@mastra/client-js';
+import { isKnownAgentControllerEvent } from '@mastra/client-js';
+import { normalizeSessionTitle } from '@mastra/factory/session/session-title';
 import type { MastraDBMessage } from '@mastra/core/agent-controller';
 import type { ReactNode } from 'react';
-import { useContext, useEffect, useEffectEvent, useReducer } from 'react';
+import { useContext, useEffect, useEffectEvent, useReducer, useState } from 'react';
 
 import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { chatSessionPhase } from '../../workspaces/services/sessionStatus';
@@ -62,9 +64,14 @@ function transcriptProviderUsing(useTranscript: typeof useAgentControllerTranscr
     const viewerId = useFactoryAuth().data?.user?.userId;
     const transcriptApi = useTranscript({ initialThreadId: threadId, initialMessages, viewerId });
     const [runtime, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
+    // fork(claude-agent): the name Mastra gives the session's conversation, which Factory also writes
+    // onto the session row (a session is one conversation: its thread id is its id).
+    const [namedTitle, setNamedTitle] = useState<string>();
     const onEvent = (event: AgentControllerEvent) => {
       transcriptApi.onEvent(event);
       dispatchRuntime({ type: 'event', event });
+      const named = conversationTitle(event, threadId);
+      if (named) setNamedTitle(named);
     };
     const reset = (nextThreadId?: string, state?: SessionStateSnapshot) => {
       transcriptApi.reset(nextThreadId);
@@ -93,6 +100,7 @@ function transcriptProviderUsing(useTranscript: typeof useAgentControllerTranscr
             threadId={threadId}
             viewerId={viewerId}
             transcriptApi={transcriptApi}
+            title={namedTitle}
             reset={reset}
             loadMore={loadMore}
           >
@@ -124,11 +132,6 @@ function ChatRuntimeValueProvider({
         usage: runtime.usage ?? sessionState?.tokenUsage,
         context: context ?? runtime.context,
         followUpCount: runtime.followUpCount,
-        omProgress: runtime.omProgress ?? sessionState?.omProgress,
-        omPhase: runtime.omPhase,
-        bufferingMessages: runtime.bufferingMessages,
-        bufferingObservations: runtime.bufferingObservations,
-        goal: runtime.goal,
         runsStarted: runtime.runsStarted,
         tokensPerSec: runtime.tokensPerSec,
       }}
@@ -143,6 +146,7 @@ function ChatTranscriptValueProvider({
   threadId,
   viewerId,
   transcriptApi,
+  title,
   reset,
   loadMore,
 }: {
@@ -150,6 +154,8 @@ function ChatTranscriptValueProvider({
   threadId?: string;
   viewerId?: string;
   transcriptApi: ReturnType<typeof useAgentControllerTranscript>;
+  /** fork(claude-agent): a name the session got while open, when its transcript doesn't carry it. */
+  title?: string;
   reset: ChatTranscriptApi['reset'];
   loadMore: LoadMoreHistory;
 }) {
@@ -166,6 +172,7 @@ function ChatTranscriptValueProvider({
     ...transcript,
     threadId: effectiveThreadId,
     tasks: connection.state?.tasks ?? transcript.tasks,
+    ...((transcript.title ?? title) ? { title: transcript.title ?? title } : {}),
   };
   const busy = connection.state?.running === true || effectiveTranscript.pending;
   const historyInitializing = Boolean(messagesThreadId) && !messagesError && !initialHistoryReady;
@@ -201,4 +208,16 @@ function ChatTranscriptValueProvider({
       {children}
     </ChatTranscriptContext.Provider>
   );
+}
+
+/** fork(claude-agent): the title a Mastra event gives the session's own conversation, as the session row stores it. */
+function conversationTitle(event: AgentControllerEvent, threadId: string | undefined): string | undefined {
+  if (!threadId || !isKnownAgentControllerEvent(event)) return undefined;
+  const raw =
+    event.type === 'thread_title_updated'
+      ? event.threadId === threadId && event.title
+      : event.type === 'om_thread_title_updated'
+        ? event.threadId === threadId && event.newTitle
+        : undefined;
+  return raw ? (normalizeSessionTitle(raw) ?? undefined) : undefined;
 }

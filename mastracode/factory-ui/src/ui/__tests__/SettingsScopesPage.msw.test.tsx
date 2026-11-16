@@ -10,16 +10,9 @@ import type { FactoryProjectPayload } from '../domains/workspaces/services/githu
 import { pickModel } from '../domains/settings/components/models/defaults/__tests__/default-model-test-utils';
 import { environmentPayload } from '../domains/settings/components/__tests__/fixtures/environment';
 import { createAppRoutes } from '../router';
-import {
-  settingsFactory,
-  settingsDefaultModel,
-  settingsMemory,
-  settingsProviders,
-  settingsSession,
-} from './fixtures/settingsScopes';
+import { settingsFactory, settingsDefaultModel, settingsProviders, settingsSession } from './fixtures/settingsScopes';
 
 const PROVIDERS_URL = `${TEST_BASE_URL}/web/config/providers`;
-const OM_URL = `${TEST_BASE_URL}/web/config/om`;
 
 function renderSettings(section: string, { hash = '', search = '' } = {}) {
   const router = createMemoryRouter(createAppRoutes(), {
@@ -54,7 +47,6 @@ beforeEach(() => {
     http.get(PROVIDERS_URL, () => HttpResponse.json(settingsProviders)),
     http.get(`${TEST_BASE_URL}/web/config/custom-providers`, () => HttpResponse.json({ providers: [] })),
     http.get(`${TEST_BASE_URL}/web/config/default-model`, () => HttpResponse.json(settingsDefaultModel)),
-    http.get(OM_URL, () => HttpResponse.json({ config: settingsMemory })),
   );
 });
 
@@ -100,55 +92,6 @@ describe('Settings ownership', () => {
     await waitFor(() => expect(keyBody).toEqual({ key: 'sk-personal', scope: 'user' }));
   });
 
-  it('addresses personal memory by the active chat thread and Factory memory by the Factory', async () => {
-    const reads: Array<Record<string, string>> = [];
-    const bodies: unknown[] = [];
-    server.use(
-      http.get(`${TEST_BASE_URL}/api/agent-controller/code/sessions/thread-1`, () =>
-        HttpResponse.json({ ...settingsSession, sessionId: 'thread-1', resourceId: 'thread-1', threadId: 'thread-1' }),
-      ),
-      http.get(`${TEST_BASE_URL}/api/agent-controller/code/sessions/thread-1/permissions`, () =>
-        HttpResponse.json({ categories: {}, tools: {} }),
-      ),
-      http.get(OM_URL, ({ request }) => {
-        reads.push(Object.fromEntries(new global.URL(request.url).searchParams));
-        return HttpResponse.json({ config: settingsMemory });
-      }),
-      http.put(`${OM_URL}/thresholds`, async ({ request }) => {
-        bodies.push(await request.json());
-        return HttpResponse.json({ ok: true, config: settingsMemory });
-      }),
-    );
-    window.history.replaceState(null, '', '/?sessionId=thread-1');
-    const user = userEvent.setup();
-    renderSettings('memory', { search: '?sessionId=thread-1' });
-
-    for (const [memory, threshold] of [
-      ['Personal memory', '3000'],
-      ['Factory memory', '4000'],
-    ]) {
-      const card = await screen.findByRole('region', { name: memory });
-      const input = await within(card).findByRole('textbox', { name: 'Observe after' });
-      await user.clear(input);
-      await user.type(input, threshold);
-      await user.tab();
-    }
-
-    await waitFor(() => {
-      expect(reads).toEqual(
-        expect.arrayContaining([
-          { sessionId: 'thread-1', threadId: 'thread-1', resourceId: 'thread-1' },
-          { factoryId: 'fp-1' },
-        ]),
-      );
-      expect(reads.filter(read => read.sessionId).every(read => read.threadId === 'thread-1')).toBe(true);
-      expect(bodies).toEqual([
-        { sessionId: 'thread-1', threadId: 'thread-1', resourceId: 'thread-1', observationThreshold: 3000 },
-        { factoryId: 'fp-1', observationThreshold: 4000 },
-      ]);
-    });
-  });
-
   it.each([
     { section: 'personal-models', hash: '' },
     { section: 'models', hash: '#model-packs' },
@@ -165,12 +108,13 @@ describe('Settings ownership', () => {
     expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute('aria-current', 'page');
   });
 
-  it('sends retired Factory memory links to Memory', async () => {
-    const router = renderSettings('factory-memory');
+  // fork(claude-agent): the observational-memory settings were dropped.
+  it.each(['memory', 'factory-memory'])('sends retired %s links to Models', async section => {
+    const router = renderSettings(section);
 
-    expect(await screen.findByRole('region', { name: 'Factory memory' })).toBeInTheDocument();
-    expect(router.state.location.pathname).toBe('/factories/fp-1/settings/memory');
-    expect(screen.getByRole('link', { name: 'Memory' })).toHaveAttribute('aria-current', 'page');
+    expect(await screen.findByRole('region', { name: 'Personal defaults' })).toBeInTheDocument();
+    expect(router.state.location.pathname).toBe('/factories/fp-1/settings/models');
+    expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute('aria-current', 'page');
   });
 
   it('sends retired Environment links to Repositories, where pre-clone and repository commands now live', async () => {

@@ -12,7 +12,8 @@ import { createAppRoutes } from '../../router';
 const FACTORY_ID = 'fp-1';
 const REPO_ID = 'glp-1';
 const SESSION_ID = 'sess-1';
-const THREAD_ID = 'thread-1';
+// fork(claude-agent): a session is one conversation, its own thread.
+const THREAD_ID = SESSION_ID;
 const PROJECT_PATH = 'rhys-group1/factory-gitlab-primary';
 const MERGE_REQUEST_IID = 7;
 const MERGE_REQUEST_URL = `https://gitlab.com/${PROJECT_PATH}/-/merge_requests/${MERGE_REQUEST_IID}`;
@@ -181,7 +182,8 @@ function renderThreadRoute() {
 }
 
 async function findSessionPanel() {
-  const panel = await screen.findByTestId('workspace-files-card');
+  // The first test in the file pays for loading the thread page's code, slow on a CI runner.
+  const panel = await screen.findByTestId('workspace-files-card', {}, { timeout: 10_000 });
   await within(panel).findByRole('region', { name: 'Card' });
   return panel;
 }

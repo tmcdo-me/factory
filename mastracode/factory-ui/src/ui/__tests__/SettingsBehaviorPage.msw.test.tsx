@@ -3,10 +3,10 @@
  * (`/factories/:factoryId/settings/behavior`). The page lives outside any
  * workspace route, so it must address the factory-level session (whose
  * `resourceId` is the factory project id) — a regression here
- * leaves every toggle permanently disabled because no session settings or
- * permissions can load.
+ * leaves every toggle permanently disabled because no session settings
+ * can load.
  */
-import { screen, waitFor, within } from '@testing-library/react';
+import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { http, HttpResponse } from 'msw';
 import { createMemoryRouter, RouterProvider } from 'react-router';
@@ -33,12 +33,9 @@ function renderBehaviorSettings() {
 
 function stubBehaviorPage() {
   const settings = { yolo: false, thinkingLevel: 'medium', notifications: 'bell', smartEditing: true };
-  const permissions = { categories: { read: 'ask', edit: 'ask', execute: 'ask', mcp: 'ask', other: 'ask' }, tools: {} };
   const seen = {
     settingsResourceIds: [] as string[],
-    permissionResourceIds: [] as string[],
     stateWrites: [] as { resourceId: string; body: unknown }[],
-    permissionWrites: [] as { resourceId: string; body: unknown }[],
   };
 
   server.use(
@@ -79,16 +76,6 @@ function stubBehaviorPage() {
       Object.assign(settings, body.state);
       return HttpResponse.json({});
     }),
-    http.get(`${API}/sessions/:resourceId/permissions`, ({ params }) => {
-      seen.permissionResourceIds.push(String(params.resourceId));
-      return HttpResponse.json(permissions);
-    }),
-    http.put(`${API}/sessions/:resourceId/permissions/category`, async ({ params, request }) => {
-      const body = (await request.json()) as { category: string; policy: string };
-      seen.permissionWrites.push({ resourceId: String(params.resourceId), body });
-      permissions.categories[body.category as keyof typeof permissions.categories] = body.policy;
-      return HttpResponse.json(permissions);
-    }),
   );
   return seen;
 }
@@ -99,9 +86,11 @@ describe('Behavior settings page (factory scope)', () => {
 
     renderBehaviorSettings();
 
-    const yolo = await screen.findByRole('switch', { name: 'Auto-approve tools' });
-    await waitFor(() => expect(yolo).toBeEnabled());
-    expect(screen.getByRole('switch', { name: 'Smart editing' })).toBeEnabled();
+    const smartEditing = await screen.findByRole('switch', { name: 'Smart editing' });
+    await waitFor(() => expect(smartEditing).toBeEnabled());
+    // fork(claude-agent): tool permissions and auto-approve were dropped with their UI.
+    expect(screen.queryByRole('switch', { name: 'Auto-approve tools' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('radiogroup', { name: 'Read permission' })).not.toBeInTheDocument();
     expect(seen.settingsResourceIds).toContain(FACTORY_RESOURCE_ID);
     // Never address a session with an empty resourceId.
     expect(seen.settingsResourceIds).not.toContain('');
@@ -113,39 +102,15 @@ describe('Behavior settings page (factory scope)', () => {
 
     renderBehaviorSettings();
 
-    const yolo = await screen.findByRole('switch', { name: 'Auto-approve tools' });
-    await waitFor(() => expect(yolo).toBeEnabled());
-    await user.click(yolo);
+    const smartEditing = await screen.findByRole('switch', { name: 'Smart editing' });
+    await waitFor(() => expect(smartEditing).toBeEnabled());
+    await user.click(smartEditing);
 
     await waitFor(() => expect(seen.stateWrites).toHaveLength(1));
     expect(seen.stateWrites[0]).toEqual({
       resourceId: FACTORY_RESOURCE_ID,
-      body: { state: { yolo: true } },
+      body: { state: { smartEditing: false } },
     });
-    await waitFor(() => expect(yolo).toBeChecked());
-  });
-
-  it('loads and updates tool permissions for the factory-level session', async () => {
-    const seen = stubBehaviorPage();
-    const user = userEvent.setup();
-
-    renderBehaviorSettings();
-
-    const readGroup = await screen.findByRole('radiogroup', { name: 'Read permission' });
-    const readAllow = within(readGroup).getByRole('radio', { name: 'Allow' });
-    await waitFor(() => expect(readAllow).toBeEnabled());
-    expect(seen.permissionResourceIds).toContain(FACTORY_RESOURCE_ID);
-
-    await user.click(readAllow);
-
-    // Optimistic: selected right away, and the control never locks while the write is in flight.
-    expect(readAllow).toHaveAttribute('aria-checked', 'true');
-    expect(readAllow).toBeEnabled();
-
-    await waitFor(() => expect(seen.permissionWrites).toHaveLength(1));
-    expect(seen.permissionWrites[0]).toEqual({
-      resourceId: FACTORY_RESOURCE_ID,
-      body: { category: 'read', policy: 'allow' },
-    });
+    await waitFor(() => expect(smartEditing).not.toBeChecked());
   });
 });

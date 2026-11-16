@@ -272,13 +272,13 @@ describe('Composer on a lazy user-session draft', () => {
     expect(sessionPosts).toBe(0);
     expect(preparation.controllerCreates).toBe(0);
 
-    await user.type(message, '/goal ship it');
+    await user.type(message, '/abort');
     await user.keyboard('{Enter}');
 
     expect(
       await screen.findByText('This command needs a session. Send a prompt to create one first.'),
     ).toBeInTheDocument();
-    expect(message).toHaveValue('/goal ship it');
+    expect(message).toHaveValue('/abort');
     expect(sessionPosts).toBe(0);
     expect(preparation.controllerCreates).toBe(0);
 

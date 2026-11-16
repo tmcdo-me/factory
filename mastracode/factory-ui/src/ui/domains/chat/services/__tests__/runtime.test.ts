@@ -1,7 +1,6 @@
 import type { AgentControllerEvent } from '@mastra/client-js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { omWork } from '../om';
 import { initialChatRuntime, runtimeReducer } from '../runtime';
 
 type MessageUpdateEvent = Extract<AgentControllerEvent, { type: 'message_update' }>;
@@ -437,68 +436,12 @@ describe('chat runtime status', () => {
     expect(reset.usage).toBeUndefined();
   });
 
-  it.each(['bufferingMessages', 'bufferingObservations'] as const)(
-    'tracks %s from display state, ahead of lifecycle start events',
-    bufferingFlag => {
-      const buffering = runtimeReducer(initialChatRuntime, {
-        type: 'event',
-        event: { type: 'display_state_changed', displayState: { [bufferingFlag]: true } },
-      });
-      const backgroundWork =
-        bufferingFlag === 'bufferingMessages'
-          ? { messages: 'background', observations: 'idle' }
-          : { messages: 'idle', observations: 'background' };
-
-      expect(omWork(buffering)).toEqual(backgroundWork);
-
-      const started = runtimeReducer(buffering, {
-        type: 'event',
-        event: {
-          type: bufferingFlag === 'bufferingMessages' ? 'om_observation_start' : 'om_reflection_start',
-        },
-      });
-
-      expect(omWork(started)).toEqual(backgroundWork);
-
-      for (const displayState of [{ [bufferingFlag]: false }, {}]) {
-        const settled = runtimeReducer(buffering, {
-          type: 'event',
-          event: { type: 'display_state_changed', displayState },
-        });
-
-        expect(omWork(settled)).toEqual({ messages: 'idle', observations: 'idle' });
-      }
-    },
-  );
-
-  it('keeps buffering lifecycle events idle without a display-state buffering flag', () => {
-    const buffering = runtimeReducer(initialChatRuntime, {
-      type: 'event',
-      event: { type: 'om_buffering_start' },
-    });
-
-    expect(omWork(buffering)).toEqual({ messages: 'idle', observations: 'idle' });
-  });
-
   it('keeps display-state telemetry available until newer usage arrives', () => {
     const displayState = runtimeReducer(initialChatRuntime, {
       type: 'event',
       event: {
         type: 'display_state_changed',
-        displayState: {
-          omProgress: {
-            status: 'idle',
-            pendingTokens: 320,
-            threshold: 1000,
-            thresholdPercent: 32,
-            observationTokens: 0,
-            reflectionThreshold: 2000,
-            reflectionThresholdPercent: 0,
-            projectedMessageRemoval: 0,
-            projectedReflectionSavings: 0,
-          },
-          tokenUsage: { promptTokens: 21, completionTokens: 34, totalTokens: 55 },
-        },
+        displayState: { tokenUsage: { promptTokens: 21, completionTokens: 34, totalTokens: 55 } },
       },
     });
     const updated = runtimeReducer(displayState, {
@@ -506,7 +449,6 @@ describe('chat runtime status', () => {
       event: { type: 'usage_update', usage: { promptTokens: 21, completionTokens: 55, totalTokens: 76 } },
     });
 
-    expect(updated.omProgress?.pendingTokens).toBe(320);
     expect(updated.usage).toMatchObject({ completionTokens: 55, totalTokens: 76 });
 
     const partialSnapshot = runtimeReducer(updated, {
@@ -514,7 +456,6 @@ describe('chat runtime status', () => {
       event: { type: 'display_state_changed', displayState: {} },
     });
     expect(partialSnapshot.usage).toEqual(updated.usage);
-    expect(partialSnapshot.omProgress).toEqual(updated.omProgress);
   });
 
   it('keeps the same state when a snapshot repeats what the chat already shows', () => {
@@ -525,18 +466,6 @@ describe('chat runtime status', () => {
       displayState: {
         isRunning: true,
         queuedFollowUps: 0,
-        bufferingObservations: true,
-        omProgress: {
-          status: 'idle' as const,
-          pendingTokens: 320,
-          threshold: 1000,
-          thresholdPercent: 32,
-          observationTokens: 0,
-          reflectionThreshold: 2000,
-          reflectionThresholdPercent: 0,
-          projectedMessageRemoval: 0,
-          projectedReflectionSavings: 0,
-        },
         tokenUsage: { promptTokens: 21, completionTokens: totalTokens - 21, totalTokens },
       },
     });
@@ -546,7 +475,7 @@ describe('chat runtime status', () => {
     expect(
       runtimeReducer(shown, {
         type: 'event',
-        event: { type: 'display_state_changed', displayState: { bufferingObservations: true } },
+        event: { type: 'display_state_changed', displayState: { isRunning: true } },
       }),
     ).toBe(shown);
 
@@ -554,10 +483,9 @@ describe('chat runtime status', () => {
 
     expect(grown).not.toBe(shown);
     expect(grown.usage).toEqual({ promptTokens: 21, completionTokens: 59, totalTokens: 80 });
-    expect(grown.omProgress).toBe(shown.omProgress);
-    expect(
-      runtimeReducer(grown, { type: 'event', event: { type: 'display_state_changed', displayState: {} } }),
-    ).toMatchObject({ bufferingObservations: false, usage: grown.usage });
+    expect(runtimeReducer(grown, { type: 'event', event: { type: 'display_state_changed', displayState: {} } })).toBe(
+      grown,
+    );
   });
 
   it('measures generation across steps, retains the last rate, and clears it on reset or a new turn', () => {

@@ -2,7 +2,6 @@ import type { ReactNode } from 'react';
 import { useMatch } from 'react-router';
 
 import { ChatSessionConfigProvider } from './context/ChatSessionProvider';
-import { ChatPermissionsProvider } from './context/ChatPermissionsProvider';
 
 /**
  * Shared chat session providers, mounted once by `AppLayout` so the sidebar
@@ -23,7 +22,7 @@ export function ChatSessionRouteProvider({ children }: { children: ReactNode }) 
       userScoped={userScoped}
       draftSessionId={userDraftMatch?.params.draftSessionId}
     >
-      <ChatPermissionsProvider>{children}</ChatPermissionsProvider>
+      {children}
     </ChatSessionConfigProvider>
   );
 }

@@ -31,7 +31,6 @@ import { AppRouteErrorPage, RouteErrorPage } from './layouts/RouteErrorPage';
 import {
   createLoadOnEntry,
   prefetchBoard,
-  prefetchComposer,
   prefetchDraft,
   prefetchFactories,
   prefetchFactoryLayout,
@@ -42,7 +41,7 @@ import {
 } from './routeLoaders';
 import type { Prefetch, RouteLoaderServices } from './routeLoaders';
 import { pendingCreateFlowFactoryId } from './domains/workspaces/hooks/useCreateFactoryFlow';
-import { createFactoryPath } from './domains/workspaces/services/factoryPaths';
+import { createFactoryPath, newUserSessionPath } from './domains/workspaces/services/factoryPaths';
 import { hasResumableFactoryOnboarding } from './domains/workspaces/services/onboardingFlow';
 
 // Only the boards ship in the startup bundle; every other page loads on first
@@ -151,6 +150,26 @@ function FactoryHomeRedirect() {
  * thread route, preserving the query string — the `?sessionId=` override
  * (`?resourceId=` in older links) binds the chat surface to the channel session there.
  */
+/** fork(claude-agent): old links to a session's composer open the session itself. */
+function SessionThreadRedirect() {
+  const { factoryId, sessionId } = useParams<{ factoryId: string; sessionId: string }>();
+  if (!factoryId || !sessionId) return null;
+  return (
+    <Navigate
+      to={`/factories/${factoryId}/workspaces/${encodeURIComponent(sessionId)}/threads/${encodeURIComponent(sessionId)}`}
+      replace
+    />
+  );
+}
+
+/** fork(claude-agent): old links to the Factory chat start a new session instead. */
+function NewUserSessionRedirect() {
+  const { factoryId } = useParams<{ factoryId: string }>();
+  const { state } = useLocation();
+  if (!factoryId) return null;
+  return <Navigate to={newUserSessionPath(factoryId)} state={state} replace />;
+}
+
 function ChannelThreadRedirect() {
   const { data: factories, isPending } = useFactoriesQuery();
   const { threadId } = useParams<{ threadId: string }>();
@@ -255,11 +274,13 @@ export function createAppRoutes(services?: RouteLoaderServices): RouteObject[] {
                       errorElement: <AppRouteErrorPage />,
                       children: [
                         { index: true, element: <FactoryHomeRedirect /> },
-                        { path: 'workspaces/:sessionId', ...lazyRoute(NewPage, prefetchComposer) },
+                        // fork(claude-agent): a session is one conversation, so there is no new thread to start in it.
+                        { path: 'workspaces/:sessionId', element: <SessionThreadRedirect /> },
                         { path: 'workspaces/:sessionId/threads/:threadId', ...lazyRoute(ThreadPage) },
                         { path: 'user/new/:draftSessionId', ...lazyRoute(NewPage, prefetchDraft) },
                         { path: 'user/threads/:threadId', ...lazyRoute(ThreadPage) },
-                        { path: 'new', ...lazyRoute(NewPage, prefetchComposer) },
+                        // fork(claude-agent): the Factory chat (new threads on the Factory's own session) was dropped.
+                        { path: 'new', element: <NewUserSessionRedirect /> },
                         { path: 'new-factory', ...lazyRoute(CreateFactoryPage) },
                         { path: 'new-board', ...lazyRoute(NewBoardPage) },
                         { path: 'work', element: <WorkBoardPage />, ...loadOnEntry(prefetchBoard) },

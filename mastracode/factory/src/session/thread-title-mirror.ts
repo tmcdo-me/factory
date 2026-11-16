@@ -13,6 +13,8 @@ export interface ThreadTitleMirrorDependencies {
   sourceControl: {
     sessions: Pick<SourceControlStorageHandle['sessions'], 'getBySessionId' | 'rename'>;
   };
+  /** fork(claude-agent): told once the row carries the new title, so open views can show it. */
+  onRenamed?: (title: string) => void;
 }
 
 /**
@@ -32,7 +34,7 @@ export interface ThreadTitleMirrorDependencies {
  */
 export function observeSessionThreadTitle(
   session: ThreadTitleMirrorSession,
-  { sourceControl }: ThreadTitleMirrorDependencies,
+  { sourceControl, onRenamed }: ThreadTitleMirrorDependencies,
 ): () => void {
   const sessionId = session.identity.getId();
   let boundThreadId: string | undefined;
@@ -52,6 +54,7 @@ export function observeSessionThreadTitle(
         const row = await sourceControl.sessions.getBySessionId(sessionId);
         if (!row || row.title === title) return;
         await sourceControl.sessions.rename({ sessionId, title });
+        onRenamed?.(title);
       })
       .catch(error => console.warn('[Factory thread-title mirror] Unable to persist the session title.', error));
   };

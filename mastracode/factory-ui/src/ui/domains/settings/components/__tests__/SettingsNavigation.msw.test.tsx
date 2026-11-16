@@ -41,10 +41,9 @@ describe('SettingsNavigation', () => {
         .getAllByRole('link')
         .map(link => link.textContent);
     expect(linksIn('Account')).toEqual(['My account', 'Preferences', 'Connections']);
-    expect(linksIn('Agent')).toEqual(['Models', 'Memory', 'Tools', 'Behavior']);
+    expect(linksIn('Agent')).toEqual(['Models', 'Tools', 'Behavior']);
     expect(linksIn('Factory')).toEqual(['Repositories', 'Work Intake', 'Manage Factory', 'Debug']);
     expect(screen.getByRole('link', { name: 'Models' })).toHaveAttribute('href', '/factories/fp-1/settings/models');
-    expect(screen.getByRole('link', { name: 'Memory' })).toHaveAttribute('href', '/factories/fp-1/settings/memory');
   });
 
   it('keeps legacy terms searchable while showing the clearer destination label', async () => {
@@ -74,10 +73,6 @@ describe('SettingsNavigation', () => {
     { query: 'default model', destination: 'Models' },
     { query: 'your models', destination: 'Models' },
     { query: 'factory models', destination: 'Models' },
-    { query: 'personal memory', destination: 'Memory' },
-    { query: 'factory memory', destination: 'Memory' },
-    { query: 'your memory', destination: 'Memory' },
-    { query: 'shared memory', destination: 'Memory' },
   ])('finds $destination by the former page name "$query"', async ({ query, destination }) => {
     const user = userEvent.setup();
     renderNavigation();

@@ -25,6 +25,8 @@ export interface Transcript {
   tasks: TaskSnapshot[];
   /** The latest usage report. */
   usage?: Omit<Extract<FactoryEvent, { type: 'usage' }>, 'type'>;
+  /** The session's latest name (`session.renamed`), when it was renamed while logged. */
+  title?: string;
 }
 
 export type TranscriptItem = RunItem | MessageItem | ToolItem | InteractionItem | NoticeItem | SubagentItem | ErrorItem;
@@ -148,6 +150,8 @@ export function applyEvent(transcript: Transcript, envelope: EventEnvelope): Tra
   } else if (event.type === 'usage') {
     const { type: _type, ...usage } = event;
     next.usage = usage;
+  } else if (event.type === 'session.renamed') {
+    next.title = event.title;
   } else {
     next.items = apply(transcript.items, envelope);
   }
@@ -305,6 +309,7 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
     case 'tasks.updated':
     case 'usage':
     case 'model.changed':
+    case 'session.renamed':
       return items;
   }
 }

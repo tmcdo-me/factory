@@ -154,6 +154,8 @@ export type FactoryEvent =
       contextWindow?: number;
     }
   | { type: 'model.changed'; runtimeId: string; modelId: string }
+  /** Factory named the session (e.g. after the title the agent gave its conversation). */
+  | { type: 'session.renamed'; title: string }
   /** `code` names the failure (e.g. an error class or provider code) so the UI can offer a fix. */
   | {
       type: 'error';

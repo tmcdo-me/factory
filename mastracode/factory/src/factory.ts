@@ -2633,6 +2633,11 @@ export class MastraFactory {
       });
       observeSessionThreadTitle(session, {
         sourceControl: { sessions: sourceControlSessions },
+        // fork(claude-agent): the session's event log carries the new name to open views.
+        onRenamed: title =>
+          void agentEventHub
+            .publish(session.identity.getId(), { type: 'session.renamed', title })
+            .catch(error => console.warn('[factory] Unable to log a session rename.', error)),
       });
       observeSessionRunEnd(session, { audit: auditDomain });
       // Every run end of a work or side session, and every tool call it holds for

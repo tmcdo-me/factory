@@ -594,7 +594,6 @@ describe('Global search', () => {
       'Repositories',
       'Work Intake',
       'Models',
-      'Memory',
       'Behavior',
     ]) {
       expect(within(dialog).getByText(label)).toBeInTheDocument();
@@ -1343,17 +1342,6 @@ describe('Global search', () => {
     releaseSessions();
   });
 
-  it('finds Memory settings by the former page name "personal memory"', async () => {
-    stubSearchApi();
-    const user = userEvent.setup();
-    renderSearchRoute();
-    const dialog = await openWithShortcut();
-
-    await user.type(screen.getByRole('combobox', { name: 'Search MastraCode' }), 'personal memory');
-
-    expect(await within(dialog).findByText('Memory')).toBeInTheDocument();
-  });
-
   it('selects Settings with origin state and closes without creating a session', async () => {
     const requests = stubSearchApi();
     const origin = `/factories/${ACTIVE_FACTORY_ID}/settings/preferences`;
@@ -1374,12 +1362,12 @@ describe('Global search', () => {
   it.each([
     {
       title: 'Add universal command search',
-      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-work/threads/thread-work-linked`,
+      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-work/threads/session-work`,
       preservesOrigin: true,
     },
     {
       title: 'Review command palette PR',
-      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-review/threads/thread-review-linked`,
+      path: `/factories/${ACTIVE_FACTORY_ID}/workspaces/session-review/threads/session-review`,
       preservesOrigin: true,
     },
     {

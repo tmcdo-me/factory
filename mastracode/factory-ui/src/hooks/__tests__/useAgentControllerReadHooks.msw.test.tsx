@@ -6,7 +6,6 @@ import { server } from '../../../e2e/ui/msw-server';
 import { renderHookWithProviders, TEST_BASE_URL } from '../../../e2e/ui/render';
 import { useAvailableModelsQuery } from '../useAvailableModels';
 import { useAgentControllerThreadMessages } from '../useAgentControllerThreadMessages';
-import { AGENT_CONTROLLER_THREAD_PAGE_SIZE, useAgentControllerThreads } from '../useAgentControllerThreads';
 
 const controllerId = 'code';
 const sessionId = 'session-test';
@@ -30,30 +29,6 @@ describe('agent-controller read hooks', () => {
 
     await waitFor(() => expect(result.current.data?.map(model => model.id)).toEqual(['openai/gpt-4.1']));
     expect(onReadModels).toHaveBeenCalledTimes(1);
-  });
-
-  it("lists only the session's threads out of its shared resource, a sidebar page at a time", async () => {
-    const onReadThreads = vi.fn();
-
-    server.use(
-      http.get(`${sessionUrl}/threads`, ({ request }) => {
-        const url = new URL(request.url);
-        onReadThreads({ limit: url.searchParams.get('limit'), tags: url.searchParams.get('tags') });
-        return HttpResponse.json({
-          threads: [{ id: 'thread-one', title: 'Thread one', updatedAt: '2026-07-07T00:00:00.000Z' }],
-        });
-      }),
-    );
-
-    const { result } = renderHookWithProviders(() =>
-      useAgentControllerThreads({ ...hookArgs, threadTags: { factorySessionId: sessionId } }),
-    );
-
-    await waitFor(() => expect(result.current.data?.[0]?.id).toBe('thread-one'));
-    expect(onReadThreads).toHaveBeenCalledWith({
-      limit: String(AGENT_CONTROLLER_THREAD_PAGE_SIZE),
-      tags: JSON.stringify({ factorySessionId: sessionId }),
-    });
   });
 
   it('keeps persisted thread messages from refetching on window focus', async () => {
