@@ -370,9 +370,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      domain): one held for the session's next turn survives a restart (still at most 20 per
      session, the rest dropped and counted); each session-to-session notification carries its
      id, so `factory_message_origin({ inReplyTo })` answers it once, back to its sender, as in
-     Mastra Code (claimed atomically, so two answers in one turn can't both go); and the
-     per-sender rate limit counts them from storage, with no in-memory map. Rows that no longer
-     wait are forgotten after 7 days. Without the domain (a warning at start), messages wait in
+     Mastra Code (claimed atomically, so two answers in one turn can't both go; the claim is
+     leased for 15 minutes, or until a queued answer's slot plus 15, so one a restart lost can be
+     sent again); and the per-sender rate limit counts them from storage, with no in-memory map.
+     A message stays answerable for 7 days after Claude read it, then is forgotten (Mastra Code's
+     notification records have no such window); one still waiting is never forgotten. Without the domain (a warning at start), messages wait in
      memory and `held` says a restart would lose them.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at

@@ -39,6 +39,11 @@ export const SIGNAL_RATE_LIMIT = 10;
 export const SIGNAL_RATE_WINDOW_MS = 10 * 60 * 1000;
 /** How many recent `factory-session` notifications on a thread the rate and duplicate checks read. */
 const RECENT_SCAN = 100;
+/**
+ * fork(claude-agent): how long a claim to answer a Claude Agent session's message holds before it is
+ * confirmed (the answer went out); a claim left by a stopped server lapses after it.
+ */
+const REPLY_LEASE_MS = 15 * 60 * 1000;
 /** How often a waiting queue is reconsidered. Delivery still waits for a free slot in the window. */
 const QUEUE_FLUSH_MS = 1000;
 
@@ -48,6 +53,8 @@ interface PendingMessage {
   /** When the sender handed it over. Oldest goes first. */
   acceptedAt: number;
   actor: { actorId: string; actorType: 'human' | 'agent' };
+  /** fork(claude-agent): told once a queued answer went out (true) or was dropped (false). */
+  settled?: (delivered: boolean) => Promise<void>;
 }
 
 interface QueuedDelivery extends PendingMessage {
@@ -207,6 +214,8 @@ export function createFactoryMessagingTools(
     messaging: FactoryMessaging,
     target: { sessionId: string; threadId: string },
     notification: Omit<SendNotificationSignalInput, 'source'>,
+    /** fork(claude-agent): told when a queued delivery goes out or is dropped. */
+    settled?: QueuedDelivery['settled'],
   ): Promise<
     { notificationId?: string; delivered: FactoryDeliveryResult['delivered'] } | ReturnType<typeof queuedResult>
   > => {
@@ -244,6 +253,7 @@ export function createFactoryMessagingTools(
       actor: actor(),
       deliverAt,
       target,
+      ...(settled ? { settled } : {}),
     });
     return queuedResult(deliverAt);
   };
@@ -293,6 +303,7 @@ export function createFactoryMessagingTools(
       target: head.target,
       notification: head.notification,
     });
+    await head.settled?.(result.delivered !== 'skipped').catch(() => undefined); // fork(claude-agent)
     await deps.auditRecorder.record({
       orgId: scope.orgId,
       actorId: head.actor.actorId,
@@ -472,7 +483,7 @@ export function createFactoryMessagingTools(
       );
       if (answered) throw new Error(`You already answered ${inReplyTo}.`);
 
-      const answer = () =>
+      const answer = (settled?: QueuedDelivery['settled']) =>
         accept(
           messaging,
           { sessionId: fromSession, threadId: fromThread },
@@ -488,20 +499,38 @@ export function createFactoryMessagingTools(
               ...(status ? { status } : {}),
             },
           },
+          settled,
         );
       // fork(claude-agent): the runtime takes the right to answer atomically, so of two answers to
-      // one message in the same turn only one goes; a reply that couldn't be sent gives it back.
+      // one message in the same turn only one goes. The claim is leased until the answer goes out:
+      // confirmed then, given back when it can't be sent, and lapsing if the server stops first
+      // (a queued answer is lost with it), so a later answer isn't refused for good.
       const deliveries = kept ? messaging.runtime?.deliveries : undefined;
       if (!deliveries) return answer();
-      if (!(await deliveries.claimReply(scope.sessionId, inReplyTo))) {
+      const sessionId = scope.sessionId;
+      if (!(await deliveries.claimReply(sessionId, inReplyTo, new Date(Date.now() + REPLY_LEASE_MS)))) {
         throw new Error(`You already answered ${inReplyTo}.`);
       }
+      const settle = async (delivered: boolean) => {
+        if (delivered) await deliveries.confirmReply(sessionId, inReplyTo);
+        else await deliveries.releaseReply(sessionId, inReplyTo);
+      };
+      let result: Awaited<ReturnType<typeof answer>>;
       try {
-        return await answer();
+        result = await answer(settle);
       } catch (error) {
-        await deliveries.releaseReply(scope.sessionId, inReplyTo).catch(() => undefined);
+        await deliveries.releaseReply(sessionId, inReplyTo).catch(() => undefined);
         throw error;
       }
+      // Queued past the rate limit: held until a lease past when it should go out.
+      if ('deliverAt' in result) {
+        await deliveries
+          .extendReply(sessionId, inReplyTo, new Date(Date.parse(result.deliverAt) + REPLY_LEASE_MS))
+          .catch(() => undefined);
+      } else {
+        await deliveries.confirmReply(sessionId, inReplyTo).catch(() => undefined);
+      }
+      return result;
     },
   });
 

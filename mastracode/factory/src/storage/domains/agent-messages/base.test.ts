@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { LibSQLFactoryStorage } from '@mastra/libsql';
-import { describe, expect, it, onTestFinished } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createIsolatedFactoryPostgresForTests } from '../../test-utils.js';
 import { AGENT_MESSAGE_RETENTION_MS, AgentMessagesStorage } from './base.js';
@@ -51,20 +51,56 @@ describe.each([
     expect((await open()).durable).toBe(durable);
   });
 
+  const lease = () => new Date(Date.now() + 15 * 60_000);
+  const lapsed = () => new Date(Date.now() - 1);
+
   it('gives the right to answer a message once, even to two racing answers, and takes it back', async () => {
     const messages = await open();
     await messages.told(fromSession('m1'));
-    const claims = await Promise.all([messages.claimReply('s1', 'm1'), messages.claimReply('s1', 'm1')]);
+    const claims = await Promise.all([
+      messages.claimReply('s1', 'm1', lease()),
+      messages.claimReply('s1', 'm1', lease()),
+    ]);
     expect(claims.sort()).toEqual([false, true]);
     // Another session's answer to the same id is its own.
-    expect(await messages.claimReply('s2', 'm1')).toBe(true);
+    expect(await messages.claimReply('s2', 'm1', lease())).toBe(true);
     // The mark is no message: nothing reads it as one.
     expect(await messages.get('s1', 'reply:m1:s1')).toBeUndefined();
     expect((await messages.recentOnThread('s1', 10)).map(row => row.id)).toEqual(['m1']);
     expect(await messages.take('s1')).toEqual({ messages: [], dropped: 0 });
 
     await messages.releaseReply('s1', 'm1');
-    expect(await messages.claimReply('s1', 'm1')).toBe(true);
+    expect(await messages.claimReply('s1', 'm1', lease())).toBe(true);
+  });
+
+  it('lets a claim left unconfirmed lapse at its lease, and holds a confirmed one for good', async () => {
+    const messages = await open();
+    // The server stopped between claiming and confirming: the claim's lease runs out.
+    expect(await messages.claimReply('s1', 'm1', lapsed())).toBe(true);
+    const retries = await Promise.all([
+      messages.claimReply('s1', 'm1', lease()),
+      messages.claimReply('s1', 'm1', lease()),
+    ]);
+    expect(retries.sort()).toEqual([false, true]);
+
+    // Held longer while queued, then confirmed: no later answer, lease or not.
+    await messages.extendReply('s1', 'm1', lapsed());
+    expect(await messages.claimReply('s1', 'm1', lease())).toBe(true);
+    await messages.confirmReply('s1', 'm1');
+    await messages.releaseReply('s1', 'm1');
+    expect(await messages.claimReply('s1', 'm1', lease())).toBe(false);
+    await messages.extendReply('s1', 'm1', lapsed());
+    expect(await messages.claimReply('s1', 'm1', lease())).toBe(false);
+  });
+
+  it('keeps a message that waited past retention answerable once Claude reads it', async () => {
+    const messages = await open();
+    await messages.hold({ ...fromSession('m-week'), createdAt: new Date(Date.now() - 8 * 24 * 60 * 60_000) }, 20);
+    expect((await messages.take('s1')).messages.map(row => row.id)).toEqual(['m-week']);
+
+    await messages.forgetBefore(new Date(Date.now() - AGENT_MESSAGE_RETENTION_MS));
+    expect(await messages.get('s1', 'm-week')).toMatchObject({ status: 'told' });
+    expect(await messages.claimReply('s1', 'm-week', lease())).toBe(true);
   });
 
   it('forgets a message kept for a turn that never started', async () => {
@@ -79,7 +115,13 @@ describe.each([
   it('forgets what no longer waits once it is old, and never what still waits', async () => {
     const messages = await open();
     const old = new Date(Date.now() - AGENT_MESSAGE_RETENTION_MS - 60_000);
-    await messages.told({ ...fromSession('old-told'), createdAt: old });
+    // Read by Claude a week and more ago.
+    vi.useFakeTimers({ toFake: ['Date'], now: old });
+    try {
+      await messages.told({ ...fromSession('old-told'), createdAt: old });
+    } finally {
+      vi.useRealTimers();
+    }
     await messages.hold({ ...message('old-overflow'), createdAt: old }, 20);
     await messages.hold({ ...message('old-waiting'), createdAt: new Date(old.getTime() + 1) }, 1);
     await messages.told(fromSession('new-told'));

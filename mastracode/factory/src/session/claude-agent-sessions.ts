@@ -734,7 +734,9 @@ export class ClaudeAgentSessions {
         durable: this.#messages.durable,
         get: (sessionId, id) => this.#messages.get(sessionId, id),
         recentOnThread: (threadId, limit) => this.#messages.recentOnThread(threadId, limit),
-        claimReply: (sessionId, id) => this.#messages.claimReply(sessionId, id),
+        claimReply: (sessionId, id, leaseUntil) => this.#messages.claimReply(sessionId, id, leaseUntil),
+        extendReply: (sessionId, id, leaseUntil) => this.#messages.extendReply(sessionId, id, leaseUntil),
+        confirmReply: (sessionId, id) => this.#messages.confirmReply(sessionId, id),
         releaseReply: (sessionId, id) => this.#messages.releaseReply(sessionId, id),
       },
       abort: async (sessionId, requestContext) => {

@@ -150,7 +150,13 @@ function setup({
       durable,
       get: (sessionId: string, id: string) => claudeMessages.get(sessionId, id),
       recentOnThread: (threadId: string, limit: number) => claudeMessages.recentOnThread(threadId, limit),
-      claimReply: vi.fn((sessionId: string, id: string) => claudeMessages.claimReply(sessionId, id)),
+      claimReply: vi.fn((sessionId: string, id: string, leaseUntil: Date) =>
+        claudeMessages.claimReply(sessionId, id, leaseUntil),
+      ),
+      extendReply: vi.fn((sessionId: string, id: string, leaseUntil: Date) =>
+        claudeMessages.extendReply(sessionId, id, leaseUntil),
+      ),
+      confirmReply: vi.fn((sessionId: string, id: string) => claudeMessages.confirmReply(sessionId, id)),
       releaseReply: vi.fn((sessionId: string, id: string) => claudeMessages.releaseReply(sessionId, id)),
     },
   };
@@ -1219,5 +1225,98 @@ describe('factory_message_origin in a Claude Agent session', () => {
     await env.run(WORKER, 'factory_message_origin', { message: 'Hi.', inReplyTo: sent.notificationId });
     const runtime = (await env.deps.messaging())!.runtime!;
     expect(runtime.deliveries!.claimReply).not.toHaveBeenCalled();
+  });
+
+  it('lets an answer through once a claim left by a stopped server lapses, not before', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    // Claimed, then the server stopped before the answer went out.
+    await deliveries.claimReply('session-claude', notificationId, new Date(Date.now() + 60_000));
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+    ).rejects.toThrow(`You already answered ${notificationId}.`);
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.now() + 2 * 60_000) });
+    try {
+      await expect(
+        env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+      ).resolves.toMatchObject({ delivered: 'woken' });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(deliveries.confirmReply).toHaveBeenCalledWith('session-claude', notificationId);
+  });
+
+  it('lets an answer queued past the rate limit, then lost to a restart, be sent again', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    // The session already sent its fill to the sender's thread.
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { delivered: string; deliverAt: string };
+    expect(queued.delivered).toBe('queued');
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    // Held while it waits: a second answer now is refused.
+    expect(deliveries.extendReply).toHaveBeenCalledWith('session-claude', notificationId, expect.any(Date));
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green!', inReplyTo: notificationId }),
+    ).rejects.toThrow(`You already answered ${notificationId}.`);
+
+    // The server restarted and the queue went with it; once the lease is past, it can answer again.
+    // (Here the queue is still there: it would send its copy when its window opens.)
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 16 * 60_000) });
+    try {
+      await expect(
+        env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+      ).resolves.toMatchObject({ delivered: 'woken' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirms a queued answer once it goes out', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { deliverAt: string };
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    expect(deliveries.confirmReply).not.toHaveBeenCalled();
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 1000) });
+    try {
+      await vi.waitFor(() => expect(deliveries.confirmReply).toHaveBeenCalledWith('session-claude', notificationId), {
+        timeout: QUEUE_WAIT_MS * 3,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

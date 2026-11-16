@@ -13,6 +13,8 @@ const KEPT = 1000;
 export class InMemoryAgentMessages implements AgentMessageStore {
   readonly durable = false;
   readonly #rows = new Map<string, AgentMessageRecord>();
+  /** Each unconfirmed reply claim's lease, by claim id. */
+  readonly #leases = new Map<string, Date>();
 
   async told(message: AgentMessage): Promise<void> {
     this.#put(message, 'told');
@@ -40,7 +42,9 @@ export class InMemoryAgentMessages implements AgentMessageStore {
 
   async get(sessionId: string, id: string): Promise<AgentMessageRecord | undefined> {
     const row = this.#rows.get(id);
-    return row?.sessionId === sessionId && row.status !== 'claimed' ? { ...row } : undefined;
+    return row?.sessionId === sessionId && row.status !== 'claimed' && row.status !== 'answered'
+      ? { ...row }
+      : undefined;
   }
 
   async recentOnThread(threadId: string, limit: number): Promise<AgentMessageRecord[]> {
@@ -55,22 +59,43 @@ export class InMemoryAgentMessages implements AgentMessageStore {
     if (this.#rows.get(id)?.sessionId === sessionId) this.#rows.delete(id);
   }
 
-  async claimReply(sessionId: string, id: string): Promise<boolean> {
+  async claimReply(sessionId: string, id: string, leaseUntil: Date): Promise<boolean> {
     const claim = replyClaimId(id, sessionId);
-    if (this.#rows.has(claim)) return false;
+    const held = this.#rows.get(claim);
+    if (held && (held.status === 'answered' || (this.#leases.get(claim) ?? new Date(0)) > new Date())) return false;
     this.#put({ id: claim, sessionId, source: 'factory-session', text: '', createdAt: new Date() }, 'claimed');
+    this.#leases.set(claim, leaseUntil);
     return true;
   }
 
+  async extendReply(sessionId: string, id: string, leaseUntil: Date): Promise<void> {
+    const claim = replyClaimId(id, sessionId);
+    if (this.#rows.get(claim)?.status === 'claimed') this.#leases.set(claim, leaseUntil);
+  }
+
+  async confirmReply(sessionId: string, id: string): Promise<void> {
+    const claim = replyClaimId(id, sessionId);
+    const row = this.#rows.get(claim);
+    if (row?.status !== 'claimed') return;
+    row.status = 'answered';
+    this.#leases.delete(claim);
+  }
+
   async releaseReply(sessionId: string, id: string): Promise<void> {
-    this.#rows.delete(replyClaimId(id, sessionId));
+    const claim = replyClaimId(id, sessionId);
+    if (this.#rows.get(claim)?.status !== 'claimed') return;
+    this.#rows.delete(claim);
+    this.#leases.delete(claim);
   }
 
   async forgetBefore(before: Date): Promise<number> {
     let pruned = 0;
     for (const [id, row] of this.#rows) {
-      if (row.status === 'held' || row.createdAt >= before) continue;
+      // A message read by Claude counts from when it read it (see `AGENT_MESSAGE_RETENTION_MS`).
+      const since = row.status === 'told' ? (row.toldAt ?? row.createdAt) : row.createdAt;
+      if (row.status === 'held' || since >= before) continue;
       this.#rows.delete(id);
+      this.#leases.delete(id);
       pruned += 1;
     }
     return pruned;
@@ -93,6 +118,7 @@ export class InMemoryAgentMessages implements AgentMessageStore {
       if (kept <= KEPT) return;
       if (row.status === 'held') continue;
       this.#rows.delete(id);
+      this.#leases.delete(id);
       kept -= 1;
     }
   }
