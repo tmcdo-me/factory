@@ -49,21 +49,41 @@ async function bind(storage: WorkItemsStorage, role: string, source: 'issue' | '
   });
 }
 
-function sessionsFor(workItems: Pick<WorkItemsStorage, 'findActiveRunBindingForSession' | 'get'>) {
+/** The session's record, as the agent-sessions domain keeps it across processes. */
+function sessionRecord() {
+  let runtimeState: unknown;
+  return {
+    get: async (sessionId: string) => ({
+      sessionId,
+      runtimeId: 'claude-agent',
+      createdAt: now,
+      updatedAt: now,
+      ...(runtimeState ? { runtimeState } : {}),
+    }),
+    setRuntimeState: async (_sessionId: string, state: unknown) => {
+      runtimeState = state;
+    },
+    setModel: async () => {},
+  };
+}
+
+function sessionsFor(
+  workItems: Pick<WorkItemsStorage, 'listRunBindingsForSession' | 'get'>,
+  record = sessionRecord(),
+  checkout?: () => Promise<'trusted' | 'untrusted'>,
+) {
   const fake = fakeQuery();
   const log = new InMemoryEventLog();
   const sessions = new ClaudeAgentSessions({
     hub: new SessionEventHub(log),
-    sessions: {
-      get: async sessionId => ({ sessionId, runtimeId: 'claude-agent', createdAt: now, updatedAt: now }),
-      setRuntimeState: async () => {},
-      setModel: async () => {},
-    },
+    sessions: record,
     workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
-    checkout: claudeAgentCheckoutPosture({
-      sessions: { getBySessionId: async () => ({ orgId: 'org-1', factoryProjectId: PROJECT_ID }) },
-      workItems,
-    }),
+    checkout:
+      checkout ??
+      claudeAgentCheckoutPosture({
+        sessions: { getBySessionId: async () => ({ orgId: 'org-1', factoryProjectId: PROJECT_ID }) },
+        workItems,
+      }),
     hostEnv: {},
     query: fake.fn,
   });
@@ -107,7 +127,7 @@ describe('Claude Agent checkout posture', () => {
     const { workItems } = await createFactoryStorageForTests();
     await bind(workItems, 'work', 'issue');
     const { fake, turn } = sessionsFor({
-      findActiveRunBindingForSession: input => workItems.findActiveRunBindingForSession(input),
+      listRunBindingsForSession: input => workItems.listRunBindingsForSession(input),
       get: async () => Promise.reject(new Error('db down')),
     });
     await turn('hi');
@@ -124,5 +144,46 @@ describe('Claude Agent checkout posture', () => {
 
     expect(fake.options.map(options => options.settingSources)).toEqual([['project'], []]);
     expect(fake.options[1]).toMatchObject({ resume: 'claude-xyz' });
+  });
+
+  it("stays untrusted once its review's binding has ended: the checkout still holds the pull request", async () => {
+    const { workItems } = await createFactoryStorageForTests();
+    const review = await bind(workItems, 'review', 'issue');
+    const record = sessionRecord();
+    const first = sessionsFor(workItems, record);
+    await first.turn('review it');
+    await workItems.revokeRunBinding({
+      orgId: 'org-1',
+      factoryProjectId: PROJECT_ID,
+      bindingId: review.binding.id,
+      revokedAt: new Date(),
+    });
+
+    // The next turn, in this process and after a restart, still loads none of the checkout's settings.
+    await first.turn('anything else?');
+    const restarted = sessionsFor(workItems, record);
+    await restarted.turn('back again');
+    expect(first.fake.options.map(options => options.settingSources)).toEqual([[]]);
+    expect(restarted.fake.options[0]!.settingSources).toEqual([]);
+
+    // Even once its bindings are gone, its record remembers.
+    const forgotten = sessionsFor(workItems, record, async () => 'trusted');
+    await forgotten.turn('and again');
+    expect(forgotten.fake.options[0]!.settingSources).toEqual([]);
+  });
+
+  it('counts more than one live binding as untrusted', async () => {
+    const posture = claudeAgentCheckoutPosture({
+      sessions: { getBySessionId: async () => ({ orgId: 'org-1', factoryProjectId: PROJECT_ID }) },
+      workItems: {
+        listRunBindingsForSession: async () =>
+          [
+            { status: 'active', role: 'work', workItemId: 'a' },
+            { status: 'active', role: 'plan', workItemId: 'b' },
+          ] as never,
+        get: async () => ({ externalSource: { type: 'issue' } }) as never,
+      },
+    });
+    expect(await posture('s1')).toBe('untrusted');
   });
 });

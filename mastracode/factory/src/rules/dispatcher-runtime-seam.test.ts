@@ -20,8 +20,11 @@ function fakeRuntime(
     end?: RuntimeRunEnd;
     landed?: string[];
     onKickoff?: () => Promise<void>;
-    /** A run is in flight; `parked` when it waits on a person; `stuck` when it never ends. */
-    inFlight?: 'parked' | 'busy' | 'stuck';
+    /**
+     * A run is in flight: `parked`, a board run waiting on a person; `person`, a person's own turn
+     * waiting on their answer; `busy`, any run that ends soon; `stuck`, one that never ends.
+     */
+    inFlight?: 'parked' | 'person' | 'busy' | 'stuck';
     runs?: (sessionId: string) => Promise<boolean>;
   } = {},
 ) {
@@ -33,10 +36,11 @@ function fakeRuntime(
     runs: vi.fn(options.runs ?? (async sessionId => sessionId === 'session-1')),
     hasRun: vi.fn(async (_sessionId, runId) => options.landed?.includes(runId) ?? false),
     isRunning: vi.fn(() => running),
-    awaitsPerson: vi.fn(async () => running && options.inFlight === 'parked'),
+    parkedBoardRun: vi.fn(async () => running && options.inFlight === 'parked'),
+    awaitsPerson: vi.fn(async () => running && (options.inFlight === 'parked' || options.inFlight === 'person')),
     idle: vi.fn(async () => {
       calls.push('idle');
-      if (options.inFlight === 'stuck') await new Promise(() => {});
+      if (options.inFlight === 'stuck' || options.inFlight === 'person') await new Promise(() => {});
       running = false;
     }),
     kickoff: vi.fn(async (sessionId: string, kickoff: RuntimeKickoff, requestContext: RequestContext) => {
@@ -451,10 +455,8 @@ describe('FactoryDecisionDispatcher on another agent runtime', () => {
     expect(busy.kickoffs[0]!.kickoff.autoApprovePlan).toBeUndefined();
   });
 
-  it.each([
-    ['runs on Mastra Code', async () => false],
-    ["runtime can't be read", async () => Promise.reject(new Error('db down'))],
-  ])('leaves a session on the agent controller when it %s, as before', async (_label, runs) => {
+  it('leaves a session that runs on Mastra Code on the agent controller, as before', async () => {
+    const runs = async () => false;
     const { workItems: storage } = await createFactoryStorageForTests();
     const { transitionService } = await cardWithDecision(storage, {
       type: 'sendMessage',
@@ -490,5 +492,54 @@ describe('FactoryDecisionDispatcher on another agent runtime', () => {
     expect(sendNotificationSignal).toHaveBeenCalledTimes(1);
     expect(seam.messages).toEqual([]);
     expect(await decisionOf(storage, 'mastra')).toMatchObject({ status: 'succeeded' });
+  });
+
+  it("never guesses a runtime it can't read: no Mastra Code kickoff, no message, and a retry", async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { item, transitionService } = await cardWithDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      prompt: 'Continue.',
+      idempotencyKey: 'unknown',
+    });
+    await commitDecisions(storage, {
+      factoryProjectId: PROJECT_ID,
+      workItemId: item.id,
+      stage: 'execute',
+      decisions: [{ type: 'sendMessage', role: 'work', message: 'FYI.', idempotencyKey: 'unknown-message' }],
+      actorId: 'user-1',
+    });
+    const seam = fakeRuntime({ runs: async () => Promise.reject(new Error('db down')) });
+    const { dispatcher, sendSignal, sendNotificationSignal } = dispatcherFor(storage, transitionService, seam.runtime);
+
+    await dispatcher.runOnce(new Date());
+
+    for (const key of ['unknown', 'unknown-message']) {
+      const decision = await decisionOf(storage, key);
+      expect(decision).toMatchObject({ status: 'retry', failureCode: 'session_unavailable' });
+    }
+    expect(sendSignal).not.toHaveBeenCalled();
+    expect(sendNotificationSignal).not.toHaveBeenCalled();
+    expect(seam.kickoffs).toEqual([]);
+    expect(seam.messages).toEqual([]);
+  });
+
+  it("waits for a person's own parked turn instead of aborting it, then hands the decision back", async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService } = await cardWithDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      prompt: 'Continue.',
+      idempotencyKey: 'behind-person',
+    });
+    const person = fakeRuntime({ inFlight: 'person' });
+    const { dispatcher } = dispatcherFor(storage, transitionService, person.runtime, undefined, {
+      skillCompletionObservationTimeoutMs: 20,
+    });
+
+    await dispatcher.runOnce(new Date());
+
+    expect(person.calls).toEqual(['idle']);
+    expect(await decisionOf(storage, 'behind-person')).toMatchObject({ status: 'retry' });
   });
 });

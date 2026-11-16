@@ -3531,6 +3531,21 @@ export class WorkItemsStorage extends FactoryStorageDomain {
     return row !== null;
   }
 
+  /** fork(claude-agent): every binding a session ever had in a project, in any status, oldest first. */
+  async listRunBindingsForSession(input: {
+    orgId: string;
+    factoryProjectId: string;
+    sessionId: string;
+  }): Promise<FactoryRunBindingRecord[]> {
+    return (
+      await this.#db.findMany<GovernanceDbRow>(
+        'factory_run_bindings',
+        { org_id: input.orgId, factory_project_id: input.factoryProjectId, session_id: input.sessionId },
+        { orderBy: [['created_at', 'asc']] },
+      )
+    ).map(toBinding);
+  }
+
   /** Resolve exact bound-session state for processor awareness; ambiguous cross-tenant matches return null. */
   async findRunBindingBySession(address: FactoryRunBindingSessionAddress): Promise<FactoryRunBindingRecord | null> {
     const rows = await this.#db.findMany<GovernanceDbRow>('factory_run_bindings', {

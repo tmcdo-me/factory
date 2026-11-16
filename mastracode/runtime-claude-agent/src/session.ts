@@ -158,6 +158,11 @@ export class ClaudeAgentSession {
     return this.#runs.length ? 'running' : 'idle';
   }
 
+  /** The run Claude Code is answering now (the oldest open one), if any. */
+  currentRunId(): string | undefined {
+    return this.#runs[0];
+  }
+
   runtimeState(): ClaudeAgentRuntimeState {
     return this.#claudeSessionId ? { claudeSessionId: this.#claudeSessionId } : {};
   }

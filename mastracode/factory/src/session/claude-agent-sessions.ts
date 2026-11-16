@@ -131,6 +131,12 @@ export class ClaudeAgentSessions {
    * going": after a restart the run is gone, and the kickoff is owed again.
    */
   readonly #started = new Set<string>();
+  /** Sessions whose checkout was ever untrusted; it stays untrusted (also kept on the session record). */
+  readonly #sticky = new Set<string>();
+  /** Runs a board kickoff started, while they are open. */
+  readonly #boardRuns = new Set<string>();
+  /** The interaction a session's run waits on, by session: the run and the tool call that asked. */
+  readonly #parked = new Map<string, { runId: string; callId: string }>();
   /** Answers plan approvals on the board's behalf, by the board run's id, while it says so. */
   readonly #autoApprove = new Map<string, () => boolean>();
 
@@ -188,16 +194,19 @@ export class ClaudeAgentSessions {
           this.#runContexts.delete(event.runId);
           factoryTools?.endRun(event.runId);
           this.#settleRun(event.runId, { reason: event.reason, ...(event.error ? { error: event.error } : {}) });
+          this.#boardRuns.delete(event.runId);
+          if (this.#parked.get(sessionId)?.runId === event.runId) this.#parked.delete(sessionId);
           if (session.status() !== 'running') {
             for (const wake of this.#idle.get(sessionId)?.splice(0) ?? []) wake();
           }
         }
         if (event.type !== 'model.changed' && event.type !== 'run.ended') return;
-        const state = JSON.stringify(session.runtimeState());
+        const current = this.#stateOf(sessionId, session);
+        const state = JSON.stringify(current);
         if (state === savedState) return;
         savedState = state;
         this.#deps.sessions
-          .setRuntimeState(sessionId, session.runtimeState())
+          .setRuntimeState(sessionId, current)
           .catch(error =>
             console.warn(`[factory] Claude Agent session ${sessionId}: saving resume state failed`, error),
           );
@@ -277,8 +286,15 @@ export class ClaudeAgentSessions {
               }
               // A board run that waits on a person is parked, as a suspended Mastra Code run ends: the
               // dispatcher stops watching it, and the turn goes on once the person answers.
-              if (call.runId) this.#settleRun(call.runId, { reason: 'awaiting_interaction' });
-              return broker.request(sessionId, request, { callId: call.callId, signal: call.signal });
+              if (call.runId) {
+                this.#settleRun(call.runId, { reason: 'awaiting_interaction' });
+                this.#parked.set(sessionId, { runId: call.runId, callId: call.callId });
+              }
+              try {
+                return await broker.request(sessionId, request, { callId: call.callId, signal: call.signal });
+              } finally {
+                if (this.#parked.get(sessionId)?.callId === call.callId) this.#parked.delete(sessionId);
+              }
             },
           };
         },
@@ -330,6 +346,11 @@ export class ClaudeAgentSessions {
     const { runId } = await session.send(turn);
     this.#runContexts.set(runId, context);
     this.#started.add(`${session.id} ${runId}`);
+    // Bounded: a re-claim that needs an entry comes within a lease or two of the run starting.
+    for (const oldest of this.#started) {
+      if (this.#started.size <= MAX_STARTED_RUNS) break;
+      this.#started.delete(oldest);
+    }
     const known = this.#told.get(session.id) ?? new Map<string, ClaudeAgentContextBlock>();
     for (const block of told) known.set(block.id, block);
     this.#told.set(session.id, known);
@@ -356,13 +377,41 @@ export class ClaudeAgentSessions {
   }
 
   /** The session's checkout posture; unknown is untrusted. */
+  /**
+   * The session's checkout posture: untrusted once it was ever untrusted (this process remembers it,
+   * and so does the session's record), or when it can't be read.
+   */
   async #posture(sessionId: string): Promise<CheckoutPosture> {
-    if (!this.#deps.checkout) return 'trusted';
+    if (this.#sticky.has(sessionId)) return 'untrusted';
+    let record: AgentSessionRecord | undefined;
+    let posture: CheckoutPosture;
     try {
-      return await this.#deps.checkout(sessionId);
+      record = await this.#deps.sessions.get(sessionId);
+      posture =
+        (record?.runtimeState as { untrustedCheckout?: unknown } | undefined)?.untrustedCheckout === true
+          ? 'untrusted'
+          : this.#deps.checkout
+            ? await this.#deps.checkout(sessionId)
+            : 'trusted';
     } catch {
-      return 'untrusted';
+      posture = 'untrusted';
     }
+    if (posture === 'untrusted') {
+      this.#sticky.add(sessionId);
+      if ((record?.runtimeState as { untrustedCheckout?: unknown } | undefined)?.untrustedCheckout !== true) {
+        await this.#deps.sessions
+          .setRuntimeState(sessionId, { ...(record?.runtimeState as object | undefined), untrustedCheckout: true })
+          .catch(error =>
+            console.warn(`[factory] Claude Agent session ${sessionId}: recording its untrusted checkout failed`, error),
+          );
+      }
+    }
+    return posture;
+  }
+
+  /** What the session's record keeps: Claude's resume state, and the sticky untrusted mark. */
+  #stateOf(sessionId: string, session: ClaudeAgentSession): Record<string, unknown> {
+    return { ...session.runtimeState(), ...(this.#sticky.has(sessionId) ? { untrustedCheckout: true } : {}) };
   }
 
   /**
@@ -409,17 +458,18 @@ export class ClaudeAgentSessions {
   /** Board runs on Claude Agent sessions, for the dispatcher. */
   runtimeSessions(): FactoryRuntimeSessions {
     return {
-      runs: async sessionId => {
-        try {
-          return (await this.#deps.sessions.get(sessionId))?.runtimeId === CLAUDE_AGENT_RUNTIME_ID;
-        } catch (error) {
-          // Unknown runtime: Mastra Code, the runtime of every session without a record.
-          console.warn(`[factory] Session ${sessionId}: reading its runtime failed; treating it as Mastra Code`, error);
-          return false;
-        }
-      },
+      // A failed lookup throws: the caller must not guess a runtime.
+      runs: async sessionId => (await this.#deps.sessions.get(sessionId))?.runtimeId === CLAUDE_AGENT_RUNTIME_ID,
       hasRun: async (sessionId, runId) => this.#started.has(`${sessionId} ${runId}`),
       isRunning: sessionId => this.#opened.get(sessionId)?.session.status() === 'running',
+      parkedBoardRun: async sessionId => {
+        const parked = this.#parked.get(sessionId);
+        const session = this.#opened.get(sessionId)?.session;
+        if (!parked || !session || session.currentRunId() !== parked.runId || !this.#boardRuns.has(parked.runId))
+          return false;
+        const pending = (await this.#deps.interactions?.listPending({ sessionId })) ?? [];
+        return pending.some(record => record.callId === parked.callId);
+      },
       awaitsPerson: async sessionId => ((await this.#deps.interactions?.listPending({ sessionId })) ?? []).length > 0,
       idle: sessionId => {
         if (this.#opened.get(sessionId)?.session.status() !== 'running') return Promise.resolve();
@@ -448,6 +498,7 @@ export class ClaudeAgentSessions {
         const ended = new Promise<RuntimeRunEnd>(resolve => this.#runEnds.set(kickoff.runId, resolve));
         // Only this run's plans: a person's own submit_plan in another turn always waits for them.
         if (kickoff.autoApprovePlan) this.#autoApprove.set(kickoff.runId, kickoff.autoApprovePlan);
+        this.#boardRuns.add(kickoff.runId);
         void ended.then(() => this.#autoApprove.delete(kickoff.runId));
         try {
           await this.#send(
@@ -463,6 +514,7 @@ export class ClaudeAgentSessions {
         } catch (error) {
           this.#runEnds.delete(kickoff.runId);
           this.#autoApprove.delete(kickoff.runId);
+          this.#boardRuns.delete(kickoff.runId);
           throw error;
         }
         return { ended };
@@ -546,6 +598,9 @@ export class ClaudeAgentSessions {
   }
 }
 
+/** How many started runs this process remembers for the replay guard. */
+const MAX_STARTED_RUNS = 1000;
+
 /** Factory messages a session holds for its next turn; past this the oldest are dropped. */
 const MAX_WAITING_MESSAGES = 20;
 
@@ -602,20 +657,34 @@ export function routeSessionCommands(options: {
   runtimes: Record<string, SessionCommands>;
   fallback: SessionCommands;
 }): SessionCommands {
-  const target = async (sessionId: string) => {
-    let record: AgentSessionRecord | undefined;
+  // A session with no record runs on the fallback; one whose record can't be read runs nowhere yet:
+  // guessing would send a Claude Agent session's turn to Mastra Code.
+  const target = async (sessionId: string): Promise<SessionCommands | CommandResult> => {
     try {
-      record = await options.sessions.get(sessionId);
+      const record = await options.sessions.get(sessionId);
+      return (record && options.runtimes[record.runtimeId]) || options.fallback;
     } catch (error) {
-      console.warn(`[factory] Session ${sessionId}: reading its runtime failed; sending to Mastra Code`, error);
+      console.warn(`[factory] Session ${sessionId}: reading its runtime failed`, error);
+      return { ok: false, reason: 'unavailable', message: "The session's runtime could not be read; try again." };
     }
-    return (record && options.runtimes[record.runtimeId]) || options.fallback;
   };
+  const isCommands = (value: SessionCommands | CommandResult): value is SessionCommands => 'send' in value;
   return {
-    send: async (sessionId, input, request) => (await target(sessionId)).send(sessionId, input, request),
-    abort: async (sessionId, request) => (await target(sessionId)).abort(sessionId, request),
-    answer: async (sessionId, at, response, request) =>
-      (await target(sessionId)).answer(sessionId, at, response, request),
-    setModel: async (sessionId, model, request) => (await target(sessionId)).setModel(sessionId, model, request),
+    send: async (sessionId, input, request) => {
+      const to = await target(sessionId);
+      return isCommands(to) ? to.send(sessionId, input, request) : to;
+    },
+    abort: async (sessionId, request) => {
+      const to = await target(sessionId);
+      return isCommands(to) ? to.abort(sessionId, request) : to;
+    },
+    answer: async (sessionId, at, response, request) => {
+      const to = await target(sessionId);
+      return isCommands(to) ? to.answer(sessionId, at, response, request) : to;
+    },
+    setModel: async (sessionId, model, request) => {
+      const to = await target(sessionId);
+      return isCommands(to) ? to.setModel(sessionId, model, request) : to;
+    },
   };
 }

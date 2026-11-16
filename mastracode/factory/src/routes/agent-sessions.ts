@@ -69,7 +69,7 @@ const modelBody = z.object({
   thinkingLevel: z.enum(['off', 'low', 'medium', 'high', 'xhigh', 'max']).optional(),
 });
 
-const FAILURE_STATUS = { session_not_found: 404, not_pending: 409, invalid: 400 } as const;
+const FAILURE_STATUS = { session_not_found: 404, not_pending: 409, invalid: 400, unavailable: 503 } as const;
 
 function respond(c: Context, result: CommandResult) {
   if (result.ok) return c.json({ ok: true });

@@ -597,12 +597,32 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(told).toContain('news 25');
   });
 
-  it('reads a session whose runtime cannot be looked up as a Mastra Code one', async () => {
+  it("says so when a session's runtime cannot be looked up, rather than guessing", async () => {
     const store = memoryStore([]);
     const { sessions } = toolSetup(toolCallingQuery(async () => {}).fn, {
       sessions: { ...store, get: async () => Promise.reject(new Error('db down')) },
     });
-    expect(await sessions.runtimeSessions().runs('s1')).toBe(false);
+    await expect(sessions.runtimeSessions().runs('s1')).rejects.toThrow('db down');
+  });
+
+  it("tells a board run parked on its own plan from a person's turn waiting on their question", async () => {
+    const fake = toolCallingQuery(async (client, index) => {
+      if (index === 0) await client.call('ask_user', { question: 'Ship it?' }, 'toolu_person');
+      else await client.call('submit_plan', { path: 'plan.md' }, 'toolu_board');
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+
+    await sessions.commands().send('s1', { text: 'decide' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    expect(runs.isRunning('s1')).toBe(true);
+    expect(await runs.parkedBoardRun('s1')).toBe(false);
+
+    await runs.abort('s1', owner());
+    await runs.idle('s1');
+    const board = await runs.kickoff('s1', { runId: 'board-1', prompt: 'Plan it.' }, owner());
+    expect(await board.ended).toEqual({ reason: 'awaiting_interaction' });
+    expect(await runs.parkedBoardRun('s1')).toBe(true);
   });
 
   it("tells the session Factory's messages: waking it with a turn, or with its next one", async () => {
@@ -763,5 +783,25 @@ describe('routeSessionCommands', () => {
     await router.answer('c1', { callId: 'x' }, { kind: 'question', answer: 'y' }, request);
     await router.setModel('m1', { modelId: 'm' }, request);
     expect(calls).toEqual(['claude:send:c1', 'mastra:send:m1', 'claude:answer:c1', 'mastra:model:m1']);
+  });
+
+  it("refuses, rather than guessing, when the session's runtime can't be read", async () => {
+    const calls: string[] = [];
+    const fake: SessionCommands = {
+      send: async id => (calls.push(`send:${id}`), { ok: true }),
+      abort: async id => (calls.push(`abort:${id}`), { ok: true }),
+      answer: async id => (calls.push(`answer:${id}`), { ok: true }),
+      setModel: async id => (calls.push(`model:${id}`), { ok: true }),
+    };
+    const router = routeSessionCommands({
+      sessions: { get: async () => Promise.reject(new Error('db down')) },
+      runtimes: { 'claude-agent': fake },
+      fallback: fake,
+    });
+    expect(await router.send('c1', { text: 'x' }, { context: undefined })).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+    });
+    expect(calls).toEqual([]);
   });
 });

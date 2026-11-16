@@ -31,7 +31,7 @@ export interface RuntimeKickoff {
  * carries the session owner, whom the run acts as.
  */
 export interface FactoryRuntimeSessions {
-  /** Whether this session runs on a runtime reached through here. */
+  /** Whether this session runs on a runtime reached through here. Throws when that can't be read. */
   runs(sessionId: string): Promise<boolean>;
   /**
    * Whether a run with this id was started in the session and may still be going. A run lives only as
@@ -40,6 +40,11 @@ export interface FactoryRuntimeSessions {
   hasRun(sessionId: string, runId: string): Promise<boolean>;
   /** Whether a run is in flight in the session in this process. */
   isRunning(sessionId: string): boolean;
+  /**
+   * Whether the run in flight is a board run parked on a person (its own question or plan, still
+   * pending). A person's own turn, parked or not, is never this.
+   */
+  parkedBoardRun(sessionId: string): Promise<boolean>;
   /** Whether the session waits on a person (a question, a plan to approve). */
   awaitsPerson(sessionId: string): Promise<boolean>;
   /** Resolves once the session has no run in flight (at once when it has none). Unbounded: callers time it. */

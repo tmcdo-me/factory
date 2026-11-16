@@ -2,6 +2,7 @@
 import type { EventLog } from '@factory/agent-runtime';
 import { MASTRA_CODE_RUNTIME_ID } from '@factory/runtime-mastra-code';
 
+import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryStartRuntimes } from '../rules/start-coordinator.js';
 import type { AgentSessionsStorage } from '../storage/domains/agent-sessions/base.js';
 
@@ -13,7 +14,8 @@ const UNSCOPED_ORG = 'local';
  * default, which is then recorded so every later command routes to it. A session with no runtime
  * record that already worked is a Mastra Code session: the card already holds it, or its thread has
  * messages (sessions from before the event mirror, or whose mirror writes failed, have no events), or
- * it has events. When any of that can't be read, the session stays on Mastra Code.
+ * it has events. When any of that can't be read the start fails for a retry: guessing could move a
+ * session to the wrong runtime for good.
  */
 export function createRunRuntimes(options: {
   sessions: Pick<AgentSessionsStorage, 'get' | 'assign' | 'getProjectDefault'>;
@@ -48,8 +50,11 @@ export function createRunRuntimes(options: {
         // Another start chose first.
         return (await sessions.get(sessionId))?.runtimeId ?? MASTRA_CODE_RUNTIME_ID;
       } catch (error) {
-        console.warn(`[factory] Session ${sessionId}: choosing its runtime failed; it runs on Mastra Code`, error);
-        return MASTRA_CODE_RUNTIME_ID;
+        throw new FactoryDispatchError(
+          'session_unavailable',
+          `The runtime of session ${sessionId} could not be chosen: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
       }
     },
     ownsConversation: runtimeId => options.ownConversation.includes(runtimeId),

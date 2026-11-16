@@ -2939,12 +2939,12 @@ export class FactoryDecisionDispatcher {
     try {
       return await this.#runtimeSessions.runs(binding.sessionId);
     } catch (error) {
-      // Unknown runtime: Mastra Code, the runtime of every session without a record.
-      console.warn(
-        `[factory] Session ${binding.sessionId}: reading its runtime failed; treating it as Mastra Code`,
-        error,
+      // Guessing would send a Claude Agent session's run to Mastra Code: hand the decision back.
+      throw new FactoryDispatchError(
+        'session_unavailable',
+        `The runtime of session ${binding.sessionId} could not be read: ${sanitizeDispatchError(error)}`,
+        { cause: error },
       );
-      return false;
     }
   }
 
@@ -3055,12 +3055,13 @@ export class FactoryDecisionDispatcher {
   /**
    * Make way for a kickoff: never overlap a run in flight (a person's turn, or the previous phase's).
    *
-   * A run parked on a person (a question, a plan to approve) is dropped first, with its pending
-   * interaction: Claude answers turns in order, so a kickoff queued behind it would wait on that
-   * person, holding this run slot and the binding, however long they take. The interaction belongs
-   * to the work the card moved on from, and the Mastra Code run that asked it had already ended
-   * (suspended), so nothing is lost that a Mastra Code session would have kept running. `cancel`
-   * aborts any run in flight (`cancelInFlight`).
+   * A board run parked on a person (its question, its plan to approve) is dropped first, with its
+   * pending interaction: Claude answers turns in order, so a kickoff queued behind it would wait on
+   * that person, holding this run slot and the binding, however long they take. The interaction
+   * belongs to the work the card moved on from, and the Mastra Code run that asked it had already
+   * ended (suspended), so nothing is lost that a Mastra Code session would have kept running. A
+   * person's own turn, parked or working, is waited for instead (bounded, then the decision goes back
+   * for a retry): the board never aborts a person's work unless the rule says `cancelInFlight`.
    */
   async #clearSeamSession(
     binding: FactoryRunBindingRecord,
@@ -3069,7 +3070,7 @@ export class FactoryDecisionDispatcher {
     cancel: boolean,
   ): Promise<void> {
     const seam = this.#runtimeSessions!;
-    if (seam.isRunning(binding.sessionId) && (cancel || (await seam.awaitsPerson(binding.sessionId)))) {
+    if (seam.isRunning(binding.sessionId) && (cancel || (await seam.parkedBoardRun(binding.sessionId)))) {
       await seam.abort(binding.sessionId, requestContext);
     }
     await this.#seamIdle(binding, label);

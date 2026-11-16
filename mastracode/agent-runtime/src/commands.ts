@@ -43,4 +43,6 @@ export type CommandFailure =
   /** The interaction was already answered, cancelled, or never existed. */
   | 'not_pending'
   /** The request is malformed for this runtime (e.g. unknown interaction kind). */
-  | 'invalid';
+  | 'invalid'
+  /** fork(claude-agent): which runtime the session runs on couldn't be read; retry. */
+  | 'unavailable';

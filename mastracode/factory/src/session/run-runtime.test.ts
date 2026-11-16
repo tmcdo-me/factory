@@ -52,7 +52,7 @@ describe('createRunRuntimes', () => {
     for (const id of ['s-old', 's-events', 's-card']) expect(await sessions.get(id)).toBeUndefined();
   });
 
-  it('runs on Mastra Code when the project has no default, or when the choice cannot be read', async () => {
+  it('runs on Mastra Code when the project has no default, and fails for a retry when it cannot tell', async () => {
     const { runtimes } = await setup();
     expect(await runtimes.sessionRuntime({ ...minted, factoryProjectId: 'other', sessionId: 's1' })).toBe(
       'mastra-code',
@@ -68,7 +68,10 @@ describe('createRunRuntimes', () => {
       unscopedDefaults: () => false,
       ownConversation: ['claude-agent'],
     });
-    expect(await broken.sessionRuntime({ ...minted, sessionId: 's1' })).toBe('mastra-code');
+    // A Claude Agent session whose record can't be read must not be guessed onto Mastra Code.
+    await expect(broken.sessionRuntime({ ...minted, sessionId: 's1' })).rejects.toMatchObject({
+      code: 'session_unavailable',
+    });
   });
 
   it("reads a default filed under the unscoped org only with auth off, never for another org's project", async () => {

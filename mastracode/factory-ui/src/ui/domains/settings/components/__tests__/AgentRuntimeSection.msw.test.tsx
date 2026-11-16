@@ -45,4 +45,19 @@ describe('Agent runtime settings', () => {
 
     expect(await screen.findByText('Project not found')).toBeInTheDocument();
   });
+
+  it('shows why a runtime cannot be set, never a bare error code', async () => {
+    server.use(
+      http.get(PROJECT_RUNTIME, () =>
+        HttpResponse.json(
+          { error: 'organization_required', message: 'Agent runtimes are set per organization.' },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderWithProviders(<AgentRuntimeSection factoryId={FACTORY_ID} />);
+
+    expect(await screen.findByText('Agent runtimes are set per organization.')).toBeInTheDocument();
+    expect(screen.queryByText('organization_required')).not.toBeInTheDocument();
+  });
 });
