@@ -14,6 +14,7 @@ import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import type { IntegrationTools } from '../integrations/base.js';
+import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js'; // fork(claude-agent)
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import type { LiveSessions } from '../session/live-sessions.js';
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
@@ -23,8 +24,9 @@ import { workItemNumber } from '../work-items/card-number.js';
 import {
   FACTORY_SESSION_NOTIFICATION_SOURCE,
   deliverFactorySessionNotification,
-  recentRuntimeDeliveries,
   resolveSessionThread,
+  runtimeDeliveriesOnThread,
+  runtimeDelivery,
 } from './deliver.js';
 import type { FactoryDeliveryController, FactoryDeliveryResult, FactoryRuntimeDelivery } from './deliver.js';
 import { reportNotification, workItemReportAttributes, workItemReportRecipients } from './reports.js';
@@ -78,7 +80,7 @@ const queueKey = (owner: object, senderSessionId: string, threadId: string): str
 export interface FactoryMessaging {
   controller: FactoryDeliveryController;
   /** fork(claude-agent): sessions on another agent runtime, which take their messages through it. */
-  runtime?: FactoryRuntimeDelivery;
+  runtime?: FactoryRuntimeDelivery & Pick<FactoryRuntimeSessions, 'deliveries'>;
   notifications: Pick<NotificationsStorage, 'listNotifications' | 'getNotification'>;
 }
 
@@ -176,10 +178,11 @@ export function createFactoryMessagingTools(
     deliverAt: new Date(deliverAt).toISOString(),
     note: `Queued; it will be delivered at about ${new Date(deliverAt).toISOString()}. Do not send it again.`,
   });
-  // fork(claude-agent): deliveries to Claude Agent sessions store no record; they count all the same.
-  const recent = async (notifications: FactoryMessaging['notifications'], threadId: string) => [
+  // fork(claude-agent): deliveries to Claude Agent sessions are kept by their runtime, not as
+  // notification records; they count all the same.
+  const recent = async ({ notifications, runtime }: FactoryMessaging, threadId: string) => [
     ...(await storedRecent(notifications, threadId)),
-    ...recentRuntimeDeliveries(threadId),
+    ...(await runtimeDeliveriesOnThread(runtime, threadId, RECENT_SCAN)),
   ];
   const storedRecent = (notifications: FactoryMessaging['notifications'], threadId: string) =>
     notifications.listNotifications({ threadId, source: FACTORY_SESSION_NOTIFICATION_SOURCE, limit: RECENT_SCAN });
@@ -200,7 +203,7 @@ export function createFactoryMessagingTools(
   ): Promise<
     { notificationId?: string; delivered: FactoryDeliveryResult['delivered'] } | ReturnType<typeof queuedResult>
   > => {
-    const counted = countedInWindow(await recent(messaging.notifications, target.threadId));
+    const counted = countedInWindow(await recent(messaging, target.threadId));
     if (counted.length < SIGNAL_RATE_LIMIT) {
       const result = await deliverFactorySessionNotification({
         controller: messaging.controller,
@@ -217,7 +220,7 @@ export function createFactoryMessagingTools(
         kind: notification.kind,
         delivery: result.delivered,
       });
-      // fork(claude-agent): a message held for a Claude Agent session's next turn has no notification.
+      // fork(claude-agent): a message held for a Claude Agent session's next turn is named too.
       return {
         ...('notificationId' in result ? { notificationId: result.notificationId } : {}),
         delivered: result.delivered,
@@ -266,7 +269,7 @@ export function createFactoryMessagingTools(
       scheduleFlush(key);
       return;
     }
-    const counted = countedInWindow(await recent(messaging.notifications, head.target.threadId));
+    const counted = countedInWindow(await recent(messaging, head.target.threadId));
     if (counted.length >= SIGNAL_RATE_LIMIT) {
       scheduleFlush(key);
       return;
@@ -349,7 +352,7 @@ export function createFactoryMessagingTools(
       'Priority `medium` (default) wakes an idle session and waits for a busy one to finish its step; use `urgent` only to make it stop and change course.',
       '`delivered` is `woken` when the session was idle and is now running, `mid-run` when it was already busy and will read the message when its run next checks in.',
       // fork(claude-agent)
-      '`held` means the session will read it with its next turn; nothing woke it.',
+      '`held` means the session will read it with its next turn, kept until then even across a restart; nothing woke it.',
       ...(scope.interactive
         ? []
         : ['On this turn you can only message your side sessions and sessions working on items this session follows.']),
@@ -427,10 +430,10 @@ export function createFactoryMessagingTools(
       // Only a message that reached this session's own thread can be answered,
       // and the answer goes where that message came from: never to an address
       // the model supplies.
-      const original: NotificationRecord | null = await messaging.notifications.getNotification({
-        threadId: scope.threadId,
-        id: inReplyTo,
-      });
+      const original: NotificationRecord | null =
+        (await messaging.notifications.getNotification({ threadId: scope.threadId, id: inReplyTo })) ??
+        // fork(claude-agent): a Claude Agent session's messages are kept by its runtime.
+        (await runtimeDelivery(messaging.runtime, scope.sessionId, inReplyTo));
       if (!original || original.source !== FACTORY_SESSION_NOTIFICATION_SOURCE) {
         throw new Error(`No message ${inReplyTo} was sent to this session.`);
       }
@@ -449,7 +452,7 @@ export function createFactoryMessagingTools(
       if (blocked === 'private') {
         throw new Error(`Message ${inReplyTo} came from a private session this session can't answer.`);
       }
-      const onSenderThread = await recent(messaging.notifications, fromThread);
+      const onSenderThread = await recent(messaging, fromThread);
       // Replies count toward the same cap as messages, so records written to
       // this session can't turn it into an unlimited high-priority sender.
       const answered = onSenderThread.some(
@@ -523,8 +526,8 @@ export function createFactoryMessagingTools(
     }> = [];
     for (const recipient of recipients) {
       // Progress replaces itself while unread; anything else can wake a follower, so it counts.
-      if (status !== 'progress' && overRateLimit(await recent(messaging.notifications, recipient.threadId))) {
-        const counted = countedInWindow(await recent(messaging.notifications, recipient.threadId));
+      if (status !== 'progress' && overRateLimit(await recent(messaging, recipient.threadId))) {
+        const counted = countedInWindow(await recent(messaging, recipient.threadId));
         const key = queueKey(deps, scope.sessionId, recipient.threadId);
         const waiting = pendingQueues.get(key)?.length ?? 0;
         const at = nextDeliveryAt(counted, waiting);

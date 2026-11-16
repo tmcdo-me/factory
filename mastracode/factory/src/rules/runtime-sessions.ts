@@ -2,6 +2,8 @@
 import type { RunEndReason } from '@factory/agent-runtime';
 import type { RequestContext } from '@mastra/core/request-context';
 
+import type { AgentMessageDelivery, AgentMessageStore } from '../storage/domains/agent-messages/base.js';
+
 /** How a run ended, as the runtime reports it. */
 export interface RuntimeRunEnd {
   reason: RunEndReason;
@@ -80,7 +82,8 @@ export interface FactoryRuntimeSessions {
   /**
    * Tell the session something from Factory (a rule's message, activity on the card's source).
    * `wake` starts a turn with it (queued behind a run in flight), named by the `runId` it resolves
-   * with; otherwise it waits, in memory, for the next turn, and resolves with no run.
+   * with; otherwise it is kept (across restarts, where the server stores it) for the next turn, and
+   * resolves with no run. Rejects when it could not be kept.
    */
   message(
     sessionId: string,
@@ -90,9 +93,16 @@ export interface FactoryRuntimeSessions {
       wake: boolean;
       /** What the message says about itself (its kind, who sent it), for Claude to read. */
       attributes?: Record<string, string | number | boolean>;
+      /**
+       * The session-to-session notification this message is, under the id Claude sees it by: the
+       * session can answer it, and the sender's rate limit counts it.
+       */
+      delivery?: { id: string } & AgentMessageDelivery;
     },
     requestContext: RequestContext,
   ): Promise<{ runId?: string }>;
+  /** The notifications sessions here were sent (see `message`'s `delivery`). */
+  deliveries?: Pick<AgentMessageStore, 'get' | 'recentOnThread'>;
   abort(sessionId: string, requestContext: RequestContext): Promise<void>;
   /**
    * The calls a session waits on for a yes or no (a plan to approve, a gated tool), as a suspended

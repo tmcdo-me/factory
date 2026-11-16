@@ -4,13 +4,7 @@ import { InMemoryStore } from '@mastra/core/storage';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
-import {
-  RUNTIME_DELIVERIES_TTL_MS,
-  RUNTIME_DELIVERY_THREADS_KEPT,
-  deliverFactorySessionNotification,
-  recentRuntimeDeliveries,
-  resolveSessionThread,
-} from './deliver.js';
+import { deliverFactorySessionNotification, resolveSessionThread } from './deliver.js';
 import type { FactoryDeliveryController } from './deliver.js';
 
 const ROW = {
@@ -359,8 +353,8 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     const { deliver, message, agent, calls } = onRuntime();
     const result = await deliver({ ...MESSAGE, attributes: { 'from-session': 'session-a' } });
 
-    // The turn that carries the message names it.
-    expect(result).toEqual({ delivered: 'woken', notificationId: 'run-7' });
+    // Named as a notification is: the id Claude reads it by, and answers it with.
+    expect(result).toEqual({ delivered: 'woken', notificationId: expect.any(String) });
     const [sessionId, sent, requestContext] = message.mock.calls[0] as [
       string,
       Record<string, unknown>,
@@ -372,6 +366,12 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
       source: 'factory-session',
       wake: true,
       attributes: { kind: 'message', 'from-session': 'session-a' },
+      delivery: {
+        id: (result as { notificationId: string }).notificationId,
+        threadId: 'thread-stored',
+        kind: 'message',
+        priority: 'medium',
+      },
     });
     expect(requestContext.get('user')).toEqual({ workosId: 'user-b', organizationId: 'org-1' });
     // The controller session is never woken or created.
@@ -384,13 +384,15 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     await expect(busy.deliver(MESSAGE)).resolves.toMatchObject({ delivered: 'mid-run' });
 
     const later = onRuntime();
-    // Held in memory for the next turn: nothing stored, so no notification is claimed.
+    // Kept for the next turn, under the id the session can answer it by.
     await expect(later.deliver({ ...MESSAGE, priority: 'low' })).resolves.toEqual({
       delivered: 'held',
+      notificationId: expect.any(String),
       reason: 'next-turn',
     });
     await expect(later.deliver({ ...MESSAGE, kind: 'stage' }, true)).resolves.toEqual({
       delivered: 'held',
+      notificationId: expect.any(String),
       reason: 'next-turn',
     });
     expect(later.message.mock.calls.map(call => (call[1] as { wake: boolean }).wake)).toEqual([false, false]);
@@ -410,40 +412,5 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     ).rejects.toThrow('db down');
     expect(agent.sendNotificationSignal).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
-  });
-
-  it('remembers deliveries for a bounded number of threads, and forgets stale ones', async () => {
-    const { controller, sessions } = setup();
-    const runtime = { runs: async () => true, isRunning: () => false, message: vi.fn(async () => ({})) };
-    const deliverTo = (threadId: string) =>
-      deliverFactorySessionNotification({
-        controller: controller as unknown as FactoryDeliveryController,
-        sessions,
-        runs: RUNS,
-        target: { sessionId: 'session-b', threadId },
-        notification: { ...MESSAGE, priority: 'low' },
-        runtime,
-      });
-    // Later than every delivery the tests above made, so the map's order is the clock's.
-    vi.useFakeTimers({ now: Date.now() + 24 * RUNTIME_DELIVERIES_TTL_MS });
-    try {
-      await deliverTo('thread-stale');
-      vi.setSystemTime(Date.now() + RUNTIME_DELIVERIES_TTL_MS + 1);
-      await deliverTo('thread-kept');
-      // Gone once its newest delivery is past the time anything still counts it.
-      expect(recentRuntimeDeliveries('thread-stale')).toEqual([]);
-      expect(recentRuntimeDeliveries('thread-kept')).toHaveLength(1);
-
-      for (let index = 0; index < RUNTIME_DELIVERY_THREADS_KEPT; index += 1) await deliverTo(`thread-${index}`);
-      // The least recently delivered thread made way; a thread delivered to again moves to the back.
-      expect(recentRuntimeDeliveries('thread-kept')).toEqual([]);
-      await deliverTo('thread-0');
-      await deliverTo('thread-new');
-      expect(recentRuntimeDeliveries('thread-0')).toHaveLength(2);
-      expect(recentRuntimeDeliveries('thread-1')).toEqual([]);
-      expect(recentRuntimeDeliveries('thread-new')).toHaveLength(1);
-    } finally {
-      vi.useRealTimers();
-    }
   });
 });

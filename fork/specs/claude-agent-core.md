@@ -366,6 +366,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `blocked` notice naming the call; a plan is answered from the card or inbox button or
      `factory_answer_approval` through the broker, the run carrying on as the session's owner.
      A question still takes its typed answer in the session, as in Mastra Code.
+   - **6e** ✅ Factory messages to Claude Agent sessions are kept (fork-only `agent-messages`
+     domain): one held for the session's next turn survives a restart (still at most 20 per
+     session, the rest dropped and counted); each session-to-session notification carries its
+     id, so `factory_message_origin({ inReplyTo })` answers it once, back to its sender, as in
+     Mastra Code; and the per-sender rate limit counts them from storage, with no in-memory map.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
