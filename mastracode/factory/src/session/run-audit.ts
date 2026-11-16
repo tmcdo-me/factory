@@ -187,14 +187,17 @@ async function recordRunEnds(
   session: RunEndCaptureSession,
   audit: AuditRecorder,
   reason: RunEndReason,
-  kickoffId?: string,
+  // fork(claude-agent): or which open runs end.
+  kickoffId?: string | ((run: FactoryOpenRun) => boolean),
   endedTurn?: EndedTurn,
 ): Promise<void> {
   if (!reason || reason === 'suspended') return;
   const usage = usageFor(session);
   const runs = await listSessionOpenRuns(session);
   if (runs.length === 0) return;
-  const ending = runs.filter(run => !kickoffId || run.kickoffId === kickoffId);
+  const ending = runs.filter(run =>
+    typeof kickoffId === 'function' ? kickoffId(run) : !kickoffId || run.kickoffId === kickoffId,
+  );
   // An end event bills the turn it closed. A run whose ledger entry lands after its turn ended
   // bills the latest ended turn, unless an open run already claimed it.
   const turn = endedTurn ?? usage.lastTurn;
@@ -300,3 +303,28 @@ export function observeSessionRunEnd(session: RunEndCaptureSession, { audit }: {
     void serializeRunAudit(session, () => recordRunEnds(session, audit, event.reason, undefined, turn));
   });
 }
+
+/**
+ * fork(claude-agent): end open runs a runtime other than Mastra Code ran, which has no agent-controller
+ * events to observe: those `ending` picks get their `factory.run.ended` record with `reason`, billed
+ * `steps` (the run's own usage reports), and leave the ledger.
+ */
+export function recordSessionRunEnd(
+  session: RunEndCaptureSession,
+  {
+    audit,
+    reason,
+    ending,
+    steps,
+  }: {
+    audit: AuditRecorder;
+    reason: Exclude<RunEndReason, 'suspended' | undefined>;
+    ending: (run: FactoryOpenRun) => boolean;
+    steps: UsageCounts[];
+  },
+): Promise<void> {
+  return serializeRunAudit(session, () => recordRunEnds(session, audit, reason, ending, { steps, claimed: false }));
+}
+
+/** fork(claude-agent): a usage report's counts, as Mastra Code's steps record them. */
+export type FactoryRunUsageCounts = UsageCounts;

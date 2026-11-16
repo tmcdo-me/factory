@@ -6,6 +6,21 @@ import type { RequestContext } from '@mastra/core/request-context';
 export interface RuntimeRunEnd {
   reason: RunEndReason;
   error?: string;
+  /**
+   * For a run parked on a person (`awaiting_interaction`): how it ends once they answer, its turn
+   * going on. Never settles when the run is lost with its process.
+   */
+  resumed?: Promise<RuntimeRunEnd>;
+  /** Token usage the runtime reported for the run, one entry per report. */
+  usage?: readonly RuntimeRunUsage[];
+}
+
+/** One token usage report, as the runtime counts it (see the `usage` Factory event). */
+export interface RuntimeRunUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cachedInputTokens?: number;
+  reasoningTokens?: number;
 }
 
 /** A board run's first turn: a phase's skill, or a plain prompt. */
@@ -23,6 +38,13 @@ export interface RuntimeKickoff {
    * the board's behalf, `false` leaves it for a person. Without it every plan waits for a person.
    */
   autoApprovePlan?: () => boolean;
+  /** The goal the run pursues (the phase's `runner.goal`), told to the session with the kickoff. */
+  goal?: { objective: string; maxRuns: number };
+  /**
+   * A goal's re-kick: the run goes on with this reminder (Factory's verdict and what remains), shown
+   * as Factory's, in place of a skill or a prompt. The session keeps the Claude Code it has.
+   */
+  continuation?: string;
 }
 
 /**
@@ -93,4 +115,14 @@ export interface RuntimeApprovals {
     answer: { decision: 'approve' | 'decline'; reason?: string; answeredBy?: string },
     requestContext: RequestContext,
   ): Promise<'answered' | 'not_pending'>;
+}
+
+/**
+ * fork(claude-agent): thread-scoped state Factory keeps for runs on another runtime: the goal a phase's
+ * runs pursue (as Mastra Code's objective is held) and the open-run ledger. Mastra's `threadState`
+ * storage domain: one value per thread and type, replaced whole.
+ */
+export interface RuntimeThreadState {
+  getState<T = unknown>(args: { threadId: string; type: string }): Promise<T | undefined>;
+  setState<T = unknown>(args: { threadId: string; type: string; value: T }): Promise<void>;
 }

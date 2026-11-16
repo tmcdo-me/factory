@@ -512,7 +512,11 @@ describe('ClaudeAgentSessions board runs', () => {
         },
         owner(),
       );
-      expect(await ended).toEqual({ reason: 'complete' });
+      // With the run's usage, for its run record.
+      expect(await ended).toEqual({
+        reason: 'complete',
+        usage: [{ inputTokens: 0, outputTokens: 0 }],
+      });
 
       // The kickoff started Claude Code again (its phase decides its tools and skills), resuming the conversation.
       expect(fake.options).toHaveLength(2);
@@ -540,6 +544,59 @@ describe('ClaudeAgentSessions board runs', () => {
     } finally {
       await rm(home, { recursive: true, force: true });
     }
+  });
+
+  it("tells a goal's kickoff its objective, and goes on with its re-kicks in the same Claude Code", async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+
+    await (
+      await runs.kickoff(
+        's1',
+        { runId: 'd1', prompt: 'Build it.', goal: { objective: 'Ship it.', maxRuns: 20 } },
+        owner(),
+      )
+    ).ended;
+    expect(userText(fake.seen[0])).toContain('<goal type="goal" maxRuns="20">\nShip it.\n</goal>');
+
+    await (
+      await runs.kickoff('s1', { runId: 'd1:goal:1', continuation: '[Goal attempt 1/20] Not yet.' }, owner())
+    ).ended;
+    // No restart: the phase, and so its tools and skills, are the same.
+    expect(fake.options).toHaveLength(1);
+    expect(userText(fake.seen[1])).toBe('<goal-judge type="goal-judge">\n[Goal attempt 1/20] Not yet.\n</goal-judge>');
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).map(e => e.event)).toContainEqual(
+        expect.objectContaining({ type: 'notice', kind: 'system-reminder', tag: 'goal-judge', runId: 'd1:goal:1' }),
+      ),
+    );
+    // Factory's reminder, not a person's words.
+    const events = (await log.list('s1')).map(e => e.event);
+    expect(
+      events.filter(event => event.type === 'message.started' && event.role === 'user' && event.runId === 'd1:goal:1'),
+    ).toEqual([]);
+  });
+
+  it('tells whoever waits on a parked board run how it ends once the person answers', async () => {
+    const fake = toolCallingQuery(async client => {
+      await client.call('ask_user', { question: 'Which database?' }, 'toolu_q');
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+
+    const parked = await (await runs.kickoff('s1', { runId: 'd1', prompt: 'Build it.' }, owner())).ended;
+    expect(parked.reason).toBe('awaiting_interaction');
+    const [pending] = await store.listPending({ sessionId: 's1' });
+    await sessions
+      .commands()
+      .answer(
+        's1',
+        { interactionId: pending!.id },
+        { kind: 'question', answer: 'Postgres' },
+        { context: hostContext('user-a') },
+      );
+    expect(await parked.resumed).toMatchObject({ reason: 'complete' });
   });
 
   it("refuses a skill the session doesn't have, before anything reaches Claude", async () => {
@@ -720,7 +777,7 @@ describe('ClaudeAgentSessions board runs', () => {
     await runs.abort('s1', owner());
     await runs.idle('s1');
     const board = await runs.kickoff('s1', { runId: 'board-1', prompt: 'Plan it.' }, owner());
-    expect(await board.ended).toEqual({ reason: 'awaiting_interaction' });
+    expect(await board.ended).toEqual({ reason: 'awaiting_interaction', resumed: expect.any(Promise) });
     expect(await runs.parkedBoardRun('s1')).toBe(true);
   });
 
@@ -798,7 +855,7 @@ describe('ClaudeAgentSessions board runs', () => {
       { runId: 'd1', prompt: 'Plan it.', autoApprovePlan: () => approvals++ < 1 },
       owner(),
     );
-    expect(await ended).toEqual({ reason: 'complete' });
+    expect(await ended).toMatchObject({ reason: 'complete' });
     expect(replies[0]).toMatch(/^Plan approved\./);
     expect(await store.listPending({ sessionId: 's1' })).toHaveLength(0);
 
@@ -809,7 +866,7 @@ describe('ClaudeAgentSessions board runs', () => {
       { runId: 'd2', prompt: 'Plan again.', autoApprovePlan: () => approvals++ < 1 },
       owner(),
     );
-    expect(await second.ended).toEqual({ reason: 'awaiting_interaction' });
+    expect(await second.ended).toEqual({ reason: 'awaiting_interaction', resumed: expect.any(Promise) });
     expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1);
     expect(await runs.awaitsPerson('s1')).toBe(true);
     expect(runs.isRunning('s1')).toBe(true);

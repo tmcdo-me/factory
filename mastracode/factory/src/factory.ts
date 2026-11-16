@@ -134,6 +134,7 @@ import type { FactoryRuleActor } from './rules/index.js';
 import { createPhaseGoalEnder } from './rules/phase-goal.js';
 import { FactoryPhaseStateProcessor, reportMemorySettingsUnavailable } from './rules/processor.js';
 import { createReviewSourceTool, resolveReviewSourceUiOrigin } from './rules/review-source-tool.js';
+import type { RuntimeThreadState } from './rules/runtime-sessions.js';
 import type { FactoryStartCoordinator } from './rules/start-coordinator.js';
 import { createTerminalStageCleanup } from './rules/terminal-cleanup.js';
 import { createFactoryTransitionTools } from './rules/tools.js';
@@ -2393,6 +2394,12 @@ export class MastraFactory {
                 reconcileRunBinding: binding => factoryProcessor?.reconcileBinding(binding) ?? Promise.resolve(),
                 prepareBinding,
                 runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
+                // fork(claude-agent): their phase goals and run ledgers, in the store Mastra Code's goals use
+                // (generic per type; `resolveGoalStore` types it for goals only).
+                runtimeThreadState: async () =>
+                  (await resolveGoalStore(this.#prepared?.base.controller.getMastra())) as
+                    | RuntimeThreadState
+                    | undefined,
                 ...(githubIntegration
                   ? {
                       dismissStaleReviews: async decision => {

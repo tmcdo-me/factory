@@ -328,12 +328,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `factory-work-item` reach Claude with each turn they changed; a review session or one on a
      pull request card (read from its binding, failing closed) loads none of its checkout's own
      settings. Only a session minted by the start takes the default: one the card holds, or with
-     thread messages or events, stays on Mastra Code. Project default runtime in Settings → Manage Factory. Phase goals
-     (`maxRuns` re-kicks) stay Mastra Code only for now.
+     thread messages or events, stays on Mastra Code. Project default runtime in Settings → Manage Factory.
    - **6b** ✅ Claude Agent tool results count: each Factory tool call's result goes through the
      phase processor before Claude gets it (`ingestRuntimeToolResult`), so an approved
      `submit_plan` stamps the proof that lets the card leave Planning and the board's tool-result
      rules run; Claude Code's own `Bash` commands reach the git audit as `execute_command`.
+   - **6c** ✅ Claude Agent run lifecycle (`rules/runtime-run-lifecycle.ts`): a phase goal is held on
+     the session's thread in the same `threadState` record Mastra Code's objective API keeps (same
+     id, count, `maxRuns`, statuses, card stamp, so leaving the phase ends it). After each turn that
+     ended on its own, Factory judges it: met once the card left the phase (or the run handed it to
+     its pull request's own card), else re-kicked with a goal-judge reminder while runs remain, else
+     parked as spent and the run fails `run_incomplete` (a retry runs its kickoff once more). A run
+     parked on a person ends the decision and is followed once they answer. Each run is on the
+     open-run ledger (in `threadState`) and in the audit log (`factory.run.started`/`ended`, with
+     usage) from its kickoff to its end, one run however many re-kicks; a run live on another
+     dispatcher hands the decision back, and a dead process's entries are swept.
    - **6c** ✅ Messages reach Claude Agent sessions: session-to-session notifications
      (`factory_signal_session`, replies, follower reports; `tools/deliver.ts`) and GitHub
      pull request subscriptions go through the runtime instead of waking the controller
