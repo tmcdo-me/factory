@@ -23,6 +23,7 @@ import { workItemNumber } from '../work-items/card-number.js';
 import {
   FACTORY_SESSION_NOTIFICATION_SOURCE,
   deliverFactorySessionNotification,
+  recentRuntimeDeliveries,
   resolveSessionThread,
 } from './deliver.js';
 import type { FactoryDeliveryController, FactoryDeliveryResult, FactoryRuntimeDelivery } from './deliver.js';
@@ -175,7 +176,12 @@ export function createFactoryMessagingTools(
     deliverAt: new Date(deliverAt).toISOString(),
     note: `Queued; it will be delivered at about ${new Date(deliverAt).toISOString()}. Do not send it again.`,
   });
-  const recent = (notifications: FactoryMessaging['notifications'], threadId: string) =>
+  // fork(claude-agent): deliveries to Claude Agent sessions store no record; they count all the same.
+  const recent = async (notifications: FactoryMessaging['notifications'], threadId: string) => [
+    ...(await storedRecent(notifications, threadId)),
+    ...recentRuntimeDeliveries(threadId),
+  ];
+  const storedRecent = (notifications: FactoryMessaging['notifications'], threadId: string) =>
     notifications.listNotifications({ threadId, source: FACTORY_SESSION_NOTIFICATION_SOURCE, limit: RECENT_SCAN });
 
   const actor = (): QueuedDelivery['actor'] => ({

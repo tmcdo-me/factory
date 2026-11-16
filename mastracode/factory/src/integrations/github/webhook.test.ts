@@ -899,4 +899,19 @@ describe('dispatchGithubWebhook to Claude Agent sessions', () => {
     // A merge ends the subscription, as for any session.
     expect(retireSubscription).toHaveBeenCalledWith('claude', 'merged');
   });
+
+  it("counts a subscription whose session's runtime can't be read as failed, for redelivery", async () => {
+    const getSession = vi.fn();
+    const createSession = vi.fn();
+    const result = await dispatchGithubWebhook(parsed('pull_request', 'synchronize'), {
+      controller: controllerStub({ getSession, createSession }),
+      github: githubWithSessionRow({ userId: 'user-1', orgId: 'org-1' }),
+      listSubscriptions: async () => [subscription('claude')],
+      isAuthorizedSender: async () => true,
+      runtimeSessions: { runs: async () => Promise.reject(new Error('db down')), message: vi.fn() },
+    });
+    expect(result).toEqual({ delivered: 0, failed: 1, skipped: 0, ignored: false });
+    expect(getSession).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+  });
 });

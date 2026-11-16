@@ -389,4 +389,20 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     });
     expect(later.message.mock.calls.map(call => (call[1] as { wake: boolean }).wake)).toEqual([false, false]);
   });
+
+  it("fails, and never wakes the controller session, when the target's runtime can't be read", async () => {
+    const { controller, sessions, agent, calls } = setup();
+    await expect(
+      deliverFactorySessionNotification({
+        controller: controller as unknown as FactoryDeliveryController,
+        sessions,
+        runs: RUNS,
+        target: { sessionId: 'session-b', threadId: 'thread-stored' },
+        notification: MESSAGE,
+        runtime: { runs: async () => Promise.reject(new Error('db down')), isRunning: () => false, message: vi.fn() },
+      }),
+    ).rejects.toThrow('db down');
+    expect(agent.sendNotificationSignal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
 });
