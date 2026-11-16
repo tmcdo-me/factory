@@ -102,7 +102,7 @@ export interface FactoryRuntimeSessions {
     requestContext: RequestContext,
   ): Promise<{ runId?: string }>;
   /** The notifications sessions here were sent (see `message`'s `delivery`). */
-  deliveries?: Pick<AgentMessageStore, 'get' | 'recentOnThread'>;
+  deliveries?: Pick<AgentMessageStore, 'durable' | 'get' | 'recentOnThread' | 'claimReply' | 'releaseReply'>;
   abort(sessionId: string, requestContext: RequestContext): Promise<void>;
   /**
    * The calls a session waits on for a yes or no (a plan to approve, a gated tool), as a suspended

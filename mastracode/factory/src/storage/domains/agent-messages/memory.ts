@@ -1,20 +1,22 @@
 // fork(claude-agent): Factory's messages to Claude Agent sessions, in this process only.
+import { AGENT_MESSAGE_RETENTION_MS, replyClaimId } from './base.js';
 import type { AgentMessage, AgentMessageRecord, AgentMessageStatus, AgentMessageStore } from './base.js';
 
-/** How many messages Claude already read this keeps; past it, the oldest are forgotten. */
-const TOLD_KEPT = 1000;
+/** How many messages that no longer wait this keeps; past it, the oldest are forgotten. */
+const KEPT = 1000;
 
 /**
  * An `AgentMessageStore` in memory, for a server without the `agent-messages` domain (and tests):
- * held messages last until the process does. Bounded: only messages still waiting are kept beyond
- * the newest `TOLD_KEPT` read ones.
+ * held messages last until the process does. Bounded: beyond what still waits, it keeps the newest
+ * `KEPT` other rows, none older than `AGENT_MESSAGE_RETENTION_MS`.
  */
 export class InMemoryAgentMessages implements AgentMessageStore {
+  readonly durable = false;
   readonly #rows = new Map<string, AgentMessageRecord>();
 
   async told(message: AgentMessage): Promise<void> {
     this.#put(message, 'told');
-    this.#prune();
+    this.#trim();
   }
 
   async hold(message: AgentMessage, cap: number): Promise<number> {
@@ -22,6 +24,7 @@ export class InMemoryAgentMessages implements AgentMessageStore {
     const held = this.#of(message.sessionId, 'held');
     const over = held.slice(0, Math.max(0, held.length - cap));
     for (const row of over) row.status = 'dropped';
+    this.#trim();
     return over.length;
   }
 
@@ -32,13 +35,12 @@ export class InMemoryAgentMessages implements AgentMessageStore {
     const dropped = this.#of(sessionId, 'dropped');
     // A dropped message only ever counts toward one turn's note.
     for (const row of dropped) this.#rows.delete(row.id);
-    this.#prune();
     return { messages: messages.map(row => ({ ...row })), dropped: dropped.length };
   }
 
   async get(sessionId: string, id: string): Promise<AgentMessageRecord | undefined> {
     const row = this.#rows.get(id);
-    return row?.sessionId === sessionId ? { ...row } : undefined;
+    return row?.sessionId === sessionId && row.status !== 'claimed' ? { ...row } : undefined;
   }
 
   async recentOnThread(threadId: string, limit: number): Promise<AgentMessageRecord[]> {
@@ -47,6 +49,31 @@ export class InMemoryAgentMessages implements AgentMessageStore {
       .reverse()
       .slice(0, limit)
       .map(row => ({ ...row }));
+  }
+
+  async forget(sessionId: string, id: string): Promise<void> {
+    if (this.#rows.get(id)?.sessionId === sessionId) this.#rows.delete(id);
+  }
+
+  async claimReply(sessionId: string, id: string): Promise<boolean> {
+    const claim = replyClaimId(id, sessionId);
+    if (this.#rows.has(claim)) return false;
+    this.#put({ id: claim, sessionId, source: 'factory-session', text: '', createdAt: new Date() }, 'claimed');
+    return true;
+  }
+
+  async releaseReply(sessionId: string, id: string): Promise<void> {
+    this.#rows.delete(replyClaimId(id, sessionId));
+  }
+
+  async forgetBefore(before: Date): Promise<number> {
+    let pruned = 0;
+    for (const [id, row] of this.#rows) {
+      if (row.status === 'held' || row.createdAt >= before) continue;
+      this.#rows.delete(id);
+      pruned += 1;
+    }
+    return pruned;
   }
 
   #put(message: AgentMessage, status: AgentMessageStatus): void {
@@ -58,13 +85,15 @@ export class InMemoryAgentMessages implements AgentMessageStore {
     return [...this.#rows.values()].filter(row => row.sessionId === sessionId && row.status === status);
   }
 
-  #prune(): void {
-    let told = [...this.#rows.values()].filter(row => row.status === 'told').length;
+  /** Past retention, or past `KEPT` of what no longer waits (oldest first), is forgotten. */
+  #trim(): void {
+    void this.forgetBefore(new Date(Date.now() - AGENT_MESSAGE_RETENTION_MS));
+    let kept = [...this.#rows.values()].filter(row => row.status !== 'held').length;
     for (const [id, row] of this.#rows) {
-      if (told <= TOLD_KEPT) return;
-      if (row.status !== 'told') continue;
+      if (kept <= KEPT) return;
+      if (row.status === 'held') continue;
       this.#rows.delete(id);
-      told -= 1;
+      kept -= 1;
     }
   }
 }

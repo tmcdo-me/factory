@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import type { InteractionRecord, SessionCommands } from '@factory/agent-runtime';
+import { ClaudeAgentSession } from '@factory/runtime-claude-agent';
 import type { QueryFn } from '@factory/runtime-claude-agent';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -1315,6 +1316,29 @@ describe('ClaudeAgentSessions messages that wait', () => {
     await expect(sessions.runtimeSessions().message('s1', fromSession('note-3', false), owner())).rejects.toThrow(
       'db down',
     );
+  });
+
+  it("sends no message it couldn't keep, and forgets one whose turn never started", async () => {
+    const messages = new InMemoryAgentMessages();
+    const fake = toolCallingQuery(async () => {});
+    const { sessions } = toolSetup(fake.fn, { messages });
+    const runs = sessions.runtimeSessions();
+    const told = vi.spyOn(messages, 'told').mockRejectedValueOnce(new Error('db down'));
+    await expect(runs.message('s1', fromSession('note-5', true), owner())).rejects.toThrow('db down');
+    expect(fake.seen).toHaveLength(0);
+    told.mockRestore();
+
+    const send = vi.spyOn(ClaudeAgentSession.prototype, 'send').mockRejectedValueOnce(new Error('closed'));
+    await expect(runs.message('s1', fromSession('note-6', true), owner())).rejects.toThrow('closed');
+    expect(await runs.deliveries!.get('s1', 'note-6')).toBeUndefined();
+    send.mockRestore();
+  });
+
+  it('says whether what waits survives a restart', async () => {
+    const memory = toolSetup(toolCallingQuery(async () => {}).fn);
+    expect(memory.sessions.runtimeSessions().deliveries!.durable).toBe(false);
+    const stored = toolSetup(toolCallingQuery(async () => {}).fn, { messages: await messageStore() });
+    expect(stored.sessions.runtimeSessions().deliveries!.durable).toBe(true);
   });
 
   it("still takes its turn when the waiting messages can't be read, and tells them later", async () => {

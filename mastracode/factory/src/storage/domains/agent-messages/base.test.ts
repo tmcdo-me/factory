@@ -6,9 +6,20 @@ import { join } from 'node:path';
 import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
-import { AgentMessagesStorage } from './base.js';
+import { createIsolatedFactoryPostgresForTests } from '../../test-utils.js';
+import { AGENT_MESSAGE_RETENTION_MS, AgentMessagesStorage } from './base.js';
 import type { AgentMessage, AgentMessageStore } from './base.js';
 import { InMemoryAgentMessages } from './memory.js';
+
+const postgresUrl = process.env.FACTORY_TEST_POSTGRES_URL;
+
+async function onPostgres(): Promise<AgentMessageStore> {
+  const storage = await createIsolatedFactoryPostgresForTests(postgresUrl!);
+  const messages = storage.registerDomain(new AgentMessagesStorage());
+  await storage.init();
+  onTestFinished(() => storage.close());
+  return messages;
+}
 
 async function stored(): Promise<AgentMessageStore> {
   const storage = new LibSQLFactoryStorage({ id: 'agent-messages-test', url: ':memory:' });
@@ -32,9 +43,55 @@ const fromSession = (id: string, threadId = 's1'): AgentMessage =>
   });
 
 describe.each([
-  ['storage', stored],
-  ['memory', async () => new InMemoryAgentMessages()],
-] as const)('AgentMessageStore (%s)', (_name, open) => {
+  ['libsql', stored, true],
+  ...(postgresUrl ? ([['postgres', onPostgres, true]] as const) : []),
+  ['memory', async () => new InMemoryAgentMessages(), false],
+] as const)('AgentMessageStore (%s)', (_name, open, durable) => {
+  it('says whether it survives a restart', async () => {
+    expect((await open()).durable).toBe(durable);
+  });
+
+  it('gives the right to answer a message once, even to two racing answers, and takes it back', async () => {
+    const messages = await open();
+    await messages.told(fromSession('m1'));
+    const claims = await Promise.all([messages.claimReply('s1', 'm1'), messages.claimReply('s1', 'm1')]);
+    expect(claims.sort()).toEqual([false, true]);
+    // Another session's answer to the same id is its own.
+    expect(await messages.claimReply('s2', 'm1')).toBe(true);
+    // The mark is no message: nothing reads it as one.
+    expect(await messages.get('s1', 'reply:m1:s1')).toBeUndefined();
+    expect((await messages.recentOnThread('s1', 10)).map(row => row.id)).toEqual(['m1']);
+    expect(await messages.take('s1')).toEqual({ messages: [], dropped: 0 });
+
+    await messages.releaseReply('s1', 'm1');
+    expect(await messages.claimReply('s1', 'm1')).toBe(true);
+  });
+
+  it('forgets a message kept for a turn that never started', async () => {
+    const messages = await open();
+    await messages.told(fromSession('m1'));
+    await messages.forget('s2', 'm1');
+    expect(await messages.get('s1', 'm1')).toBeDefined();
+    await messages.forget('s1', 'm1');
+    expect(await messages.get('s1', 'm1')).toBeUndefined();
+  });
+
+  it('forgets what no longer waits once it is old, and never what still waits', async () => {
+    const messages = await open();
+    const old = new Date(Date.now() - AGENT_MESSAGE_RETENTION_MS - 60_000);
+    await messages.told({ ...fromSession('old-told'), createdAt: old });
+    await messages.hold({ ...message('old-overflow'), createdAt: old }, 20);
+    await messages.hold({ ...message('old-waiting'), createdAt: new Date(old.getTime() + 1) }, 1);
+    await messages.told(fromSession('new-told'));
+
+    // Writes sweep now and then on their own; an explicit sweep finishes the job.
+    await messages.forgetBefore(new Date(Date.now() - AGENT_MESSAGE_RETENTION_MS));
+    expect(await messages.get('s1', 'old-told')).toBeUndefined();
+    expect(await messages.get('s1', 'new-told')).toBeDefined();
+    // `old-overflow` was dropped for the newer `old-waiting`, which still waits however old it is.
+    expect(await messages.take('s1')).toMatchObject({ messages: [{ id: 'old-waiting' }], dropped: 0 });
+  });
+
   it('hands each waiting message to one turn, oldest first, then forgets it was waiting', async () => {
     const messages = await open();
     await messages.hold(message('m1'), 20);

@@ -1,5 +1,5 @@
 // fork(claude-agent): Factory's messages to sessions on another agent runtime (Claude Agent).
-import { FactoryStorageDomain } from '@mastra/core/storage';
+import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema } from '@mastra/core/storage';
 
 const COLLECTION = 'factory_agent_messages';
@@ -23,14 +23,29 @@ export const AGENT_MESSAGES_SCHEMA: CollectionSchema = {
   indexes: [
     { name: 'factory_agent_messages_session_status_idx', columns: ['session_id', 'status'] },
     { name: 'factory_agent_messages_thread_created_idx', columns: ['thread_id', 'created_at'] },
+    { name: 'factory_agent_messages_status_created_idx', columns: ['status', 'created_at'] },
   ],
 };
 
 /**
  * `held`: waits for the session's next turn. `told`: Claude read it with a turn. `dropped`: more
- * waited than a session keeps, so it never will (its turn says how many were dropped).
+ * waited than a session keeps, so it never will (its turn says how many were dropped). `claimed`:
+ * not a message, the mark that a session answered one (`claimReply`).
  */
-export type AgentMessageStatus = 'held' | 'told' | 'dropped';
+export type AgentMessageStatus = 'held' | 'told' | 'dropped' | 'claimed';
+
+/**
+ * How long a message is kept once it no longer waits: long past the rate-limit window, and as long
+ * as a session can reasonably answer it. A held message is kept until a turn takes it.
+ */
+export const AGENT_MESSAGE_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How often a process sweeps out messages past retention. */
+const PRUNE_EVERY_MS = 10 * 60 * 1000;
+const PRUNE_BATCH = 200;
+
+/** The mark that `sessionId` answered message `id`. */
+export const replyClaimId = (id: string, sessionId: string) => `reply:${id}:${sessionId}`;
 
 /** A session-to-session notification a message carries, as Factory's messaging tools read it back. */
 export interface AgentMessageDelivery {
@@ -66,6 +81,8 @@ export interface AgentMessageRecord extends AgentMessage {
  * session can answer a message it read, and a sender's rate limit counts what it sent.
  */
 export interface AgentMessageStore {
+  /** Whether what it keeps survives a restart. */
+  readonly durable: boolean;
   /** Keep a message the session reads with the turn it starts now. */
   told(message: AgentMessage): Promise<void>;
   /** Keep a message for the session's next turn. Past `cap` waiting, the oldest are dropped; resolves with how many. */
@@ -79,6 +96,17 @@ export interface AgentMessageStore {
   get(sessionId: string, id: string): Promise<AgentMessageRecord | undefined>;
   /** The newest notifications addressed to a thread, newest first. */
   recentOnThread(threadId: string, limit: number): Promise<AgentMessageRecord[]>;
+  /** Forget a message kept for a turn that never started. */
+  forget(sessionId: string, id: string): Promise<void>;
+  /**
+   * Take the right to answer message `id` from `sessionId`, once: false when it was already taken,
+   * even by a call racing this one.
+   */
+  claimReply(sessionId: string, id: string): Promise<boolean>;
+  /** Give the right back, when the answer could not be sent. */
+  releaseReply(sessionId: string, id: string): Promise<void>;
+  /** Forget what no longer waits and is older than `before`. */
+  forgetBefore(before: Date): Promise<number>;
 }
 
 interface MessageRow extends Record<string, unknown> {
@@ -144,6 +172,9 @@ const OLDEST_FIRST: [string, 'asc' | 'desc'][] = [
 
 /** `AgentMessageStore` on Factory's storage. */
 export class AgentMessagesStorage extends FactoryStorageDomain implements AgentMessageStore {
+  readonly durable = true;
+  #prunedAt = 0;
+
   constructor() {
     super('agent-messages');
   }
@@ -158,10 +189,12 @@ export class AgentMessagesStorage extends FactoryStorageDomain implements AgentM
 
   async told(message: AgentMessage): Promise<void> {
     await this.ops.insertOne<MessageRow>(COLLECTION, toRow(message, 'told', new Date()));
+    this.#sweep();
   }
 
   async hold(message: AgentMessage, cap: number): Promise<number> {
     await this.ops.insertOne<MessageRow>(COLLECTION, toRow(message, 'held', null));
+    this.#sweep();
     const held = await this.ops.findMany<MessageRow>(
       COLLECTION,
       { session_id: message.sessionId, status: 'held' },
@@ -201,7 +234,7 @@ export class AgentMessagesStorage extends FactoryStorageDomain implements AgentM
 
   async get(sessionId: string, id: string): Promise<AgentMessageRecord | undefined> {
     const row = await this.ops.findOne<MessageRow>(COLLECTION, { session_id: sessionId, id });
-    return row ? toRecord(row) : undefined;
+    return row && row.status !== 'claimed' ? toRecord(row) : undefined;
   }
 
   async recentOnThread(threadId: string, limit: number): Promise<AgentMessageRecord[]> {
@@ -217,6 +250,63 @@ export class AgentMessagesStorage extends FactoryStorageDomain implements AgentM
       },
     );
     return rows.map(toRecord);
+  }
+
+  async forget(sessionId: string, id: string): Promise<void> {
+    await this.ops.deleteMany(COLLECTION, { session_id: sessionId, id });
+  }
+
+  async claimReply(sessionId: string, id: string): Promise<boolean> {
+    try {
+      // The claim's id is the unique key: of two answers racing, one insert wins.
+      await this.ops.insertOne<MessageRow>(COLLECTION, {
+        id: replyClaimId(id, sessionId),
+        session_id: sessionId,
+        source: 'factory-session',
+        text: '',
+        attributes: null,
+        thread_id: null,
+        kind: null,
+        priority: null,
+        source_id: null,
+        status: 'claimed',
+        created_at: new Date(),
+        told_at: null,
+      });
+      return true;
+    } catch (error) {
+      if (error instanceof UniqueViolationError) return false;
+      throw error;
+    }
+  }
+
+  async releaseReply(sessionId: string, id: string): Promise<void> {
+    await this.ops.deleteMany(COLLECTION, { session_id: sessionId, id: replyClaimId(id, sessionId) });
+  }
+
+  async forgetBefore(before: Date): Promise<number> {
+    let pruned = 0;
+    // Oldest first, a batch at a time: the query surface filters by equality only.
+    for (;;) {
+      const batch = await this.ops.findMany<MessageRow>(
+        COLLECTION,
+        { status: { in: ['told', 'dropped', 'claimed'] } },
+        { orderBy: OLDEST_FIRST, limit: PRUNE_BATCH },
+      );
+      const old = batch.filter(row => new Date(row.created_at) < before).map(row => row.id);
+      if (old.length) pruned += await this.ops.deleteMany(COLLECTION, { id: { in: old } });
+      if (old.length < PRUNE_BATCH) return pruned;
+    }
+  }
+
+  /** Now and then, forget what is past retention. Never holds up the write that triggered it. */
+  #sweep(): void {
+    const now = Date.now();
+    if (now - this.#prunedAt < PRUNE_EVERY_MS) return;
+    this.#prunedAt = now;
+    void this.forgetBefore(new Date(now - AGENT_MESSAGE_RETENTION_MS)).catch(error =>
+      console.warn('[factory] Forgetting old Claude Agent messages failed', error),
+    );
   }
 
   /** Move one row on from `status`, atomically: undefined when another caller got there first. */

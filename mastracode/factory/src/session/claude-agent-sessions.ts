@@ -713,18 +713,29 @@ export class ClaudeAgentSessions {
           throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
         }
         const { text, ...shown } = factoryMessage(kept.text, kept.source, kept.attributes);
-        const runId = await this.#send(session, { text, notice: shown }, requestContext);
-        // Claude has it; keeping it only lets the session answer it and counts it toward the sender's limit.
-        await this.#messages
-          .told(kept)
-          .catch(error =>
-            console.warn(`[factory] Claude Agent session ${sessionId}: recording a message failed`, error),
-          );
-        return { runId };
+        // Kept before Claude reads it, so the session can answer it and the sender's limit counts it;
+        // a message that can't be kept isn't sent, and one whose turn never started is forgotten.
+        await this.#messages.told(kept);
+        try {
+          return { runId: await this.#send(session, { text, notice: shown }, requestContext) };
+        } catch (error) {
+          await this.#messages
+            .forget(sessionId, kept.id)
+            .catch(forgetting =>
+              console.warn(
+                `[factory] Claude Agent session ${sessionId}: forgetting an unsent message failed`,
+                forgetting,
+              ),
+            );
+          throw error;
+        }
       },
       deliveries: {
+        durable: this.#messages.durable,
         get: (sessionId, id) => this.#messages.get(sessionId, id),
         recentOnThread: (threadId, limit) => this.#messages.recentOnThread(threadId, limit),
+        claimReply: (sessionId, id) => this.#messages.claimReply(sessionId, id),
+        releaseReply: (sessionId, id) => this.#messages.releaseReply(sessionId, id),
       },
       abort: async (sessionId, requestContext) => {
         await this.commands().abort(sessionId, { context: requestContext });

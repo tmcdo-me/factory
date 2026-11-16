@@ -112,6 +112,13 @@ function senderAttributes(scope: FactoryToolScope) {
   };
 }
 
+/** fork(claude-agent): what a `held` result says about where the message waits. */
+function heldNote(messaging: FactoryMessaging): string {
+  return messaging.runtime?.deliveries?.durable
+    ? "It waits for the session's next turn, kept even across a server restart."
+    : "It waits in this server's memory for the session's next turn; a server restart would lose it.";
+}
+
 function unavailable(result: Extract<FactoryDeliveryResult, { delivered: 'skipped' }>) {
   return new Error(`The session is not available (${result.reason}).`);
 }
@@ -220,10 +227,12 @@ export function createFactoryMessagingTools(
         kind: notification.kind,
         delivery: result.delivered,
       });
-      // fork(claude-agent): a message held for a Claude Agent session's next turn is named too.
+      // fork(claude-agent): a message held for a Claude Agent session's next turn is named too, and
+      // says whether it would survive a restart.
       return {
         ...('notificationId' in result ? { notificationId: result.notificationId } : {}),
         delivered: result.delivered,
+        ...(result.delivered === 'held' ? { note: heldNote(messaging) } : {}),
       };
     }
     const key = queueKey(deps, scope.sessionId, target.threadId);
@@ -352,7 +361,7 @@ export function createFactoryMessagingTools(
       'Priority `medium` (default) wakes an idle session and waits for a busy one to finish its step; use `urgent` only to make it stop and change course.',
       '`delivered` is `woken` when the session was idle and is now running, `mid-run` when it was already busy and will read the message when its run next checks in.',
       // fork(claude-agent)
-      '`held` means the session will read it with its next turn, kept until then even across a restart; nothing woke it.',
+      '`held` means the session will read it with its next turn; nothing woke it. Its `note` says whether it waits through a server restart.',
       ...(scope.interactive
         ? []
         : ['On this turn you can only message your side sessions and sessions working on items this session follows.']),
@@ -430,10 +439,10 @@ export function createFactoryMessagingTools(
       // Only a message that reached this session's own thread can be answered,
       // and the answer goes where that message came from: never to an address
       // the model supplies.
-      const original: NotificationRecord | null =
-        (await messaging.notifications.getNotification({ threadId: scope.threadId, id: inReplyTo })) ??
-        // fork(claude-agent): a Claude Agent session's messages are kept by its runtime.
-        (await runtimeDelivery(messaging.runtime, scope.sessionId, inReplyTo));
+      const stored = await messaging.notifications.getNotification({ threadId: scope.threadId, id: inReplyTo });
+      // fork(claude-agent): a Claude Agent session's messages are kept by its runtime.
+      const kept = stored ? null : await runtimeDelivery(messaging.runtime, scope.sessionId, inReplyTo);
+      const original: NotificationRecord | null = stored ?? kept;
       if (!original || original.source !== FACTORY_SESSION_NOTIFICATION_SOURCE) {
         throw new Error(`No message ${inReplyTo} was sent to this session.`);
       }
@@ -463,22 +472,36 @@ export function createFactoryMessagingTools(
       );
       if (answered) throw new Error(`You already answered ${inReplyTo}.`);
 
-      return accept(
-        messaging,
-        { sessionId: fromSession, threadId: fromThread },
-        {
-          kind: 'reply',
-          priority: 'high',
-          summary: text,
-          payload: { message: text },
-          sourceId: scope.sessionId,
-          attributes: {
-            ...senderAttributes(scope),
-            'in-reply-to': inReplyTo,
-            ...(status ? { status } : {}),
+      const answer = () =>
+        accept(
+          messaging,
+          { sessionId: fromSession, threadId: fromThread },
+          {
+            kind: 'reply',
+            priority: 'high',
+            summary: text,
+            payload: { message: text },
+            sourceId: scope.sessionId,
+            attributes: {
+              ...senderAttributes(scope),
+              'in-reply-to': inReplyTo,
+              ...(status ? { status } : {}),
+            },
           },
-        },
-      );
+        );
+      // fork(claude-agent): the runtime takes the right to answer atomically, so of two answers to
+      // one message in the same turn only one goes; a reply that couldn't be sent gives it back.
+      const deliveries = kept ? messaging.runtime?.deliveries : undefined;
+      if (!deliveries) return answer();
+      if (!(await deliveries.claimReply(scope.sessionId, inReplyTo))) {
+        throw new Error(`You already answered ${inReplyTo}.`);
+      }
+      try {
+        return await answer();
+      } catch (error) {
+        await deliveries.releaseReply(scope.sessionId, inReplyTo).catch(() => undefined);
+        throw error;
+      }
     },
   });
 

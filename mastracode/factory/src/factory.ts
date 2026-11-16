@@ -1879,6 +1879,13 @@ export class MastraFactory {
       identity: claudeAgentHostIdentity(claudeAgentHome()),
     });
     this.#claudeAgentHost = claudeAgentHost;
+    // fork(claude-agent): without the domain, Claude Agent sessions' held messages live in memory only.
+    const agentMessagesReady = storage.isDomainReady('agent-messages');
+    if (!agentMessagesReady) {
+      console.warn(
+        "[factory] The agent-messages storage domain isn't ready: messages held for Claude Agent sessions are kept in memory and lost on restart.",
+      );
+    }
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
@@ -1887,7 +1894,7 @@ export class MastraFactory {
       // fork(claude-agent): one process sharing the database runs Claude Agent sessions.
       host: claudeAgentHost,
       // Held messages survive a restart where the domain is up; otherwise they wait in memory.
-      ...(storage.isDomainReady('agent-messages') ? { messages: agentMessagesStorage } : {}),
+      ...(agentMessagesReady ? { messages: agentMessagesStorage } : {}),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: pendingInteractions, hub: agentEventHub }),
       // A review session, or one on a pull request card, loads none of its checkout's own settings.
