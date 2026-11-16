@@ -6,7 +6,7 @@ import { z } from 'zod';
 
 import { claudeProcessEnv } from './env';
 import type { FactoryToolCall } from './factory-tools';
-import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
+import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
 
@@ -499,6 +499,46 @@ describe('ClaudeAgentSession', () => {
     await session.send({ text: 'two' });
     await settled(events, 2);
     expect(starts).toBe(2);
+  });
+
+  it('reports a turn whose Claude Code was told to stop (a server restart) as stopped, not as an error', async () => {
+    for (const exit of [
+      'Claude Code process exited with code 143',
+      'Claude Code process terminated by signal SIGTERM',
+      'Claude Code process exited with code 130',
+    ]) {
+      const events: FactoryEvent[] = [];
+      const fn: QueryFn = ({ prompt, options }) =>
+        Object.assign(
+          (async function* () {
+            for await (const _message of prompt) throw new Error(exit);
+          })(),
+          { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(), options },
+        ) as unknown as Query;
+      const session = new ClaudeAgentSession({
+        sessionId: 's1',
+        cwd: '/w',
+        env: {},
+        emit: e => events.push(e),
+        query: fn,
+      });
+
+      const { runId } = await session.send({ text: 'one' });
+      await settled(events);
+      expect(events.find(e => e.type === 'run.ended')).toEqual({ type: 'run.ended', runId, reason: 'aborted' });
+      expect(events.some(e => e.type === 'error')).toBe(false);
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'notice',
+          tag: 'run-stopped',
+          runId,
+          text: expect.stringContaining('restarted'),
+        }),
+      );
+    }
+    // Any other exit is still a failure.
+    expect(stoppedBySignal('Claude Code process exited with code 1')).toBe(false);
+    expect(stoppedBySignal('Claude Code process terminated by signal SIGKILL')).toBe(false);
   });
 
   it('switches the live model and sends images as image blocks', async () => {

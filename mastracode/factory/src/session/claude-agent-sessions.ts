@@ -149,6 +149,8 @@ export class ClaudeAgentSessions {
   readonly #boardRuns = new Set<string>();
   /** The interaction a session's run waits on, by session: the run and the tool call that asked. */
   readonly #parked = new Map<string, { runId: string; callId: string }>();
+  /** The write of each session record's state in flight, which the next write waits for. */
+  readonly #stateWrites = new Map<string, Promise<void>>();
   /** Answers plan approvals on the board's behalf, by the board run's id, while it says so. */
   readonly #autoApprove = new Map<string, () => boolean>();
 
@@ -219,11 +221,7 @@ export class ClaudeAgentSessions {
         const state = JSON.stringify(current);
         if (state === savedState) return;
         savedState = state;
-        this.#deps.sessions
-          .setRuntimeState(sessionId, current)
-          .catch(error =>
-            console.warn(`[factory] Claude Agent session ${sessionId}: saving resume state failed`, error),
-          );
+        void this.#saveState(sessionId, async () => current, 'saving resume state');
       },
     });
     this.#opened.set(sessionId, {
@@ -471,14 +469,37 @@ export class ClaudeAgentSessions {
     if (posture === 'untrusted') {
       this.#sticky.add(sessionId);
       if ((record?.runtimeState as { untrustedCheckout?: unknown } | undefined)?.untrustedCheckout !== true) {
-        await this.#deps.sessions
-          .setRuntimeState(sessionId, { ...(record?.runtimeState as object | undefined), untrustedCheckout: true })
-          .catch(error =>
-            console.warn(`[factory] Claude Agent session ${sessionId}: recording its untrusted checkout failed`, error),
-          );
+        // Merged into the state as it is when the write lands, not as `record` had it: Claude may have
+        // started a new conversation since, and putting back the older resume id would lose it. Not
+        // awaited: this process enforces the mark from memory, and the write queues behind any other.
+        void this.#saveState(
+          sessionId,
+          async () => ({
+            ...((await this.#deps.sessions.get(sessionId).catch(() => record))?.runtimeState as object | undefined),
+            ...this.#resume.get(sessionId),
+            ...this.#opened.get(sessionId)?.session.runtimeState(),
+            untrustedCheckout: true,
+          }),
+          'recording its untrusted checkout',
+        );
       }
     }
     return posture;
+  }
+
+  /**
+   * Write the session record's state. Writes land in the order they were asked for, each computed when
+   * its turn comes, so a slower writer never puts back state a later one replaced. Failures are logged.
+   */
+  #saveState(sessionId: string, state: () => Promise<Record<string, unknown>>, what: string): Promise<void> {
+    const write = (this.#stateWrites.get(sessionId) ?? Promise.resolve())
+      .then(async () => this.#deps.sessions.setRuntimeState(sessionId, await state()))
+      .catch(error => console.warn(`[factory] Claude Agent session ${sessionId}: ${what} failed`, error));
+    this.#stateWrites.set(sessionId, write);
+    void write.then(() => {
+      if (this.#stateWrites.get(sessionId) === write) this.#stateWrites.delete(sessionId);
+    });
+    return write;
   }
 
   /** What the session's record keeps: Claude's resume state, and the sticky untrusted mark. */

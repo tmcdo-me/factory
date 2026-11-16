@@ -290,13 +290,30 @@ export class ClaudeAgentSession {
       this.#endOpenRuns('error', 'Claude Code exited');
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      const runId = this.#runs[0];
+      if (this.#closed || stoppedBySignal(text)) {
+        // Stopped from outside, not failed: the host closed the session, or the process was told to
+        // stop (the server shutting down or restarting signals Claude Code with it).
+        if (!this.#closed && runId) {
+          this.#options.emit({
+            type: 'notice',
+            noticeId: this.#newId(),
+            kind: 'system-reminder',
+            tag: 'run-stopped',
+            text: 'Claude Code was stopped: the server running it shut down or restarted.',
+            runId,
+          });
+        }
+        this.#endOpenRuns('aborted', text);
+        return;
+      }
       this.#options.emit({
         type: 'error',
         message: text,
         retryable: false,
-        ...(this.#runs[0] ? { runId: this.#runs[0] } : {}),
+        ...(runId ? { runId } : {}),
       });
-      this.#endOpenRuns(this.#closed ? 'aborted' : 'error', text);
+      this.#endOpenRuns('error', text);
     } finally {
       // A new send starts a fresh process (resuming the Claude session).
       this.#query = undefined;
@@ -329,6 +346,14 @@ export class ClaudeAgentSession {
     }
     this.#aborting = false;
   }
+}
+
+/**
+ * Whether Claude Code ended because it was told to stop (SIGTERM, SIGINT, SIGHUP), as the SDK reports
+ * it: by the signal, or by the shell-style exit code it maps to (143, 130, 129).
+ */
+export function stoppedBySignal(message: string): boolean {
+  return /process exited with code (?:129|130|143)\b|terminated by signal SIG(?:TERM|INT|HUP)\b/.test(message);
 }
 
 /** What Claude reads: the turn's context, each in its own element, then the turn (in its notice's element). */

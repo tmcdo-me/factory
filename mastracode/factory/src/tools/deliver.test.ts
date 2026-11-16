@@ -4,7 +4,13 @@ import { InMemoryStore } from '@mastra/core/storage';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
-import { deliverFactorySessionNotification, resolveSessionThread } from './deliver.js';
+import {
+  RUNTIME_DELIVERIES_TTL_MS,
+  RUNTIME_DELIVERY_THREADS_KEPT,
+  deliverFactorySessionNotification,
+  recentRuntimeDeliveries,
+  resolveSessionThread,
+} from './deliver.js';
 import type { FactoryDeliveryController } from './deliver.js';
 
 const ROW = {
@@ -404,5 +410,40 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     ).rejects.toThrow('db down');
     expect(agent.sendNotificationSignal).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
+  });
+
+  it('remembers deliveries for a bounded number of threads, and forgets stale ones', async () => {
+    const { controller, sessions } = setup();
+    const runtime = { runs: async () => true, isRunning: () => false, message: vi.fn(async () => ({})) };
+    const deliverTo = (threadId: string) =>
+      deliverFactorySessionNotification({
+        controller: controller as unknown as FactoryDeliveryController,
+        sessions,
+        runs: RUNS,
+        target: { sessionId: 'session-b', threadId },
+        notification: { ...MESSAGE, priority: 'low' },
+        runtime,
+      });
+    // Later than every delivery the tests above made, so the map's order is the clock's.
+    vi.useFakeTimers({ now: Date.now() + 24 * RUNTIME_DELIVERIES_TTL_MS });
+    try {
+      await deliverTo('thread-stale');
+      vi.setSystemTime(Date.now() + RUNTIME_DELIVERIES_TTL_MS + 1);
+      await deliverTo('thread-kept');
+      // Gone once its newest delivery is past the time anything still counts it.
+      expect(recentRuntimeDeliveries('thread-stale')).toEqual([]);
+      expect(recentRuntimeDeliveries('thread-kept')).toHaveLength(1);
+
+      for (let index = 0; index < RUNTIME_DELIVERY_THREADS_KEPT; index += 1) await deliverTo(`thread-${index}`);
+      // The least recently delivered thread made way; a thread delivered to again moves to the back.
+      expect(recentRuntimeDeliveries('thread-kept')).toEqual([]);
+      await deliverTo('thread-0');
+      await deliverTo('thread-new');
+      expect(recentRuntimeDeliveries('thread-0')).toHaveLength(2);
+      expect(recentRuntimeDeliveries('thread-1')).toEqual([]);
+      expect(recentRuntimeDeliveries('thread-new')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

@@ -33,6 +33,13 @@ export type FactoryDeliveryController = Pick<
  */
 const runtimeDeliveries = new Map<string, NotificationRecord[]>();
 const RUNTIME_DELIVERIES_KEPT = 100;
+/**
+ * A thread's deliveries are forgotten once its newest is this old (well past the messaging tools'
+ * rate window), and at most this many threads are remembered, least recently delivered to dropped
+ * first, so the map stays bounded however many sessions ever got a message.
+ */
+export const RUNTIME_DELIVERIES_TTL_MS = 60 * 60 * 1000;
+export const RUNTIME_DELIVERY_THREADS_KEPT = 1000;
 
 /** fork(claude-agent): recent deliveries to a thread of a session on another runtime, as notification records. */
 export function recentRuntimeDeliveries(threadId: string): NotificationRecord[] {
@@ -56,7 +63,15 @@ function rememberRuntimeDelivery(
     ...(notification.sourceId ? { sourceId: notification.sourceId } : {}),
     createdAt: new Date(),
   } as unknown as NotificationRecord);
+  // Re-inserted, so the map runs from the least to the most recently delivered thread.
+  runtimeDeliveries.delete(target.threadId);
   runtimeDeliveries.set(target.threadId, kept.slice(-RUNTIME_DELIVERIES_KEPT));
+  const expired = Date.now() - RUNTIME_DELIVERIES_TTL_MS;
+  for (const [threadId, records] of runtimeDeliveries) {
+    const newest = records.at(-1)?.createdAt.getTime() ?? 0;
+    if (runtimeDeliveries.size <= RUNTIME_DELIVERY_THREADS_KEPT && newest > expired) break;
+    runtimeDeliveries.delete(threadId);
+  }
 }
 
 /** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
