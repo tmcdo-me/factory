@@ -18,6 +18,8 @@ export type {
   ClaudeAgentSessionOptions,
   ClaudeTurnInput,
   ClaudeTurnNotice,
+  ClaudeTurnSlot,
+  ClaudeTurnSlots,
   QueryFn,
 } from './session';
 export { createClaudeAgentSessionCommands } from './commands';
@@ -58,3 +60,5 @@ export {
   verdictOf,
 } from './waiting-judge';
 export type { WaitingJudgeOptions, WaitingVerdict } from './waiting-judge';
+export { ClaudeTurnLimiter } from './turn-slots';
+export type { ClaudeTurnLimiterOptions, ClaudeTurnPriority, ClaudeTurnWaiter } from './turn-slots';

@@ -5,6 +5,13 @@ import type { RunQueueResponse } from './contracts.js';
 
 const LISTED_WAITING_RUNS = 50;
 
+/** fork(claude-agent): the Claude Agent turn slots, as the limiter reports them (every project's sessions). */
+export interface ClaudeAgentSlotsSnapshot {
+  cap: number | undefined;
+  running: number;
+  waiting: Array<{ sessionId: string; position: number; priority: 'person' | 'factory'; since: Date }>;
+}
+
 type RunQueueEntry = RunQueueResponse['claimed'][number];
 
 /** A lease past its expiry belongs to a server that stopped renewing it: the next claim takes it back. */
@@ -57,6 +64,8 @@ export async function readRunQueue(input: {
   orgId: string;
   factoryProjectId: string;
   slots: { inUse: number; cap: number } | undefined;
+  /** fork(claude-agent) */
+  claudeAgent?: ClaudeAgentSlotsSnapshot | undefined;
   now: Date;
 }): Promise<RunQueueResponse> {
   const { workItems, orgId, factoryProjectId, now } = input;
@@ -69,10 +78,38 @@ export async function readRunQueue(input: {
   const ids = [...claimed, ...listed].flatMap(decision => (decision.workItemId ? [decision.workItemId] : []));
   const cards = new Map((await workItems.listByIds({ orgId, factoryProjectId, ids })).map(card => [card.id, card]));
   return {
+    claudeAgent: await claudeAgentQueue(input),
     slots: input.slots ? { scope: 'server', ...input.slots } : null,
     running: claimed.length,
     claimed: claimed.map(decision => entry(decision, 'claimed', cards)),
     queuedCount: waiting.length,
     queued: listed.map((decision, index) => ({ ...entry(decision, 'waiting', cards), position: index + 1 })),
+  };
+}
+
+/**
+ * fork(claude-agent): the project's Claude Agent sessions waiting for a slot. Positions count every
+ * waiting session, whatever its project: they are the order the slots are handed out in.
+ */
+async function claudeAgentQueue(input: {
+  workItems: WorkItemsStorage;
+  orgId: string;
+  factoryProjectId: string;
+  claudeAgent?: ClaudeAgentSlotsSnapshot | undefined;
+}): Promise<RunQueueResponse['claudeAgent']> {
+  const slots = input.claudeAgent;
+  if (!slots) return null;
+  let held: Set<string> | undefined;
+  if (slots.waiting.length) {
+    // A session waits on this project's board when one of its cards holds it (the list is cached).
+    const cards = await input.workItems.listShared({ orgId: input.orgId, factoryProjectId: input.factoryProjectId });
+    held = new Set(cards.flatMap(card => Object.values(card.sessions).flatMap(ref => (ref ? [ref.sessionId] : []))));
+  }
+  return {
+    cap: slots.cap ?? null,
+    running: slots.running,
+    waiting: slots.waiting
+      .filter(waiter => held?.has(waiter.sessionId))
+      .map(waiter => ({ ...waiter, since: waiter.since.toISOString() })),
   };
 }

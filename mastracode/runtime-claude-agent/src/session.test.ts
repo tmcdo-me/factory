@@ -10,6 +10,7 @@ import type { FactoryToolCall } from './factory-tools';
 import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
+import { ClaudeTurnLimiter } from './turn-slots';
 
 const base = { session_id: 'claude-1', uuid: '00000000-0000-0000-0000-000000000000' } as const;
 const ev = (event: Record<string, unknown>, parent: string | null = null) =>
@@ -1115,5 +1116,149 @@ describe('ClaudeAgentSession background work cap', () => {
     await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
     expect(notices()).toHaveLength(1);
     await session.close();
+  });
+});
+
+// fork(claude-agent): the operator's cap on how many Claude Agent turns run at once (spec slice 13).
+describe('ClaudeAgentSession turn slots', () => {
+  function slotSetup(cap: { value: number | undefined }) {
+    const changed: string[] = [];
+    const limiter = new ClaudeTurnLimiter({ cap: () => cap.value, onChanged: id => changed.push(id) });
+    const person = new Set<string>();
+    const open = (sessionId: string) => {
+      const events: FactoryEvent[] = [];
+      // Each turn stays open until the test ends it, as a turn Claude is still working on.
+      const fake = drivenQuery([[init], [init], [init]]);
+      let n = 0;
+      const session = new ClaudeAgentSession({
+        sessionId,
+        cwd: `/work/${sessionId}`,
+        env: { HOME: '/home/u' },
+        emit: event => events.push(event),
+        query: fake.fn,
+        newId: () => `${sessionId}-${++n}`,
+        turnSlots: limiter.slots(sessionId, runId => (person.has(runId) ? 'person' : 'factory')),
+      });
+      const queued = () =>
+        events.filter(
+          (event): event is Extract<FactoryEvent, { type: 'notice' }> =>
+            event.type === 'notice' && event.tag === 'turn-queued',
+        );
+      return { session, events, fake, queued };
+    };
+    return { limiter, open, person, changed };
+  }
+
+  it('holds a second session’s turn while the cap is reached, says so, and sends it once the first ends', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'build the card' });
+    await vi.waitFor(() => expect(a.fake.calls).toHaveLength(1));
+
+    const { runId } = await b.session.send({ text: 'review the other card' });
+    expect(b.session.status()).toBe('running');
+    expect(b.queued()).toHaveLength(1);
+    expect(b.queued()[0]).toMatchObject({ runId, text: expect.stringContaining('1 of 1 running') });
+    expect(limiter.snapshot()).toMatchObject({ cap: 1, running: 1, waiting: [{ sessionId: 'b', position: 1 }] });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    // Nothing reached Claude Code: no process was even started for it.
+    expect(b.fake.calls).toHaveLength(0);
+
+    a.fake.emit(result());
+    await settled(a.events);
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(limiter.snapshot()).toMatchObject({ running: 1, waiting: [] });
+    b.fake.emit(result());
+    await settled(b.events);
+    expect(b.events.find(e => e.type === 'run.ended')).toMatchObject({ runId, reason: 'complete' });
+    expect(limiter.snapshot().running).toBe(0);
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it('sends the turns a person queued behind a waiting turn in order, in the one slot', async () => {
+    const { open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    await b.session.send({ text: 'one' });
+    await b.session.send({ text: 'two' });
+    expect(b.queued()).toHaveLength(1);
+    a.fake.emit(result());
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    b.fake.emit(result());
+    await vi.waitFor(() => expect(b.events.filter(e => e.type === 'run.ended')).toHaveLength(1));
+    b.fake.emit(result());
+    await settled(b.events, 2);
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it('ends a waiting turn the person stops without starting Claude Code, and frees its place', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    const { runId } = await b.session.send({ text: 'waits' });
+    await b.session.abort();
+    expect(b.events.find(e => e.type === 'run.ended')).toEqual({ type: 'run.ended', runId, reason: 'aborted' });
+    expect(b.session.status()).toBe('idle');
+    expect(limiter.snapshot().waiting).toEqual([]);
+    a.fake.emit(result());
+    await settled(a.events);
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(b.fake.calls).toHaveLength(0);
+    await a.session.close();
+  });
+
+  it('lets a waiting turn go as soon as the cap is raised or removed, without a restart', async () => {
+    const cap = { value: 1 as number | undefined };
+    const { limiter, open } = slotSetup(cap);
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'first' });
+    await b.session.send({ text: 'second' });
+    expect(b.fake.calls).toHaveLength(0);
+    cap.value = 0; // no limit
+    limiter.update();
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(limiter.snapshot()).toMatchObject({ cap: undefined, running: 2 });
+    await a.session.close();
+    await b.session.close();
+  });
+
+  it("puts a person's turn ahead of Factory's waiting runs", async () => {
+    const { limiter, open, person } = slotSetup({ value: 1 });
+    const a = open('a');
+    const board = open('board');
+    const chat = open('chat');
+    await a.session.send({ text: 'first' });
+    await board.session.send({ text: 'board run' });
+    person.add('mine');
+    await chat.session.send({ text: 'a question', runId: 'mine' });
+    expect(limiter.snapshot().waiting.map(waiter => waiter.sessionId)).toEqual(['chat', 'board']);
+    a.fake.emit(result());
+    await vi.waitFor(() => expect(chat.fake.calls).toHaveLength(1));
+    expect(board.fake.calls).toHaveLength(0);
+    await Promise.all([a.session.close(), board.session.close(), chat.session.close()]);
+  });
+
+  it('does not count a turn waiting on a person, and counts it again once they answer', async () => {
+    const { limiter, open } = slotSetup({ value: 1 });
+    const a = open('a');
+    const b = open('b');
+    await a.session.send({ text: 'asks the person' });
+    limiter.park('a');
+    await b.session.send({ text: 'goes meanwhile' });
+    await vi.waitFor(() => expect(b.fake.calls).toHaveLength(1));
+    expect(b.queued()).toHaveLength(0);
+    limiter.unpark('a');
+    expect(limiter.snapshot().running).toBe(2);
+    const c = open('c');
+    await c.session.send({ text: 'waits for both' });
+    expect(c.queued()).toHaveLength(1);
+    await Promise.all([a.session.close(), b.session.close(), c.session.close()]);
+    expect(limiter.snapshot()).toMatchObject({ running: 0, waiting: [] });
   });
 });

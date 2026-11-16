@@ -17,6 +17,16 @@ through the Claude Agent SDK. Design and compliance constraints:
 | `install.ts`       | `ensureClaudeCode`: the official installer in a sandbox, pinned to the SDK's bundled CLI version and its release checksums; `runInProcesses` runs it with no environment                 |
 | `launch.ts`        | `sandboxClaudeCodeLaunch`: Claude Code inside a sandbox, started through its `spawn` behind a checksum and managed-settings check                                                        |
 | `waiting-judge.ts` | `judgeWaitingOnPerson`: whether a turn short of its goal waits on a person, asked of Claude Code itself (one turn, small model, no tools); `plainTextQuestion` is the cheap check first  |
+| `turn-slots.ts`    | `ClaudeTurnLimiter`: the host's cap on how many sessions run a turn at once (`turnSlots`); over it a turn waits, a person's ahead of the host's own                                      |
+
+Concurrency: with `turnSlots`, a session takes a slot when its first turn opens and gives it back
+when its last open turn ends, so what counts is exactly the Claude Code turns in flight (background
+work between turns doesn't). Without a free slot the turn is open but not sent to Claude Code, and a
+`turn-queued` notice says it waits; stopping it then ends it without starting Claude Code.
+`ClaudeTurnLimiter` hands slots out (people's turns first, then in order), frees a parked turn's slot
+while a person decides (`park`/`unpark`), and applies a new cap at once (`update`). Factory sets the
+cap in Settings → Manage Factory, defaulting to `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`. The goal
+judge (`judgeWaitingOnPerson`) is a one-shot Claude Code of its own and is not counted.
 
 Credentials: Factory never handles Claude credentials. The binary uses its own saved login
 (`claude /login`) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` set by the operator in the

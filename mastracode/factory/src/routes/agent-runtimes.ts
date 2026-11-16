@@ -8,6 +8,8 @@
  * - `PUT  /web/factory/sessions/:sessionId/runtime` — choose it, before the session's first message;
  *   owner-only (`createSessionAccessGuard`).
  * - `GET|PUT /web/factory/projects/:projectId/runtime` — the project's default for new sessions.
+ * - `GET|PUT /web/factory/runtimes/claude-agent/concurrency` — how many Claude Agent turns run at once,
+ *   on this whole server (spec slice 13).
  */
 import type { EventLog } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_MODELS, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
@@ -16,6 +18,8 @@ import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import { z } from 'zod';
 
+import { CLAUDE_AGENT_MAX_CONCURRENT_LIMIT } from '../session/claude-agent-concurrency.js';
+import type { ClaudeAgentConcurrency } from '../session/claude-agent-concurrency.js';
 import type { AgentSessionsStorage } from '../storage/domains/agent-sessions/base.js';
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
@@ -32,6 +36,10 @@ const RUNTIME_IDS = RUNTIME_CATALOG.map(runtime => runtime.id) as [string, ...st
 
 const sessionRuntimeBody = z.object({ runtimeId: z.enum(RUNTIME_IDS), modelId: z.string().min(1).optional() });
 const projectRuntimeBody = z.object({ runtimeId: z.enum(RUNTIME_IDS) });
+/** A cap, `0` for no limit, or `null` to follow the server's default. */
+const concurrencyBody = z.object({
+  maxConcurrent: z.number().int().min(0).max(CLAUDE_AGENT_MAX_CONCURRENT_LIMIT).nullable(),
+});
 
 export interface AgentRuntimeRoutesDependencies {
   auth: RouteAuth;
@@ -43,6 +51,8 @@ export interface AgentRuntimeRoutesDependencies {
    * Without it every session is drawn from its event log.
    */
   historyPredatesLog?: (sessionId: string) => Promise<boolean>;
+  /** The Claude Agent concurrency cap; without it the concurrency routes answer 404. */
+  claudeAgentConcurrency?: Pick<ClaudeAgentConcurrency, 'state' | 'set'>;
 }
 
 export function buildAgentRuntimeRoutes({
@@ -51,6 +61,7 @@ export function buildAgentRuntimeRoutes({
   events,
   projects,
   historyPredatesLog,
+  claudeAgentConcurrency,
 }: AgentRuntimeRoutesDependencies): ApiRoute[] {
   const viewer = async (c: ReturnType<typeof loose>) => {
     if (!auth.enabled()) return { ok: true as const, orgId: undefined };
@@ -164,6 +175,35 @@ export function buildAgentRuntimeRoutes({
         if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
         await sessions.setProjectDefault(found.scope, parsed.data.runtimeId);
         return c.json({ ok: true });
+      },
+    }),
+    // The cap is the server's (one Claude subscription), not a project's: anyone signed in with an
+    // organization may read and change it, as they may the project's default runtime.
+    registerApiRoute('/web/factory/runtimes/claude-agent/concurrency', {
+      method: 'GET',
+      requiresAuth: false,
+      handler: async cc => {
+        const c = loose(cc);
+        const who = await viewer(c);
+        if (!who.ok) return c.json({ error: 'unauthorized' }, 401);
+        if (auth.enabled() && !who.orgId) return c.json(scopeError(403), 403);
+        if (!claudeAgentConcurrency) return c.json({ error: 'not_found' }, 404);
+        return c.json(claudeAgentConcurrency.state());
+      },
+    }),
+    registerApiRoute('/web/factory/runtimes/claude-agent/concurrency', {
+      method: 'PUT',
+      requiresAuth: false,
+      handler: async cc => {
+        const c = loose(cc);
+        const who = await viewer(c);
+        if (!who.ok) return c.json({ error: 'unauthorized' }, 401);
+        if (auth.enabled() && !who.orgId) return c.json(scopeError(403), 403);
+        if (!claudeAgentConcurrency) return c.json({ error: 'not_found' }, 404);
+        const parsed = concurrencyBody.safeParse(await c.req.json().catch(() => undefined));
+        if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
+        await claudeAgentConcurrency.set(parsed.data.maxConcurrent);
+        return c.json(claudeAgentConcurrency.state());
       },
     }),
   ];

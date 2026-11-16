@@ -581,7 +581,22 @@ Each slice: implement → focused tests → manual check where noted → commit.
     through the real `resolveModel` against real storage and a stand-in Anthropic API
     (`routes/claude-subscription-refusal.test.ts`), not against the live server. The TUI's own
     `/login anthropic` (`mastracode/tui`) is untouched.
-13. **Concurrency cap + docs.**
+13. **Concurrency cap + docs.** ✅ How many Claude Agent sessions run a turn at once, on the
+    whole server: Settings → Manage Factory ("Claude Agent runs at once", beside the default runtime;
+    a deployment-wide value in the agent-sessions domain's runtime settings), defaulting to
+    `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`; unset or `0` is no limit. A change applies without a
+    restart: at once in the process that runs Claude Agent sessions, within 15 seconds from another
+    sharing the database. What counts is what holds a Claude Code turn running
+    (`ClaudeTurnLimiter`): a session takes a slot when its first turn opens and frees it when its last
+    open turn ends; background work between turns doesn't count, and a turn waiting on a person
+    (`ask_user`, `submit_plan`) frees its slot while they decide, going on at once when they answer
+    (so the count can pass the cap briefly; the next turn to start waits). Over the cap nothing fails
+    or is dropped: the turn is open but not sent to Claude Code, its transcript says it waits
+    (`turn-queued` notice), a person's own turns go ahead of Factory's (board runs, notifications),
+    the kickoff still returns at once so the dispatcher watches the run as usual, and the card shows
+    "Queued (#n)" from the run queue (`claudeAgent` in `GET …/run-queue`). Stopping a waiting turn
+    ends it without starting Claude Code. The dispatcher's own `maxInFlight` still applies on top.
+    The plain-text-question judge (6c) is a one-shot Claude Code of its own and is not counted.
 14. **Production service** ✅ (`fork/ops/`): `pnpm --dir mastracode/web build` bundles the server
     without installing its dependencies from npm (the fork's `@factory/*` packages are not
     published, and npm's `@mastra/*` lack the fork's changes), so the bundle loads the monorepo's
@@ -617,7 +632,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | Setting                                  | Default        | Meaning                                                                       |
 | ---------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
 | `FACTORY_RUNTIMES`                       | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                             |
-| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`    | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
+| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`    | unset (no cap) | Default cap on Claude Agent turns at once (Settings override); see slice 13   |
 | `FACTORY_CLAUDE_AGENT_EXECUTABLE`        | bundled        | Path to an installed `claude`                                                 |
 | `CLAUDE_CODE_OAUTH_TOKEN`                | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
 | `FACTORY_SANDBOX_PROVIDER`               | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |

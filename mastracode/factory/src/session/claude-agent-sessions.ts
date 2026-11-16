@@ -32,6 +32,7 @@ import type {
   ClaudeAgentRuntimeState,
   ClaudeAgentSkills,
   ClaudeTurnInput,
+  ClaudeTurnLimiter,
   ClaudeTurnNotice,
   QueryFn,
   WaitingVerdict,
@@ -140,6 +141,11 @@ export interface ClaudeAgentSessionsDeps {
    * (`judgeWaitingOnPerson`). Without it, a turn that asks in plain text is re-kicked, as before.
    */
   waitingJudge?(input: { objective: string; text: string }): Promise<WaitingVerdict | undefined>;
+  /**
+   * fork(claude-agent): the cap on how many sessions run a turn at once (see `ClaudeAgentConcurrency`).
+   * A person's own turns go ahead of Factory's (board runs, notifications). Without it, no cap.
+   */
+  turns?: ClaudeTurnLimiter;
 }
 
 /**
@@ -278,6 +284,8 @@ export class ClaudeAgentSessions {
   readonly #lastReply = new Map<string, { messageId?: string; text: string }>();
   /** fork(claude-agent): a board run parked on a question its turn asked in plain text, by session. */
   readonly #awaitingReply = new Map<string, AwaitingReply>();
+  /** Turns a person sent from the session, while they are open: they wait for a slot ahead of Factory's. */
+  readonly #personRuns = new Set<string>();
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
@@ -364,6 +372,11 @@ export class ClaudeAgentSessions {
       ...(this.#deps.query ? { query: this.#deps.query } : {}),
       ...(factoryTools ? { factoryTools: factoryTools.tools } : {}),
       ...(skills ? { skills } : {}),
+      ...(this.#deps.turns
+        ? {
+            turnSlots: this.#deps.turns.slots(sessionId, runId => (this.#personRuns.has(runId) ? 'person' : 'factory')),
+          }
+        : {}),
       emit: event => {
         publisher.emit(event);
         watchShell(event);
@@ -386,6 +399,7 @@ export class ClaudeAgentSessions {
           this.#settleRun(event.runId, { reason: event.reason, ...(event.error ? { error: event.error } : {}) });
           this.#runUsage.delete(event.runId);
           this.#boardRuns.delete(event.runId);
+          this.#personRuns.delete(event.runId);
           if (this.#parked.get(sessionId)?.runId === event.runId) this.#parked.delete(sessionId);
           if (session.status() !== 'running') {
             for (const wake of this.#idle.get(sessionId)?.splice(0) ?? []) wake();
@@ -488,9 +502,12 @@ export class ClaudeAgentSessions {
                 this.#settleRun(call.runId, { reason: 'awaiting_interaction' });
                 this.#parked.set(sessionId, { runId: call.runId, callId: call.callId });
               }
+              // fork(claude-agent): Claude Code is idle until the person answers, so its turn's slot is free meanwhile.
+              this.#deps.turns?.park(sessionId);
               try {
                 return await broker.request(sessionId, request, { callId: call.callId, signal: call.signal });
               } finally {
+                this.#deps.turns?.unpark(sessionId);
                 if (this.#parked.get(sessionId)?.callId === call.callId) this.#parked.delete(sessionId);
               }
             },
@@ -834,12 +851,15 @@ export class ClaudeAgentSessions {
         const answer = Array.isArray(response.answer) ? response.answer.join(', ') : response.answer;
         const runId = randomUUID();
         this.#runEnds.set(runId, settle);
+        // The person's answer: a person's turn for the concurrency cap too.
+        this.#personRuns.add(runId);
         try {
           const session = await this.#ready(sessionId, requestContext);
           if (!session) throw new Error(`Session ${sessionId} no longer runs on Claude Agent.`);
           await this.#send(session, { text: answer, runId }, requestContext);
         } catch (error) {
           this.#runEnds.delete(runId);
+          this.#personRuns.delete(runId);
           console.warn(`[factory] Claude Agent session ${sessionId}: sending the person's answer failed`, error);
           settle({ reason: 'error', error: error instanceof Error ? error.message : String(error) });
         }
@@ -1034,12 +1054,15 @@ export class ClaudeAgentSessions {
       send: async (sessionId, input, request) => {
         const session = await this.#ready(sessionId, request.context);
         if (!session) return notFound;
-        // fork(claude-agent): a board run parked on its plain-text question takes this as the reply.
+        // fork(claude-agent): a person's own turn, named so it waits for a slot ahead of Factory's, and
+        // taken as the reply by a board run parked on its plain-text question.
         const runId = randomUUID();
+        this.#personRuns.add(runId);
         const failed = this.#awaitingReply.get(sessionId)?.replied(runId);
         try {
           await this.#send(session, { ...input, runId }, request.context);
         } catch (error) {
+          this.#personRuns.delete(runId);
           failed?.(error);
           throw error;
         }

@@ -98,6 +98,8 @@ export interface WorkItemRoutesDeps extends RouteDependencies {
   liveSessions: Pick<LiveSessions, 'isRunning' | 'parked' | 'parkedIn'>;
   /** This process's dispatcher run slots; absent or `undefined` while it runs no dispatcher. */
   runSlots?: () => { inUse: number; cap: number } | undefined;
+  /** fork(claude-agent): Claude Agent sessions waiting for a slot under the operator's cap. */
+  claudeAgentSlots?: () => import('./run-queue.js').ClaudeAgentSlotsSnapshot | undefined;
 }
 
 /** The card as clients see it, without the dispatcher's internal bookkeeping. */
@@ -782,6 +784,7 @@ export class WorkItemRoutes extends Route<WorkItemRoutesDeps> {
               orgId: resolved.orgId,
               factoryProjectId: resolved.factoryProjectId,
               slots: this.deps.runSlots?.(),
+              claudeAgent: this.deps.claudeAgentSlots?.(), // fork(claude-agent)
               now: new Date(),
             }),
           );

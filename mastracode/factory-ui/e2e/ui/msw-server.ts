@@ -40,6 +40,9 @@ export const server = setupServer(
       defaultRuntimeId: 'mastra-code',
     }),
   ),
+  http.get('*/web/factory/runtimes/claude-agent/concurrency', () =>
+    HttpResponse.json({ maxConcurrent: null, defaultMaxConcurrent: null, effective: null, running: 0, waiting: 0 }),
+  ),
   // Most chat tests drive Mastra agent-controller events, so their sessions are drawn the way a Mastra
   // Code session from before Factory's event log is; tests of the event-log path override it.
   http.get('*/web/factory/sessions/:id/runtime', () =>
