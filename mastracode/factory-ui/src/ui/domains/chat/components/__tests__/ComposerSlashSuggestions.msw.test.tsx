@@ -6,23 +6,7 @@ import { renderWithProviders } from '../../../../../../e2e/ui/render';
 import { Composer } from '../Composer';
 import { OverlayTestProviders, useOverlayControllerHandlers } from './overlay-test-utils';
 
-const COMMAND_NAMES = [
-  'model',
-  'goal',
-  'goal-clear',
-  'goal-pause',
-  'goal-resume',
-  'permissions',
-  'yolo',
-  'cost',
-  'think',
-  'om',
-  'settings',
-  'connect',
-  'login',
-  'abort',
-  'help',
-];
+const COMMAND_NAMES = ['model', 'cost', 'think', 'settings', 'connect', 'login', 'abort', 'help'];
 
 function renderComposer() {
   return renderWithProviders(
@@ -81,14 +65,14 @@ describe('Composer slash-command suggestions', () => {
       renderComposer();
 
       const input = await findReadyInput();
-      await user.type(input, '/goa');
+      await user.type(input, '/mod');
 
-      expect(await screen.findByRole('option', { name: commandOption('goal') })).toBeInTheDocument();
+      expect(await screen.findByRole('option', { name: commandOption('model') })).toBeInTheDocument();
       expect(screen.queryByRole('option', { name: commandOption('help') })).not.toBeInTheDocument();
 
       await user.keyboard('{Tab}');
-      expect(input).toHaveValue('/goal ');
-      expect(screen.queryByRole('option', { name: commandOption('goal') })).not.toBeInTheDocument();
+      expect(input).toHaveValue('/model ');
+      expect(screen.queryByRole('option', { name: commandOption('model') })).not.toBeInTheDocument();
     });
 
     it('opens command options as a second step and returns with Escape', async () => {

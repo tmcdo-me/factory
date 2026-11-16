@@ -201,10 +201,6 @@ export const queryKeys = {
     ['agent-controller', agentControllerId ?? null, 'activity', baseUrl] as const,
   agentControllerSettings: (agentControllerId: string | undefined, sessionId: string | undefined) =>
     [...queryKeys.agentControllerSession(agentControllerId, sessionId), 'settings'] as const,
-  agentControllerPermissions: (agentControllerId: string | undefined, sessionId: string | undefined) =>
-    [...queryKeys.agentControllerSession(agentControllerId, sessionId), 'permissions'] as const,
-  agentControllerThreads: (agentControllerId: string | undefined, sessionId: string | undefined) =>
-    [...queryKeys.agentControllerSession(agentControllerId, sessionId), 'threads'] as const,
   // Prefix over every thread's messages for a session — invalidation target
   // when an SSE gap may have dropped events for any thread of the session. Kept
   // outside agentControllerSession so session invalidation leaves transcripts alone.

@@ -5,10 +5,8 @@ import type { ReactNode } from 'react';
 import { useRef } from 'react';
 import { Navigate, useNavigate, useParams } from 'react-router';
 
-import { useRouteThreadSync } from '../../hooks/useRouteThreadSync';
 import { ChatPageLayout } from '../domains/chat/components/ChatPageLayout';
 import { EmptyThreadState } from '../domains/chat/components/EmptyThreadState';
-import { GoalPanel } from '../domains/chat/components/GoalPanel';
 import { PageTitle } from '../domains/chat/components/PageTitle';
 import { SessionChatSurface } from '../domains/chat/components/SessionChatSurface';
 import { ThreadRailLayer } from '../domains/chat/components/ThreadRailLayer';
@@ -101,7 +99,6 @@ function ThreadPageMain({
     <ThreadSessionEffects workspacePath={workspacePath}>
       <FactorySessionPage>
         <SessionChatSurface
-          secondaryBar={<GoalPanel />}
           emptyState={<EmptyThreadState />}
           composerLabel="Thread composer"
           composerStatus={<TeammateSessionLine />}
@@ -126,7 +123,6 @@ function ThreadRailSlot() {
 
 function ThreadSessionEffects({ workspacePath, children }: { workspacePath: string | undefined; children: ReactNode }) {
   useGlobalShortcuts();
-  useRouteThreadSync();
   useHandoffPrompt();
   const { busy, transcript } = useChatTranscript();
   useInvalidateWorkspaceChangesOnRunCompletion(workspacePath, busy);

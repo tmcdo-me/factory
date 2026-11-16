@@ -10,7 +10,6 @@ import { useSettingsSection } from '../hooks/useSettingsSection';
 import { SETTINGS_SECTION_LABELS, settingsSectionPath } from '../settingsSections';
 import type { SettingsSection } from '../settingsSections';
 import { IconArrowLeft } from '@mastra/playground-ui/icons/central/IconArrowLeft';
-import { IconBrain } from '@mastra/playground-ui/icons/central/IconBrain';
 import { IconBranch } from '@mastra/playground-ui/icons/central/IconBranch';
 import { IconBug } from '@mastra/playground-ui/icons/central/IconBug';
 import { IconBuildings } from '@mastra/playground-ui/icons/central/IconBuildings';
@@ -71,13 +70,6 @@ const SETTINGS_GROUPS: SettingsNavGroup[] = [
           'models default model your models factory models routing personal factory defaults hybrid thinking level api keys providers credentials sign in oauth custom endpoints',
       },
       {
-        id: 'memory',
-        label: SETTINGS_SECTION_LABELS.memory,
-        icon: IconBrain,
-        searchText:
-          'memory personal memory factory memory your memory shared memory observational recall observer reflector thresholds attachments summarize context',
-      },
-      {
         id: 'tools',
         label: SETTINGS_SECTION_LABELS.tools,
         icon: IconMaintenance,
@@ -87,7 +79,7 @@ const SETTINGS_GROUPS: SettingsNavGroup[] = [
         id: 'behavior',
         label: SETTINGS_SECTION_LABELS.behavior,
         icon: IconSettingsSliderHor,
-        searchText: 'behavior auto approve tools smart editing notifications permissions read edit execute mcp',
+        searchText: 'behavior smart editing notifications',
       },
     ],
   },

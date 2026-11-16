@@ -79,12 +79,10 @@ const userSession: FactoryUserSession = {
 function stubThreadRoute({
   gateSession = false,
   userSessionTitle = userSession.title,
-  threads = [],
   sessionOverrides = {},
 }: {
   gateSession?: boolean;
   userSessionTitle?: string;
-  threads?: Array<{ id: string; title: string }>;
   sessionOverrides?: Partial<FactoryUserSession>;
 } = {}) {
   const sessionGate = deferred();
@@ -166,7 +164,6 @@ function stubThreadRoute({
         }),
     ),
     http.get(`${AC}/sessions/:resourceId/permissions`, () => HttpResponse.json({})),
-    http.get(`${AC}/sessions/:resourceId/threads`, () => HttpResponse.json({ threads })),
     http.get(`${AC}/sessions/:resourceId/threads/:threadId/messages`, () => HttpResponse.json({ messages: [] })),
     http.get(`${TEST_BASE_URL}/web/workspace/rendered/list`, () =>
       HttpResponse.json({ workspacePath: `/ws/${SESSION_ID}`, root: '.artifacts', rootPath: '', entries: [] }),
@@ -285,17 +282,6 @@ describe('ThreadPage header', () => {
     await user.click(await within(header).findByRole('button', { name: 'Private session' }));
     expect(await screen.findByRole('heading', { name: 'This session is private' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Share with organization' })).not.toBeInTheDocument();
-  });
-
-  it('picks up the generated title once the thread is named', async () => {
-    stubThreadRoute({
-      sessionOverrides: { title: undefined },
-      threads: [{ id: USER_SESSION_ID, title: 'salut ca va ?' }],
-    });
-    renderRoute(`/factories/${FACTORY_ID}/user/threads/${USER_SESSION_ID}`);
-
-    expect(await screen.findByRole('heading', { level: 1, name: 'salut ca va ?' })).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { level: 1, name: 'New session' })).not.toBeInTheDocument();
   });
 
   it('titles the new session page', async () => {

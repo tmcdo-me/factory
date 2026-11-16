@@ -5,7 +5,6 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 
 import { useApiConfig } from '../api/config';
 import { queryKeys } from '../api/keys';
-import { AGENT_CONTROLLER_ID } from '../ui/domains/chat/services/constants';
 import { stripCachedSessionRefs } from './useWorkItems';
 import {
   createUserSession,
@@ -17,6 +16,7 @@ import {
   SLACK_SESSION_BRANCH_PREFIX,
 } from '../ui/domains/workspaces/services/user-sessions';
 import type { FactoryUserSession } from '../ui/domains/workspaces/services/user-sessions';
+import { newUserSessionPath } from '../ui/domains/workspaces/services/factoryPaths';
 
 export interface WorkspacesData {
   workspaces: FactoryUserSession[];
@@ -81,40 +81,9 @@ export function addCachedSession(queryClient: QueryClient, factoryId: string, se
   });
 }
 
-export async function updateCachedSessionTitle(
-  queryClient: QueryClient,
-  factoryId: string | undefined,
-  sessionId: string,
-  title: string,
-) {
-  const trimmedTitle = title.trim();
-  if (!trimmedTitle) return;
-
-  const queryKey = queryKeys.sessions(factoryId);
-  if (!queryClient.getQueryData<WorkspacesData>(queryKey)) return;
-
-  // an in-flight list fetch can still carry the branch-only row and overwrite this title
-  await queryClient.cancelQueries({ queryKey });
-  queryClient.setQueryData<WorkspacesData>(queryKey, current => {
-    if (!current) return current;
-
-    let changed = false;
-    const updateTitle = (session: FactoryUserSession) => {
-      if (session.sessionId !== sessionId || session.title === trimmedTitle) return session;
-      changed = true;
-      return { ...session, title: trimmedTitle };
-    };
-    const workspaces = current.workspaces.map(updateTitle);
-    const userSessions = current.userSessions.map(updateTitle);
-
-    return changed ? { ...current, workspaces, userSessions } : current;
-  });
-}
-
-function invalidateSessionQueries(queryClient: QueryClient, factoryId: string | undefined, sessionId: string) {
+function invalidateSessionQueries(queryClient: QueryClient, factoryId: string | undefined) {
   void queryClient.invalidateQueries({ queryKey: queryKeys.sessions(factoryId) });
   void queryClient.invalidateQueries({ queryKey: queryKeys.factories() });
-  void queryClient.invalidateQueries({ queryKey: queryKeys.agentControllerThreads(AGENT_CONTROLLER_ID, sessionId) });
 }
 
 const UNMATERIALIZED_POLL_MS = 15_000;
@@ -176,7 +145,7 @@ export function useCreateWorkspaceMutation(factoryId: string | undefined, projec
       return createUserSession(baseUrl, projectRepositoryId, { branch: trimmedBranch });
     },
     onSuccess: session => {
-      invalidateSessionQueries(queryClient, factoryId, session.sessionId);
+      invalidateSessionQueries(queryClient, factoryId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.userSession(session.sessionId) });
       void navigate(`/factories/${factoryId}/workspaces/${session.sessionId}`);
     },
@@ -203,9 +172,9 @@ export function useDeleteWorkspaceMutation(factoryId: string | undefined) {
       // The server strips the work-item refs with the row; mirror it in the cache
       // so the board's cards drop their session links before the next poll.
       if (factoryId) stripCachedSessionRefs(queryClient, factoryId, workspace.sessionId);
-      invalidateSessionQueries(queryClient, factoryId, workspace.sessionId);
+      invalidateSessionQueries(queryClient, factoryId);
       void queryClient.invalidateQueries({ queryKey: queryKeys.userSession(workspace.sessionId) });
-      if (workspace.sessionId === viewedSessionId) void navigate(`/factories/${factoryId}/new`);
+      if (factoryId && workspace.sessionId === viewedSessionId) void navigate(newUserSessionPath(factoryId));
       toast('Workspace deleted');
     },
     onError: error => toast.error(error instanceof Error ? error.message : 'Failed to delete workspace'),

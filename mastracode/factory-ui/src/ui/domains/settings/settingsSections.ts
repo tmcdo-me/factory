@@ -10,7 +10,6 @@ export type SettingsSection =
   | 'repositories'
   | 'intake'
   | 'models'
-  | 'memory'
   | 'tools'
   | 'behavior'
   | 'debug';
@@ -23,7 +22,6 @@ export const SETTINGS_SECTION_LABELS: Record<SettingsSection, string> = {
   repositories: 'Repositories',
   intake: 'Work Intake',
   models: 'Models',
-  memory: 'Memory',
   tools: 'Tools',
   behavior: 'Behavior',
   debug: 'Debug',
@@ -52,7 +50,9 @@ type SettingsTarget = { section: SettingsSection; anchor?: ModelDefaultsAnchor }
 
 const RETIRED_SETTINGS_SECTIONS = new Map<string, SettingsTarget>([
   ['personal-models', { section: 'models', anchor: MODEL_DEFAULTS_ANCHORS.personal }],
-  ['factory-memory', { section: 'memory' }],
+  // fork(claude-agent): the observational-memory settings were dropped; their links open Models.
+  ['factory-memory', { section: 'models' }],
+  ['memory', { section: 'models' }],
   ['environment', { section: 'repositories' }],
 ]);
 

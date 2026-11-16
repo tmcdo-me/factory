@@ -1,6 +1,5 @@
 import type { ReactNode } from 'react';
 
-import { ChatPermissionsProvider } from './ChatPermissionsProvider';
 import { ChatSessionBoundary, ChatSessionConfigProvider } from './ChatSessionProvider';
 
 export function ChatSessionTestProvider({
@@ -16,11 +15,9 @@ export function ChatSessionTestProvider({
 }) {
   return (
     <ChatSessionConfigProvider threadId={threadId} userScoped={userScoped}>
-      <ChatPermissionsProvider>
-        <ChatSessionBoundary threadId={threadId} deferUntilMessagesReady={deferUntilMessagesReady}>
-          {children}
-        </ChatSessionBoundary>
-      </ChatPermissionsProvider>
+      <ChatSessionBoundary threadId={threadId} deferUntilMessagesReady={deferUntilMessagesReady}>
+        {children}
+      </ChatSessionBoundary>
     </ChatSessionConfigProvider>
   );
 }

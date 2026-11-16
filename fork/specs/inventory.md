@@ -80,18 +80,18 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | Done | File                                                                 |  LOC | Note                                          |
 | ---- | -------------------------------------------------------------------- | ---: | --------------------------------------------- |
 | [ ]  | `hooks/useActiveRunResources.ts`                                     |   49 |                                               |
-| [ ]  | `hooks/useAgentControllerGoalMutations.ts`                           |   40 | goals UI dropped                              |
-| [ ]  | `hooks/useAgentControllerPermissionMutations.ts`                     |   70 | permissions UI dropped                        |
-| [ ]  | `hooks/useAgentControllerPermissions.ts`                             |   31 | permissions UI dropped                        |
+| [x]  | `hooks/useAgentControllerGoalMutations.ts`                           |   40 | deleted (3d: goals UI dropped)                |
+| [x]  | `hooks/useAgentControllerPermissionMutations.ts`                     |   70 | deleted (3d: permissions UI dropped)          |
+| [x]  | `hooks/useAgentControllerPermissions.ts`                             |   31 | deleted (3d: permissions UI dropped)          |
 | [x]  | `hooks/useAgentControllerRunMutations.ts`                            |  115 | deleted: `useSessionCommandMutations.ts` (3d) |
 | [ ]  | `hooks/useAgentControllerSessionInit.ts`                             |   80 |                                               |
 | [ ]  | `hooks/useAgentControllerSessionSync.ts`                             |   79 |                                               |
 | [ ]  | `hooks/useAgentControllerSettings.ts`                                |   38 |                                               |
 | [ ]  | `hooks/useAgentControllerStateMutations.ts`                          |   61 |                                               |
 | [ ]  | `hooks/useAgentControllerThreadMessages.ts`                          |  141 |                                               |
-| [ ]  | `hooks/useAgentControllerThreadMutations.ts`                         |   54 |                                               |
-| [ ]  | `hooks/useAgentControllerThreads.ts`                                 |   44 |                                               |
-| [ ]  | `hooks/useRouteThreadSync.ts`                                        |  102 |                                               |
+| [x]  | `hooks/useAgentControllerThreadMutations.ts`                         |   54 | deleted (3d: multi-thread sessions dropped)   |
+| [x]  | `hooks/useAgentControllerThreads.ts`                                 |   44 | deleted (3d: multi-thread sessions dropped)   |
+| [x]  | `hooks/useRouteThreadSync.ts`                                        |  102 | deleted (3d: multi-thread sessions dropped)   |
 | [ ]  | `hooks/useUpdateAgentControllerSettingsMutation.ts`                  |  106 |                                               |
 | [ ]  | `ui/domains/chat/components/activity/activity-plan.ts`               |  208 |                                               |
 | [ ]  | `ui/domains/chat/components/activity/HostedStretch.tsx`              |   69 |                                               |
@@ -104,8 +104,8 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `ui/domains/chat/components/TranscriptPromptCards.tsx`               |  203 |                                               |
 | [ ]  | `ui/domains/chat/components/turn-gaps.ts`                            |   86 |                                               |
 | [ ]  | `ui/domains/chat/context/ChatConnectionProvider.tsx`                 |   49 |                                               |
-| [ ]  | `ui/domains/chat/context/ChatPermissionsContext.ts`                  |   10 | permissions UI dropped                        |
-| [ ]  | `ui/domains/chat/context/ChatPermissionsProvider.tsx`                |   54 | permissions UI dropped                        |
+| [x]  | `ui/domains/chat/context/ChatPermissionsContext.ts`                  |   10 | deleted (3d: permissions UI dropped)          |
+| [x]  | `ui/domains/chat/context/ChatPermissionsProvider.tsx`                |   54 | deleted (3d: permissions UI dropped)          |
 | [ ]  | `ui/domains/chat/context/ChatTranscriptProvider.tsx`                 |  171 |                                               |
 | [ ]  | `ui/domains/chat/context/useChatCommandRegistry.ts`                  |  323 |                                               |
 | [ ]  | `ui/domains/chat/hooks/useAgentControllerConnection.ts`              |  208 |                                               |
@@ -115,7 +115,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `ui/domains/chat/hooks/usePendingPlanFeedback.ts`                    |   65 |                                               |
 | [ ]  | `ui/domains/chat/services/agentControllerClient.ts`                  |  126 |                                               |
 | [ ]  | `ui/domains/chat/services/message-author.ts`                         |   81 |                                               |
-| [ ]  | `ui/domains/chat/services/om.ts`                                     |   35 | OM UI dropped                                 |
+| [x]  | `ui/domains/chat/services/om.ts`                                     |   35 | deleted (3d: OM UI dropped)                   |
 | [ ]  | `ui/domains/chat/services/run-activity.ts`                           |   92 |                                               |
 | [ ]  | `ui/domains/chat/services/runtime.ts`                                |  217 |                                               |
 | [ ]  | `ui/domains/chat/services/transcript.ts`                             | 1428 |                                               |

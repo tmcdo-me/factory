@@ -16,7 +16,6 @@ import { assistantOnlyThreadMessages, threadRailMessagesWithEcho } from './fixtu
 const FACTORY_ID = 'fp-1';
 const REPO_ID = 'ghp-1';
 const SESSION_ID = 'sess-1';
-const ROUTE_THREAD_ID = 'thread-2';
 const AC = `${TEST_BASE_URL}/api/agent-controller/code`;
 
 const userSession: FactoryUserSession = {
@@ -234,20 +233,6 @@ describe('ThreadPage loading shell', () => {
     expect(screen.getByText('Review the implementation plan')).toBeInTheDocument();
     expect(document.body).toHaveTextContent('The implementation is ready to review.');
     expect(screen.queryByRole('status', { name: 'Preparing session' })).not.toBeInTheDocument();
-  });
-
-  it('waits for sandbox readiness before synchronizing an existing route thread', async () => {
-    const { sessionGate, onSwitchThread } = stubThreadRoute({
-      initialThreadId: 'thread-1',
-      threads: [{ id: 'thread-1' }, { id: ROUTE_THREAD_ID }],
-    });
-    renderThreadRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${ROUTE_THREAD_ID}`);
-
-    expect(await screen.findByRole('status', { name: 'Preparing session' })).toBeInTheDocument();
-    expect(onSwitchThread).not.toHaveBeenCalled();
-
-    sessionGate.resolve();
-    await waitFor(() => expect(onSwitchThread).toHaveBeenCalledWith(ROUTE_THREAD_ID));
   });
 });
 

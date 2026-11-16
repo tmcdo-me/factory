@@ -124,11 +124,6 @@ function ChatRuntimeValueProvider({
         usage: runtime.usage ?? sessionState?.tokenUsage,
         context: context ?? runtime.context,
         followUpCount: runtime.followUpCount,
-        omProgress: runtime.omProgress ?? sessionState?.omProgress,
-        omPhase: runtime.omPhase,
-        bufferingMessages: runtime.bufferingMessages,
-        bufferingObservations: runtime.bufferingObservations,
-        goal: runtime.goal,
         runsStarted: runtime.runsStarted,
         tokensPerSec: runtime.tokensPerSec,
       }}

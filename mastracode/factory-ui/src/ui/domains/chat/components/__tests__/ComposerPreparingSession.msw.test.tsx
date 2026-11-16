@@ -182,11 +182,11 @@ describe('Composer while a session prepares its workspace', () => {
     await waitFor(() => expect(message()).toBeEnabled());
     await waitFor(() => expect(screen.getByText('Preparing workspace…')).toBeInTheDocument());
 
-    await user.type(message(), '/goal ship it');
+    await user.type(message(), '/abort');
     await user.keyboard('{Enter}');
 
     await waitFor(() => expect(screen.getByText('Commands run once the session is ready.')).toBeInTheDocument());
-    expect(message()).toHaveValue('/goal ship it');
+    expect(message()).toHaveValue('/abort');
     expect(session.posted).toEqual([]);
 
     await releaseSession(session.finishWorkspace, client);

@@ -8,7 +8,6 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/render';
-import { useSwitchAgentControllerThreadMutation } from '../../../../../hooks/useAgentControllerThreadMutations';
 import { ChatSessionContext } from '../../context/ChatSessionContext';
 import { ChatConnectionContext } from '../../context/ChatConnectionContext';
 import { ChatModelsProvider } from '../../context/ChatModelsProvider';
@@ -369,42 +368,6 @@ describe('chat run errors', () => {
 
     expect(screen.getByText('Request timed out')).toBeVisible();
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
-  });
-
-  it('holds Continue while a thread switch is in flight, since the server may already be on the next thread', async () => {
-    let finishSwitch = () => {};
-    const switchHeld = new Promise<void>(resolve => {
-      finishSwitch = resolve;
-    });
-    server.use(
-      http.post(`${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId/thread`, async () => {
-        await switchHeld;
-        return HttpResponse.json({ ok: true });
-      }),
-      http.get(`${TEST_BASE_URL}/api/agent-controller/${AGENT_CONTROLLER_ID}/sessions/:sessionId`, () =>
-        HttpResponse.json({ controllerId: 'code', resourceId: 'resource-1', threadId: 'thread-1' }),
-      ),
-    );
-    function ThreadSwitch() {
-      const { mutate } = useSwitchAgentControllerThreadMutation({
-        agentControllerId: AGENT_CONTROLLER_ID,
-        sessionId: 'session-1',
-        baseUrl: TEST_BASE_URL,
-      });
-      useEffect(() => mutate('thread-1'), [mutate]);
-      return null;
-    }
-    renderWithProviders(
-      <>
-        <ThreadSwitch />
-        <ErrorSession messages={[failedReply('Request timed out.')]} />
-      </>,
-    );
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled());
-    finishSwitch();
-
-    await waitFor(() => expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled());
   });
 
   it('opens a new session when the provider rejects the conversation history', async () => {

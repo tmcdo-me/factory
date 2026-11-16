@@ -4,7 +4,6 @@ import { useParams } from 'react-router';
 import { isRecord } from '../lib/isRecord';
 import { useApiConfig } from '../api/config';
 import { queryKeys } from '../api/keys';
-import { AGENT_CONTROLLER_ID } from '../ui/domains/chat/services/constants';
 import { createUserSession } from '../ui/domains/workspaces/services/user-sessions';
 import { useFactoryQuery } from './useFactories';
 import { useCardRepositorySlug } from '../ui/domains/factory/hooks/useCardRepositorySlug';
@@ -88,9 +87,6 @@ export function useStartFactoryRun() {
       });
 
       await Promise.all([
-        queryClient.invalidateQueries({
-          queryKey: queryKeys.agentControllerThreads(AGENT_CONTROLLER_ID, sessionId),
-        }),
         queryClient.invalidateQueries({ queryKey: queryKeys.workItems(factoryId) }),
         // The session was just minted. Without this the sidebar keeps serving
         // its cached list and it only appears once some later navigation

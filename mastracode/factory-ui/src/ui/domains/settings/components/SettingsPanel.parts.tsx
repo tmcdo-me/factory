@@ -1,9 +1,4 @@
-import type {
-  AgentControllerSessionSettings,
-  PermissionPolicy,
-  PermissionRules,
-  ToolCategory,
-} from '@mastra/client-js';
+import type { AgentControllerSessionSettings } from '@mastra/client-js';
 import { SegmentedControl, SegmentedControlItem } from '@mastra/playground-ui/components/SegmentedControl';
 import { Switch } from '@mastra/playground-ui/components/Switch';
 import { ThemeToggle } from '@mastra/playground-ui/components/ThemeToggle';
@@ -41,111 +36,40 @@ export function GeneralSettings() {
 interface BehaviorSettingsProps {
   settings: AgentControllerSessionSettings | null;
   onBehaviorChange: (updates: Partial<AgentControllerSessionSettings>) => Promise<unknown>;
-  permissions: PermissionRules | null;
-  setPermissionForCategory: (category: ToolCategory, policy: PermissionPolicy) => Promise<void>;
 }
 
-export function BehaviorSettings({
-  settings,
-  onBehaviorChange,
-  permissions,
-  setPermissionForCategory,
-}: BehaviorSettingsProps) {
+export function BehaviorSettings({ settings, onBehaviorChange }: BehaviorSettingsProps) {
   const notificationMode = settings?.notifications ?? 'off';
-  return (
-    <>
-      <SettingsSubsection
-        scope="factory"
-        title="General"
-        description="Shared by everyone working in this Factory. Auto-approve and smart editing reset when the server restarts."
-      >
-        <SettingsContainer>
-          <SettingsRow label="Auto-approve tools" description="Run tool calls without asking.">
-            <Toggle
-              ariaLabel="Auto-approve tools"
-              checked={!!settings?.yolo}
-              disabled={!settings}
-              onChange={v => onBehaviorChange({ yolo: v })}
-            />
-          </SettingsRow>
-          <SettingsRow label="Smart editing" description="Use AST-aware edits when available.">
-            <Toggle
-              ariaLabel="Smart editing"
-              checked={!!settings?.smartEditing}
-              disabled={!settings}
-              onChange={v => onBehaviorChange({ smartEditing: v })}
-            />
-          </SettingsRow>
-          <SettingsRow label="Notifications" description="How completion alerts are delivered.">
-            <SegmentedControl
-              aria-label="Notifications"
-              value={notificationMode}
-              disabled={!settings}
-              onValueChange={v => onBehaviorChange({ notifications: v })}
-            >
-              <SegmentedControlItem value="off">Off</SegmentedControlItem>
-              <SegmentedControlItem value="bell">Bell</SegmentedControlItem>
-              <SegmentedControlItem value="system">System</SegmentedControlItem>
-              <SegmentedControlItem value="both">Both</SegmentedControlItem>
-            </SegmentedControl>
-          </SettingsRow>
-        </SettingsContainer>
-      </SettingsSubsection>
-      <PermissionsSection permissions={permissions} setPermissionForCategory={setPermissionForCategory} />
-    </>
-  );
-}
-
-const TOOL_CATEGORIES: { value: ToolCategory; label: string; hint: string }[] = [
-  { value: 'read', label: 'Read', hint: 'View files and inspect the workspace.' },
-  { value: 'edit', label: 'Edit', hint: 'Create, change or delete files.' },
-  { value: 'execute', label: 'Execute', hint: 'Run shell commands.' },
-  { value: 'mcp', label: 'MCP', hint: 'Call tools from MCP servers.' },
-  { value: 'other', label: 'Other', hint: 'Anything not covered above.' },
-];
-function PermissionsSection({
-  permissions,
-  setPermissionForCategory,
-}: Pick<BehaviorSettingsProps, 'permissions' | 'setPermissionForCategory'>) {
   return (
     <SettingsSubsection
       scope="factory"
-      title="Tool permissions"
-      description="Whether agents run each kind of tool without asking, ask first, or never run it. Auto-approve sets them all to Allow. Shared by everyone in this Factory, and reset when the server restarts."
+      title="General"
+      description="Shared by everyone working in this Factory. Smart editing resets when the server restarts."
     >
       <SettingsContainer>
-        {TOOL_CATEGORIES.map(({ value, label, hint }) => (
-          <SettingsRow key={value} label={label} description={hint}>
-            <PermissionPolicyControl
-              category={label}
-              policy={permissions?.categories?.[value] ?? 'ask'}
-              disabled={!permissions}
-              onChange={policy => void setPermissionForCategory(value, policy)}
-            />
-          </SettingsRow>
-        ))}
+        <SettingsRow label="Smart editing" description="Use AST-aware edits when available.">
+          <Toggle
+            ariaLabel="Smart editing"
+            checked={!!settings?.smartEditing}
+            disabled={!settings}
+            onChange={v => onBehaviorChange({ smartEditing: v })}
+          />
+        </SettingsRow>
+        <SettingsRow label="Notifications" description="How completion alerts are delivered.">
+          <SegmentedControl
+            aria-label="Notifications"
+            value={notificationMode}
+            disabled={!settings}
+            onValueChange={v => onBehaviorChange({ notifications: v })}
+          >
+            <SegmentedControlItem value="off">Off</SegmentedControlItem>
+            <SegmentedControlItem value="bell">Bell</SegmentedControlItem>
+            <SegmentedControlItem value="system">System</SegmentedControlItem>
+            <SegmentedControlItem value="both">Both</SegmentedControlItem>
+          </SegmentedControl>
+        </SettingsRow>
       </SettingsContainer>
     </SettingsSubsection>
-  );
-}
-
-function PermissionPolicyControl({
-  category,
-  policy,
-  disabled,
-  onChange,
-}: {
-  category: string;
-  policy: PermissionPolicy;
-  disabled: boolean;
-  onChange: (policy: PermissionPolicy) => void;
-}) {
-  return (
-    <SegmentedControl aria-label={`${category} permission`} value={policy} disabled={disabled} onValueChange={onChange}>
-      <SegmentedControlItem value="allow">Allow</SegmentedControlItem>
-      <SegmentedControlItem value="ask">Ask</SegmentedControlItem>
-      <SegmentedControlItem value="deny">Deny</SegmentedControlItem>
-    </SegmentedControl>
   );
 }
 

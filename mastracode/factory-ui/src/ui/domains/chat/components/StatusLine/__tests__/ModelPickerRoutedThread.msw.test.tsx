@@ -9,7 +9,6 @@ import { server } from '../../../../../../../e2e/ui/msw-server';
 import { TEST_BASE_URL, renderWithProviders } from '../../../../../../../e2e/ui/render';
 import type { AvailableModelOption } from '../../../../../../hooks/useAvailableModels';
 import { ChatConnectionContext } from '../../../context/ChatConnectionContext';
-import { ChatPermissionsProvider } from '../../../context/ChatPermissionsProvider';
 import { ChatSessionContext } from '../../../context/ChatSessionContext';
 import type { ChatSessionContextApi } from '../../../context/ChatSessionContext';
 import { ChatSessionBoundary } from '../../../context/ChatSessionProvider';
@@ -127,13 +126,13 @@ function renderRoute(initialThreadId: string) {
           },
         }}
       >
-        <ChatPermissionsProvider>
+        <>
           <MemoryRouter initialEntries={[`/factories/fp-1/workspaces/${SESSION_ID}/threads/${initialThreadId}`]}>
             <Routes>
               <Route path="/factories/:factoryId/workspaces/:sessionId/threads/:threadId" element={<RoutedThread />} />
             </Routes>
           </MemoryRouter>
-        </ChatPermissionsProvider>
+        </>
         <Toaster position="bottom-right" />
       </ChatConnectionContext.Provider>
     </ChatSessionContext.Provider>,

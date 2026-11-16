@@ -93,13 +93,6 @@ export function GlobalSearchNavigationResults({
       />
       <CommandPaletteItem
         icon={<IconSettingsGear1 />}
-        title={SETTINGS_SECTION_LABELS.memory}
-        subtitle="Settings"
-        value={`Memory Settings memory personal factory shared observational ${settingsSectionPath(factoryId, 'memory')}`}
-        onSelect={() => onSelect(settingsSectionPath(factoryId, 'memory'), true)}
-      />
-      <CommandPaletteItem
-        icon={<IconSettingsGear1 />}
         title={SETTINGS_SECTION_LABELS.behavior}
         subtitle="Settings"
         value={`Behavior Settings behavior ${settingsSectionPath(factoryId, 'behavior')}`}

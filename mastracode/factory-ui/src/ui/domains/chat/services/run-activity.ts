@@ -10,12 +10,11 @@ export interface RunningCall {
   args: unknown;
 }
 
-export type RunActivity = 'memory' | 'thinking' | 'writing' | 'waiting' | 'done' | 'error' | RunningCall;
+export type RunActivity = 'thinking' | 'writing' | 'waiting' | 'done' | 'error' | RunningCall;
 
 export type LineState = Exclude<RunActivity, 'writing'>;
 
 export const LABELS: Record<Exclude<LineState, RunningCall>, string> = {
-  memory: 'Updating memory',
   thinking: 'Thinking',
   waiting: 'Waiting for you',
   done: 'Done',
@@ -23,7 +22,6 @@ export const LABELS: Record<Exclude<LineState, RunningCall>, string> = {
 };
 
 export const STATUS: Record<Exclude<LineState, RunningCall>, ActivityStatus> = {
-  memory: 'running',
   thinking: 'running',
   waiting: 'idle',
   done: 'idle',
@@ -85,8 +83,7 @@ export function runActivity(entries: TimelineEntry[], lastEntryBeforeRun?: strin
 }
 
 /** An answer already says the run is over, so a run that ends on one stays writing. */
-export function lineState(activity: RunActivity, busy: boolean, savingMemory: boolean): RunActivity {
+export function lineState(activity: RunActivity, busy: boolean): RunActivity {
   if (activity === 'waiting' || activity === 'error' || activity === 'writing') return activity;
-  if (!busy) return 'done';
-  return savingMemory ? 'memory' : activity;
+  return busy ? activity : 'done';
 }

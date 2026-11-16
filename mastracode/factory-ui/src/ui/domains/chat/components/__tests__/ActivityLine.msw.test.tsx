@@ -143,20 +143,7 @@ describe('ActivityLine', () => {
     expect(document.querySelector('.agent-indicator')).toBeNull();
   });
 
-  it('says the run is saving memory while memory holds it', async () => {
-    const session = stubPreparingSession({ autoAgentEnd: false });
-    const user = userEvent.setup();
-    const { client } = renderThread();
-    await ready(session.finishWorkspace, client);
-    await send(user);
-    await session.emit({ type: 'agent_start' });
-
-    await session.emit({ type: 'om_observation_start' });
-
-    expect(await screen.findByText('Updating memory')).toBeInTheDocument();
-  });
-
-  it('stays quiet while memory saves after the answer, and when the run then ends', async () => {
+  it('stays quiet after the answer, and when the run then ends', async () => {
     const session = stubPreparingSession({ autoAgentEnd: false });
     const user = userEvent.setup();
     const { client } = renderThread();
@@ -171,10 +158,7 @@ describe('ActivityLine', () => {
     });
     await waitFor(() => expect(document.body).toHaveTextContent('Auth starts at the composer'), { timeout: 3000 });
 
-    await session.emit({ type: 'om_observation_start' });
-    await screen.findByText('saving memory');
-
-    expect(screen.queryByText('Updating memory')).not.toBeInTheDocument();
+    expect(screen.queryByText('Thinking')).not.toBeInTheDocument();
 
     await session.emit({ type: 'agent_end' });
     await screen.findByRole('button', { name: 'Copy message' }, { timeout: 3000 });

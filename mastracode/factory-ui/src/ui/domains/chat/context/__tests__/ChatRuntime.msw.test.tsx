@@ -1,4 +1,3 @@
-import type { AgentControllerEvent } from '@mastra/client-js';
 import { SidebarProvider } from '@mastra/playground-ui/components/Sidebar';
 import { screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -9,9 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL } from '../../../../../../e2e/ui/render';
 import { OverlaysProvider } from '../../../../lib/overlays';
-import { GoalPanel } from '../../components/GoalPanel';
-import { GoalStatus } from '../../components/StatusLine/GoalStatus';
-import { OperationalMemoryStatus } from '../../components/StatusLine/OperationalMemoryStatus';
 import { QueuedFollowUps } from '../../components/StatusLine/QueuedFollowUps';
 import { Transcript } from '../../components/Transcript';
 import { FACTORY_ID, SESSION_ID, stubPreparingSession } from '../../components/__tests__/composer-session-test-fixture';
@@ -23,34 +19,6 @@ import { useChatTranscript } from '../useChatTranscript';
 const snapshot: SessionStateSnapshot = {
   threadId: SESSION_ID,
   tokenUsage: { promptTokens: 21, completionTokens: 34, totalTokens: 55 },
-  omProgress: {
-    status: 'idle',
-    pendingTokens: 320,
-    threshold: 1000,
-    thresholdPercent: 32,
-    observationTokens: 500,
-    reflectionThreshold: 2000,
-    reflectionThresholdPercent: 25,
-    projectedMessageRemoval: 0,
-    projectedReflectionSavings: 0,
-  },
-};
-
-const goalEvent: AgentControllerEvent = {
-  type: 'goal_evaluation',
-  payload: {
-    objective: 'Fix the failing build',
-    iteration: 2,
-    maxRuns: 5,
-    passed: false,
-    status: 'active',
-    results: [],
-    duration: 100,
-    timedOut: false,
-    maxRunsReached: false,
-    suppressFeedback: false,
-    shouldContinue: true,
-  },
 };
 
 function RuntimeSurface({ resetState }: { resetState?: SessionStateSnapshot }) {
@@ -58,13 +26,9 @@ function RuntimeSurface({ resetState }: { resetState?: SessionStateSnapshot }) {
   const { runComposerCommand } = useChatCommands();
   return (
     <>
-      <GoalPanel />
-      <GoalStatus />
-      <OperationalMemoryStatus />
       <QueuedFollowUps />
       <Transcript />
       <button onClick={() => void runComposerCommand('/cost')}>Cost</button>
-      <button onClick={() => void runComposerCommand('/om')}>Memory phase</button>
       <button onClick={() => reset('next-thread', resetState)}>Reset thread</button>
     </>
   );
@@ -100,33 +64,24 @@ function renderRuntime(resetState?: SessionStateSnapshot) {
 }
 
 describe('chat runtime consumers', () => {
-  it('hydrates status from the session and updates the goal panel and commands from live events', async () => {
+  it('hydrates status from the session and updates the status line and commands from live events', async () => {
     const session = renderRuntime();
     const user = userEvent.setup();
-    await screen.findByRole('button', { name: /Memory budgets/ });
-    await user.click(screen.getByRole('button', { name: 'Cost' }));
-    expect(await screen.findByText('Used 55 tokens (21 prompt, 34 completion).')).toBeInTheDocument();
+    // The session's state snapshot carries the usage so far; the cost reads it once it lands.
+    await waitFor(async () => {
+      await user.click(screen.getByRole('button', { name: 'Cost' }));
+      expect(screen.getAllByText('Used 55 tokens (21 prompt, 34 completion).').length).toBeGreaterThan(0);
+    });
 
     await session.emit({
       type: 'display_state_changed',
-      displayState: {
-        bufferingObservations: true,
-        tokenUsage: { promptTokens: 30, completionTokens: 45, totalTokens: 75 },
-      },
+      displayState: { tokenUsage: { promptTokens: 30, completionTokens: 45, totalTokens: 75 } },
     });
-    await session.emit(goalEvent);
     await session.emit({ type: 'follow_up_queued', count: 2 });
-    await session.emit({ type: 'om_buffering_start' });
 
-    expect(await screen.findByText('Fix the failing build')).toBeInTheDocument();
-    expect(screen.getByText('2/5')).toBeInTheDocument();
-    expect(screen.getByText('pursuing goal')).toBeInTheDocument();
     expect(await screen.findByText('2 queued')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /Consolidating observations in the background/ })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cost' }));
     expect(await screen.findByText('Used 75 tokens (30 prompt, 45 completion).')).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Memory phase' }));
-    expect(await screen.findByText('Observational memory phase: buffering')).toBeInTheDocument();
   });
 
   it.each([
@@ -137,33 +92,19 @@ describe('chat runtime consumers', () => {
   ])('resets transcript and runtime together with $scenario', async ({ resetState, restoreSnapshot }) => {
     const session = renderRuntime(resetState);
     const user = userEvent.setup();
-    await screen.findByRole('button', { name: /Memory budgets/ });
-    await session.emit(goalEvent);
     await session.emit({ type: 'follow_up_queued', count: 2 });
-    await session.emit({ type: 'om_reflection_start' });
-    await session.emit({
-      type: 'display_state_changed',
-      displayState: { ...snapshot, bufferingObservations: true },
-    });
+    await session.emit({ type: 'display_state_changed', displayState: snapshot });
     await session.emit({ type: 'info', message: 'Previous thread notice' });
     await screen.findByText('Previous thread notice');
     await user.click(screen.getByRole('button', { name: 'Reset thread' }));
 
     await waitFor(() => expect(screen.queryByText('Previous thread notice')).not.toBeInTheDocument());
-    expect(screen.queryByText('Fix the failing build')).not.toBeInTheDocument();
-    expect(screen.queryByText('pursuing goal')).not.toBeInTheDocument();
     expect(screen.queryByText('2 queued')).not.toBeInTheDocument();
-    expect(
-      screen.queryByRole('button', { name: /Consolidating observations in the background/ }),
-    ).not.toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Memory phase' }));
-    expect(await screen.findByText('Observational memory phase: idle')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Cost' }));
     expect(
       await screen.findByText(
         restoreSnapshot ? 'Used 55 tokens (21 prompt, 34 completion).' : 'No token usage recorded yet.',
       ),
     ).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /Memory budgets/ }) !== null).toBe(restoreSnapshot);
   });
 });

@@ -38,7 +38,9 @@ const workspaceSession = {
   updatedAt: '2026-07-29T00:00:00.000Z',
 };
 
-function stubBase({ workItems, threads }: { workItems: unknown[]; threads: unknown[] }) {
+// fork(claude-agent): a session is one conversation; its title is the session row's own.
+function stubBase({ workItems, sessionTitle }: { workItems: unknown[]; sessionTitle?: string }) {
+  const session = { ...workspaceSession, ...(sessionTitle ? { title: sessionTitle } : {}) };
   server.use(
     http.get(`${TEST_BASE_URL}/auth/me`, () =>
       HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
@@ -64,12 +66,10 @@ function stubBase({ workItems, threads }: { workItems: unknown[]; threads: unkno
     ),
     http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/work-items`, () => HttpResponse.json({ workItems })),
     http.get(`${TEST_BASE_URL}/web/factory/projects/${FACTORY_ID}/sessions`, () =>
-      HttpResponse.json({ sessions: [workspaceSession] }),
+      HttpResponse.json({ sessions: [session] }),
     ),
     http.get(`${TEST_BASE_URL}/web/github/subscriptions`, () => HttpResponse.json({ subscriptions: [] })),
-    http.get(`${TEST_BASE_URL}/web/user-sessions/${SESSION_ID}`, () =>
-      HttpResponse.json({ session: workspaceSession }),
-    ),
+    http.get(`${TEST_BASE_URL}/web/user-sessions/${SESSION_ID}`, () => HttpResponse.json({ session })),
     http.post(`${AC}/sessions`, () =>
       HttpResponse.json({ controllerId: 'code', resourceId: SESSION_ID, threadId: THREAD_ID }),
     ),
@@ -92,7 +92,6 @@ function stubBase({ workItems, threads }: { workItems: unknown[]; threads: unkno
         }),
     ),
     http.get(`${AC}/sessions/:resourceId/permissions`, () => HttpResponse.json({})),
-    http.get(`${AC}/sessions/:resourceId/threads`, () => HttpResponse.json({ threads })),
     http.get(`${AC}/sessions/:resourceId/threads/:threadId/messages`, () => HttpResponse.json({ messages: [] })),
     http.get(`${TEST_BASE_URL}/web/workspace/rendered/list`, () =>
       HttpResponse.json({ workspacePath: `/ws/${SESSION_ID}`, root: '.artifacts', rootPath: '', entries: [] }),
@@ -144,7 +143,7 @@ describe('ThreadPage document title', () => {
   it('shows the PR number for review sessions', async () => {
     stubBase({
       workItems: [pullRequestCard],
-      threads: [{ id: THREAD_ID, title: 'A different title that must lose to the PR number' }],
+      sessionTitle: 'A different title that must lose to the PR number',
     });
     await renderRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${THREAD_ID}`);
 
@@ -152,7 +151,7 @@ describe('ThreadPage document title', () => {
   });
 
   it('shows the PR number while the board is still loading', async () => {
-    stubBase({ workItems: [pullRequestCard], threads: [{ id: THREAD_ID, title: 'Review the auth fix' }] });
+    stubBase({ workItems: [pullRequestCard], sessionTitle: 'Review the auth fix' });
     server.use(sessionCardsWhileBoardLoads(FACTORY_ID, SESSION_ID, [pullRequestCard]));
     // The board read never settles, so there is no idle state to wait for before reading the title.
     const router = createMemoryRouter(createAppRoutes(), {
@@ -163,17 +162,17 @@ describe('ThreadPage document title', () => {
     await waitFor(() => expect(document.title).toBe('PR #1567 | Mastra Factory'));
   });
 
-  it('shows the thread title for user sessions', async () => {
+  it('shows the session title for user sessions', async () => {
     stubBase({
       workItems: [],
-      threads: [{ id: THREAD_ID, title: 'Investigate Pricing Bug' }],
+      sessionTitle: 'Investigate Pricing Bug',
     });
     await renderRoute(`/factories/${FACTORY_ID}/user/threads/${THREAD_ID}`);
 
     await waitFor(() => expect(document.title).toBe('Investigate Pricing Bug | Mastra Factory'));
   });
 
-  it('uses the thread title in the work-session sidebar while the document title shows the issue number', async () => {
+  it('uses the session title in the work-session sidebar while the document title shows the issue number', async () => {
     stubBase({
       workItems: [
         {
@@ -205,7 +204,7 @@ describe('ThreadPage document title', () => {
           updatedAt: '2026-07-29T00:00:00.000Z',
         },
       ],
-      threads: [{ id: THREAD_ID, title: 'Fix flaky login' }],
+      sessionTitle: 'Fix flaky login',
     });
     await renderRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${THREAD_ID}`);
 
@@ -245,17 +244,16 @@ describe('ThreadPage document title', () => {
           updatedAt: '2026-07-29T00:00:00.000Z',
         },
       ],
-      threads: [{ id: THREAD_ID, title: 'A thread title Linear should win over' }],
+      sessionTitle: 'A thread title Linear should win over',
     });
     await renderRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${THREAD_ID}`);
 
     await waitFor(() => expect(document.title).toBe('COR-210 | Mastra Factory'));
   });
 
-  it('keeps the branch label when a work-session thread has no title yet', async () => {
+  it('keeps the branch label when a work session has no title yet', async () => {
     stubBase({
       workItems: [],
-      threads: [{ id: THREAD_ID }],
     });
     await renderRoute(`/factories/${FACTORY_ID}/workspaces/${SESSION_ID}/threads/${THREAD_ID}`);
 

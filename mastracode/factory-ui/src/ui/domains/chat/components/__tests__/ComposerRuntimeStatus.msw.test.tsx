@@ -113,14 +113,15 @@ const messageBox = () => screen.getByRole<HTMLTextAreaElement>('textbox', { name
 
 describe('composer runtime status', () => {
   describe('in a Mastra Code session', () => {
-    it('asks Mastra Code, keeps the memory budgets, and meters the context of the latest step without a limit', async () => {
+    it('asks Mastra Code, shows no memory budgets, and meters the context of the latest step without a limit', async () => {
       const session = stubPreparingSession();
       withObservationalMemory();
       const { client } = renderThread();
       await releaseSession(session.finishWorkspace, client);
 
       await waitFor(() => expect(messageBox().placeholder).toBe('Ask Mastra Code'));
-      expect(await screen.findByRole('button', { name: /^Memory budgets:/ })).toBeVisible();
+      // fork(claude-agent): the observational-memory budgets were dropped with their UI.
+      expect(screen.queryByRole('button', { name: /^Memory budgets:/ })).toBeNull();
       expect(screen.queryByRole('button', { name: /^Context window/ })).toBeNull();
 
       // One step's prompt is the context; the session's running total is not.

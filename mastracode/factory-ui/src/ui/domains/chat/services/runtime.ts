@@ -5,25 +5,14 @@ import { replaceEqualDeep } from '@tanstack/react-query';
 
 import type { ContextUsage } from './contextUsage'; // fork(claude-agent)
 import { contextFromStepUsage } from './contextUsage'; // fork(claude-agent)
-import type { OMBudgets } from './om';
 
-export type SessionStateSnapshot = Pick<AgentControllerSessionState, 'threadId' | 'omProgress' | 'tokenUsage'>;
-export type OMPhase = 'idle' | 'observing' | 'reflecting' | 'buffering';
-export type GoalSnapshot = Pick<
-  Extract<AgentControllerEvent, { type: 'goal_evaluation' }>['payload'],
-  'objective' | 'status' | 'iteration' | 'maxRuns' | 'passed' | 'reason'
->;
+export type SessionStateSnapshot = Pick<AgentControllerSessionState, 'threadId' | 'tokenUsage'>;
 
 export interface ChatRuntimeState {
   usage?: TokenUsage;
   /** fork(claude-agent): the latest step's context, for the context meter. Cleared on reset. */
   context?: ContextUsage;
   followUpCount: number;
-  omProgress?: OMBudgets;
-  omPhase: OMPhase;
-  bufferingMessages: boolean;
-  bufferingObservations: boolean;
-  goal?: GoalSnapshot;
   runsStarted: number;
   tokensPerSec: number;
   /** Assistant message the decode window measures; a different message starts a new window. */
@@ -36,9 +25,6 @@ export interface ChatRuntimeState {
 export const initialChatRuntime: ChatRuntimeState = {
   followUpCount: 0,
   runsStarted: 0,
-  omPhase: 'idle',
-  bufferingMessages: false,
-  bufferingObservations: false,
   tokensPerSec: 0,
   _decodeStartedAt: 0,
   _decodeLastDeltaAt: 0,
@@ -104,7 +90,7 @@ export function runtimeReducer(state: ChatRuntimeState, action: RuntimeAction): 
   if (action.type === 'reset') {
     const matchingSnapshot =
       action.threadId !== undefined && action.state?.threadId === action.threadId ? action.state : undefined;
-    return { ...initialChatRuntime, usage: matchingSnapshot?.tokenUsage, omProgress: matchingSnapshot?.omProgress };
+    return { ...initialChatRuntime, usage: matchingSnapshot?.tokenUsage };
   }
 
   const event = action.event;
@@ -190,32 +176,10 @@ export function runtimeReducer(state: ChatRuntimeState, action: RuntimeAction): 
     }
     case 'display_state_changed': {
       // Snapshots arrive many times a second and mostly repeat what is shown; the same state lets React skip the chat.
-      return replaceEqualDeep(state, {
-        ...state,
-        omProgress: event.displayState.omProgress ?? state.omProgress,
-        usage: event.displayState.tokenUsage ?? state.usage,
-        bufferingMessages: event.displayState.bufferingMessages ?? false,
-        bufferingObservations: event.displayState.bufferingObservations ?? false,
-      });
+      return replaceEqualDeep(state, { ...state, usage: event.displayState.tokenUsage ?? state.usage });
     }
-    case 'goal_evaluation':
-      return { ...state, goal: event.payload };
     case 'follow_up_queued':
       return { ...state, followUpCount: event.count };
-    case 'om_observation_start':
-      return { ...state, omPhase: 'observing' };
-    case 'om_reflection_start':
-      return { ...state, omPhase: 'reflecting' };
-    case 'om_buffering_start':
-      return { ...state, omPhase: 'buffering' };
-    case 'om_observation_end':
-    case 'om_observation_failed':
-    case 'om_reflection_end':
-    case 'om_reflection_failed':
-    case 'om_buffering_end':
-    case 'om_buffering_failed':
-    case 'om_activation':
-      return { ...state, omPhase: 'idle' };
     default:
       return state;
   }
