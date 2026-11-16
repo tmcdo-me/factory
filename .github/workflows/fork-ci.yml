@@ -73,3 +73,32 @@ jobs:
           files=$(git grep -l 'fork(claude-agent)' -- 'src/*.test.ts')
           echo "$files"
           pnpm exec vitest run $files --reporter=dot
+
+  # Factory UI: typecheck, and run every test file that carries the fork marker.
+  factory-ui-seams:
+    if: github.repository == 'tmcdo-me/factory'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+
+      - name: Install @internal/factory-ui and its dependencies
+        run: pnpm install --frozen-lockfile --filter "@internal/factory-ui..." --filter mastra-docs
+
+      - name: Build dependencies of @internal/factory-ui
+        run: pnpm turbo build --filter "@internal/factory-ui^..."
+
+      - name: Typecheck
+        run: pnpm --filter @internal/factory-ui typecheck
+
+      - name: Fork-marked tests
+        working-directory: mastracode/factory-ui
+        run: |
+          files=$(git grep -l 'fork(claude-agent)' -- 'src/*.test.ts' 'src/*.test.tsx')
+          echo "$files"
+          pnpm exec vitest run $files --reporter=dot
