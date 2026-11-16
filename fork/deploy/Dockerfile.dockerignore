@@ -1,0 +1,47 @@
+# Build context of fork/deploy/Dockerfile (the repository root). BuildKit reads this file because it
+# sits beside the Dockerfile; fly.toml names it as `ignorefile`. Keeps the context to sources: the
+# build installs and builds everything itself, and no secret ever reaches an image layer.
+
+# Installed dependencies, build output and caches (the build makes its own)
+**/node_modules
+**/dist
+**/.mastra
+**/.turbo
+**/.next
+**/*.tsbuildinfo
+**/.test-tmp
+**/test-outputs
+**/coverage
+
+# Git, editors, agents
+.git
+**/.DS_Store
+.agents
+.claude
+.cursor
+.github
+.husky
+.opencode
+.superset
+.mastracode
+.coderabbit.yaml
+.dev
+.factory
+.pr-review
+.artifacts
+.sandbox-profiles
+
+# Not part of the pnpm workspace
+examples
+templates
+
+# Secrets and data: never in the context
+**/.env
+**/.env.local
+**/.env.*.local
+**/*.pem
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.duckdb*
+fork/deploy/*.env

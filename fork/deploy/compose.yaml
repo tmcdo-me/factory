@@ -1,0 +1,154 @@
+# The Factory server as a Docker Compose stack: an example shaped for the homelab repository's
+# conventions (tmcdo-me/homelab-compose: `stacks/<name>/compose.yaml` + `.env.example`, DockTail labels
+# for the tailnet, loopback-only port for cloudflared, explicit `environment:`, the backup gate). Copy it
+# with compose.env.example (as the stack's .env.example) and adjust what the comments say. See
+# fork/deploy/README.md.
+#
+# Check it renders:  docker compose -f compose.yaml --env-file compose.env.example config
+name: factory
+
+x-homelab:
+  host: docker
+
+# Built from this repository at a pinned ref (the public GitHub repository, so no credential): the
+# branch-tag row of homelab-compose's container-upgrades, the applier runs `pull --ignore-buildable` and
+# `up --build`. A deploy is a PR moving FACTORY_REF. The build needs about 6 GB of disk while it runs
+# and keeps a cache. Both services name the same build, so neither is pulled from a registry. A
+# prebuilt image instead: delete both `build:` lines and set `image:` to it.
+x-factory-build: &factory-build
+  context: https://github.com/tmcdo-me/factory.git#${FACTORY_REF}
+  dockerfile: fork/deploy/Dockerfile
+
+services:
+  factory:
+    build: *factory-build
+    image: factory:${FACTORY_REF}
+    container_name: factory
+    hostname: factory
+    restart: unless-stopped
+    # Factory's shutdown on SIGTERM: drain requests (5 s), stop live Claude Code processes and the
+    # dispatcher, end runs in flight as stopped, release the Claude Agent host lease, close the
+    # database. The image's PID 1 (tini) forwards the signal; give it the time before SIGKILL.
+    stop_grace_period: 60s
+    environment:
+      - TZ=${TZ}
+      # The URL people open. The OIDC callback is <this>/auth/callback, the GitHub App's
+      # <this>/auth/github/callback; it stays https://factory.tail99d67.ts.net across the move.
+      - MASTRACODE_PUBLIC_URL=${MASTRACODE_PUBLIC_URL}
+      # Sign-in through Pocket ID (the same client the Mini uses; its redirect URI does not change).
+      - OIDC_ISSUER=${OIDC_ISSUER}
+      - OIDC_CLIENT_ID=${OIDC_CLIENT_ID}
+      - OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}
+      - OIDC_DISPLAY_NAME=${OIDC_DISPLAY_NAME}
+      - FACTORY_SESSION_SECRET=${FACTORY_SESSION_SECRET}
+      # Must be the key the data was written with (the Mini's): without it the stored model keys and
+      # integration secrets in the database cannot be read.
+      - FACTORY_CREDENTIAL_ENCRYPTION_KEY=${FACTORY_CREDENTIAL_ENCRYPTION_KEY}
+      - FACTORY_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS=${FACTORY_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS}
+      # Every session on its own Fly.io Sprite (the image refuses anything else: FACTORY_DEPLOYMENT).
+      - SPRITES_TOKEN=${SPRITES_TOKEN}
+      - FACTORY_SPRITES_REGION=${FACTORY_SPRITES_REGION}
+      - FACTORY_SPRITES_PREFIX=${FACTORY_SPRITES_PREFIX}
+      # Claude Code's login inside the Sprites (`claude setup-token`), passed through untouched.
+      - CLAUDE_CODE_OAUTH_TOKEN=${CLAUDE_CODE_OAUTH_TOKEN}
+      # The GitHub App. Its webhook reaches /web/github/webhook through the Cloudflare tunnel and is
+      # verified with GITHUB_APP_WEBHOOK_SECRET (also the OAuth state-signing secret).
+      - GITHUB_APP_ID=${GITHUB_APP_ID}
+      - GITHUB_APP_PRIVATE_KEY=${GITHUB_APP_PRIVATE_KEY}
+      - GITHUB_APP_CLIENT_ID=${GITHUB_APP_CLIENT_ID}
+      - GITHUB_APP_CLIENT_SECRET=${GITHUB_APP_CLIENT_SECRET}
+      - GITHUB_APP_SLUG=${GITHUB_APP_SLUG}
+      - GITHUB_APP_WEBHOOK_SECRET=${GITHUB_APP_WEBHOOK_SECRET}
+      # Optional knobs; empty means the default (mastracode/web/.env.schema).
+      - MASTRACODE_GITHUB_AUTHORIZED_BOTS=${MASTRACODE_GITHUB_AUTHORIZED_BOTS}
+      - MASTRACODE_DISPATCH_MAX_IN_FLIGHT=${MASTRACODE_DISPATCH_MAX_IN_FLIGHT}
+      - FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS=${FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS}
+      - FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS=${FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS}
+    volumes:
+      # Everything the server keeps: /data/app/mastra.db (libSQL, WAL mode) and /data/backups. Local
+      # disk only (/srv/apps is the VM's own virtio disk): SQLite's locking and WAL shared memory are
+      # not safe on NFS or SMB, so never point this at /mnt/nas.
+      - ${APPDATA_ROOT}/factory/data:/data
+    ports:
+      # Loopback only, for cloudflared-truenas (host network), which serves the GitHub webhook path
+      # and nothing else. The tailnet Service needs no published port (DockTail proxies to the
+      # container's address).
+      - '127.0.0.1:${FACTORY_PORT}:5873'
+    read_only: true
+    tmpfs:
+      # The root filesystem is read-only; the server's scratch and $HOME are memory, owned by its user.
+      - /tmp:uid=1000,gid=1000,mode=0700
+      - /home/node:uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    labels:
+      # Takes over svc:factory from mac-mini (ingress/tailscale/setup.md, #415).
+      - 'docktail.service.enable=true'
+      - 'docktail.service.name=factory'
+      - 'docktail.service.port=5873'
+      - 'docktail.service.service-port=443'
+      # Holds Factory's database: never recreate unattended.
+      - homelab.gate=backup
+    healthcheck:
+      # The image's own check (GET /auth/me answers 200 signed in or not), stated so the interval is ours.
+      test: ['CMD', 'factory-healthcheck']
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+  factory-snapshot:
+    # The online snapshot of the database, daily ahead of the 02:30 PBS window: SQLite's backup API to
+    # /data/backups/mastra.db-YYYY-MM-DD, integrity-checked, newest FACTORY_BACKUP_KEEP kept. The dated
+    # name is backup-verify's dated-copy pattern, so it checks freshness (96 h) and integrity with no
+    # registration. Same image, same volume; it holds no data of its own. One now, before anything
+    # copies the volume: `docker compose exec factory-snapshot factory-snapshot`.
+    build: *factory-build
+    image: factory:${FACTORY_REF}
+    container_name: factory-snapshot
+    hostname: factory-snapshot
+    restart: unless-stopped
+    depends_on:
+      - factory
+    command: ['factory-snapshot', '--at', '${FACTORY_SNAPSHOT_AT}']
+    environment:
+      - TZ=${TZ}
+      - FACTORY_BACKUP_KEEP=${FACTORY_BACKUP_KEEP}
+    volumes:
+      - ${APPDATA_ROOT}/factory/data:/data
+    read_only: true
+    tmpfs:
+      - /tmp:uid=1000,gid=1000,mode=0700
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      # Unhealthy means the last attempt failed; no attempt yet is healthy (stacks/mealie's rule).
+      test:
+        - CMD-SHELL
+        - '[ ! -f /data/backups/.last-status ] || [ "$$(cut -d" " -f2 /data/backups/.last-status)" = 0 ]'
+      interval: 5m
+      timeout: 5s
+      retries: 2
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+
+networks:
+  # An explicit subnet, outside Docker's exhausted predefined pools (stacks/homelab-mcp): pick the next
+  # free /28 in 172.16.0.0/16.
+  default:
+    ipam:
+      config:
+        - subnet: 172.16.22.0/28

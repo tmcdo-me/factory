@@ -1,7 +1,8 @@
 # Running Factory as a service
 
 Fork-only. These files run the Factory server (`mastracode/web`) from a production build as a macOS
-user LaunchAgent, deploy and roll it back, and back up its data. The defaults are mac-mini's (user
+user LaunchAgent, deploy and roll it back, and back up its data. To run it in a container instead (the homelab's
+Docker host or Fly.io, every session on a Sprite), see [`fork/deploy/`](../deploy/README.md). The defaults are mac-mini's (user
 `homelab`, the `Dev` volume at `/Volumes/Dev`, Tailscale serving `https://factory.tail99d67.ts.net`
 from `127.0.0.1:5873`). On mac-mini the LaunchAgents are the homelab repository's to install; this
 directory is the source it installs from.

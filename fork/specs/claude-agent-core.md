@@ -721,6 +721,23 @@ Each slice: implement → focused tests → manual check where noted → commit.
     cloned again; not `.env`, which belongs in the owner's vault) with a restore script.
     Checked by running the build on another port with a throwaway database and env. The
     LaunchAgent itself is the homelab repository's to install.
+15. **Container deployment** ✅ (`fork/deploy/`): the server off mac-mini, as a Compose stack on the
+    homelab (primary) or one Fly.io Machine (secondary), every session on a Sprite. A multi-stage
+    image: the build stage installs only the ~70 workspace projects `prebuild` builds, runs the same
+    `pnpm --dir mastracode/web build`, and `stage-runtime.mjs` hard-links what the bundle loads
+    (dependencies, optional and peer dependencies from its imports, never dev dependencies) into
+    `/app`; the runtime stage is pinned Node 24 slim with tini, sqlite3 and tzdata, non-root, and
+    runs tini, then varlock, then node, so SIGTERM runs Factory's shutdown. One volume, `/data`
+    (database and snapshots; no Claude Agent home, which a Sprite keeps on its own disk), and
+    configuration from the environment only. `FACTORY_DEPLOYMENT=container` (set by the image)
+    refuses to start unless sessions run on Sprites, and refuses the local browser.
+    `factory-snapshot` makes the online, integrity-checked copy (`mastra.db-YYYY-MM-DD`,
+    backup-verify's dated-copy pattern) by hand or from the stack's sidecar; the only public route
+    is GitHub's `POST /web/github/webhook`, through the Cloudflare tunnel. Checked: boot-guard tests;
+    the staged runtime tree run natively and in the runtime stage on Linux (read-only root, no
+    capabilities) with a throwaway volume and env (`/auth/me`, the UI, the guard, `docker stop`
+    running Factory's shutdown, the snapshot online and from the sidecar). Not yet checked: the
+    Dockerfile's own build stage end to end (the build machine lacked the disk).
 
 Inventory to migrate (non-test): **67** files in `mastracode/factory/src` import
 `@mastra/core/agent-controller` or `@mastra/code-sdk` (heaviest: `factory.ts`, `rules/dispatcher.ts`,
@@ -753,6 +770,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | on             | `0`: trusted sessions' Bash outside Claude Code's sandbox (9c)               |
 | `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's file tools and commands may not read (comma list)   |
 | `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)  |
+| `FACTORY_DEPLOYMENT`                     | unset          | `container`: sessions only on Sprites, no local browser (15)                 |
 
 ## 9. Upstream
 

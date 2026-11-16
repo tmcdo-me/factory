@@ -417,6 +417,29 @@ const hasPlatformSandboxEnv =
 const useLocalSandbox = process.env.FACTORY_SANDBOX_PROVIDER?.trim() === 'local';
 // fork(claude-agent): Fly.io Sprites, one VM per session (fork/specs/claude-agent-core.md §3.6).
 const useSpritesSandbox = process.env.FACTORY_SANDBOX_PROVIDER?.trim() === 'sprites';
+// fork(claude-agent): a server deployed in a container or on another remote host says so with
+// FACTORY_DEPLOYMENT=container (fork/deploy/Dockerfile sets it). Such a server runs no agent work on its
+// own host: every session gets a Sprite, never the server's filesystem, and the local browser is refused.
+// It applies in development mode too, since it is the operator's explicit statement about the host.
+const deployment = process.env.FACTORY_DEPLOYMENT?.trim();
+if (deployment && deployment !== 'container') {
+  throw new Error(`FACTORY_DEPLOYMENT must be container or unset, not "${deployment}".`);
+}
+if (deployment === 'container') {
+  if (!useSpritesSandbox) {
+    const provider = process.env.FACTORY_SANDBOX_PROVIDER?.trim();
+    throw new Error(
+      'FACTORY_DEPLOYMENT=container runs every session on Fly.io Sprites, never on the server host: set ' +
+        `FACTORY_SANDBOX_PROVIDER=sprites with SPRITES_TOKEN (FACTORY_SANDBOX_PROVIDER is ${provider ? `"${provider}"` : 'unset'}).`,
+    );
+  }
+  if (process.env.FACTORY_BROWSER?.trim() === 'local') {
+    throw new Error(
+      'FACTORY_DEPLOYMENT=container refuses FACTORY_BROWSER=local: that browser runs on the server host, ' +
+        'outside any sandbox. Unset FACTORY_BROWSER.',
+    );
+  }
+}
 const spritesToken = process.env.SPRITES_TOKEN?.trim();
 if (useSpritesSandbox && !spritesToken) {
   throw new Error(
