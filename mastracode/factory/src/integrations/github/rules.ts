@@ -270,6 +270,16 @@ function sameRepositoryHeadBranch(pullRequest: Record<string, unknown> | undefin
   return string(head?.ref);
 }
 
+/**
+ * fork(claude-agent): the head branch of a pull request proven to be pushed to the repository
+ * itself: `head.repo.id` is the base repository's. Unlike {@link sameRepositoryHeadBranch}, a
+ * payload without `head.repo` proves nothing, so a fork's branch can never pass for a card's own.
+ */
+function provenSameRepositoryHeadBranch(pullRequest: Record<string, unknown> | undefined, repositoryId: number) {
+  const head = object(pullRequest?.head);
+  return number(object(head?.repo)?.id) === repositoryId ? string(head?.ref) : undefined;
+}
+
 /** A card attributed to a different repository than the pull request's. */
 function cardInOtherRepository(item: Card, repositoryId: number, repositoryFullName: string): boolean {
   const attributed =
@@ -909,7 +919,7 @@ export class GithubRules {
             body: string(pullRequest?.body),
             // fork(claude-agent): what proves the pull request is the matched card's own.
             provenance,
-            headBranch: sameRepositoryHeadBranch(pullRequest, repositoryId),
+            ownHeadBranch: provenSameRepositoryHeadBranch(pullRequest, repositoryId),
           })
         : undefined;
     // The card of an issue the pull request closes isn't the pull request's card yet: the
@@ -1414,7 +1424,7 @@ export class GithubRules {
     authorTrusted: boolean;
     body: string | undefined;
     provenance: FactoryPullRequestProvenanceData | null;
-    headBranch: string | undefined;
+    ownHeadBranch: string | undefined;
   }): Promise<{ card: Card; reason: FactoryPullRequestHome['reason']; ownPullRequest?: true } | undefined> {
     if (!input.factoryAuthored && !input.authorTrusted) return undefined;
     const items = await this.options.storage.listShared({
@@ -1474,32 +1484,34 @@ export class GithubRules {
   }
 
   /**
-   * fork(claude-agent): whether `card`'s own run opened the pull request. Provenance proves it when
-   * it names this card and was recorded from one of the card's run bindings (a row without a
-   * binding, or whose binding is gone or another card's, proves nothing). Failing that, the head
-   * being the card's own branch does: the branch Factory builds the card on, or one of its
-   * sessions' branches. Only a same-repository head counts, so a fork cannot claim a card.
+   * fork(claude-agent): whether `card`'s own run opened the pull request. Its head must be proven to
+   * live in the base repository (`head.repo.id`; a payload rebuilt without it proves nothing), so
+   * a fork's branch named after the card never counts. And the head must be one of the card's own
+   * branches: the branch Factory builds the card on, one of its sessions' branches, or the branch
+   * of the run binding Factory's provenance names for this card. Provenance alone is not enough: it
+   * is recorded from what the run's tool result says it opened, which the run can be made to echo.
    */
   async #ownPullRequest(
     input: {
       orgId: string;
       factoryProjectId: string;
       provenance: FactoryPullRequestProvenanceData | null;
-      headBranch: string | undefined;
+      ownHeadBranch: string | undefined;
     },
     card: Card,
   ): Promise<boolean> {
-    if (input.provenance?.workItemId === card.id && input.provenance.bindingId) {
-      const binding = await this.options.storage
-        .findRunBindingById({
-          orgId: input.orgId,
-          factoryProjectId: input.factoryProjectId,
-          id: input.provenance.bindingId,
-        })
-        .catch(() => null);
-      if (binding?.workItemId === card.id) return true;
-    }
-    return cardOwnsBranch(card, input.headBranch);
+    const head = input.ownHeadBranch;
+    if (!head) return false;
+    if (cardOwnsBranch(card, head)) return true;
+    if (input.provenance?.workItemId !== card.id || !input.provenance.bindingId) return false;
+    const binding = await this.options.storage
+      .findRunBindingById({
+        orgId: input.orgId,
+        factoryProjectId: input.factoryProjectId,
+        id: input.provenance.bindingId,
+      })
+      .catch(() => null);
+    return binding?.workItemId === card.id && binding.branch === head;
   }
 
   async #relatedItem(
@@ -1609,6 +1621,8 @@ export interface ReconcilePullRequestState {
   requestedReviewers?: string[];
   labels?: string[];
   headBranch: string;
+  /** fork(claude-agent): the head branch's repository, when known; a fork's differs from the base's. */
+  headRepositoryId?: number;
   baseBranch: string;
   author?: string;
   createdAt?: string;
@@ -1676,6 +1690,8 @@ export function listedPullRequestState(pullRequest: PullRequest): PolledPullRequ
     requestedReviewers: pullRequest.requestedReviewers ?? [],
     labels: pullRequest.labels ?? [],
     headBranch: pullRequest.headBranch,
+    // fork(claude-agent): carried so the replayed event can tell a fork's branch apart.
+    ...(pullRequest.headRepositoryId !== undefined ? { headRepositoryId: pullRequest.headRepositoryId } : {}),
     baseBranch: pullRequest.baseBranch,
     ...(pullRequest.author ? { author: pullRequest.author } : {}),
     createdAt: pullRequest.createdAt,
@@ -2000,7 +2016,12 @@ function pullRequestPayload(
     assignees: githubUsers(state.assignees),
     requested_reviewers: githubUsers(state.requestedReviewers),
     labels: githubLabels(state.labels),
-    head: { ref: state.headBranch, ...(state.headSha ? { sha: state.headSha } : {}) },
+    head: {
+      ref: state.headBranch,
+      ...(state.headSha ? { sha: state.headSha } : {}),
+      // fork(claude-agent): the head's repository, as a webhook carries it, when the listing said.
+      ...(state.headRepositoryId !== undefined ? { repo: { id: state.headRepositoryId } } : {}),
+    },
     base: { ref: state.baseBranch },
   };
   if (state.createdAt) payload.created_at = state.createdAt;

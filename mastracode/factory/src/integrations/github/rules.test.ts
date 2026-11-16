@@ -29,6 +29,7 @@ import {
   GithubRules,
   polledPullRequestEvent,
   reconciledClosedEvent,
+  reconciledPullRequestOpenedEvent,
   reconciledIssueRelabeledEvent,
 } from './rules.js';
 import type { ReconcileIssueState, ReconcilePullRequestState, ReconcileRepository } from './rules.js';
@@ -6190,7 +6191,8 @@ describe('pull request cards on the Work board', () => {
         thread_id: `thread-${workItemId}`,
         resource_id: 'user-1',
         session_id: `session-${workItemId}`,
-        branch: `factory/item-${workItemId}`,
+        // The run's own branch, apart from the card's build branch, so provenance is what names it.
+        branch: `run/${workItemId}`,
         status: 'active',
         created_at: new Date(),
         revoked_at: null,
@@ -6211,16 +6213,37 @@ describe('pull request cards on the Work board', () => {
       });
     }
 
-    function openedFrom(headBranch: string, sender = 'contributor') {
+    /** A webhook "opened" from `headBranch`, pushed to the base repository (10) unless `headRepositoryId` says otherwise. */
+    function openedFrom(headBranch: string, sender = 'contributor', headRepositoryId: number | null = 10) {
       const delivery = pullRequest('opened', 'delivery-own-open');
       return {
         ...delivery,
         payload: {
           ...delivery.payload,
           sender: { login: sender },
-          pull_request: { ...delivery.payload.pull_request, user: { login: sender }, head: { ref: headBranch } },
+          pull_request: {
+            ...delivery.payload.pull_request,
+            user: { login: sender },
+            head: { ref: headBranch, ...(headRepositoryId === null ? {} : { repo: { id: headRepositoryId } }) },
+          },
         },
       };
+    }
+
+    /** The "opened" the reconcile's missed-opens sweep replays, from listed state. */
+    function replayedFrom(headBranch: string, headRepositoryId?: number) {
+      return reconciledPullRequestOpenedEvent({ id: 10, fullName: 'acme/repo', installationId: 7 }, 17, {
+        title: 'PR 17',
+        url: 'https://github.com/acme/repo/pull/17',
+        state: 'open',
+        draft: false,
+        merged: false,
+        headBranch,
+        ...(headRepositoryId === undefined ? {} : { headRepositoryId }),
+        baseBranch: 'main',
+        author: 'maintainer',
+        createdAt: '2030-01-01T00:00:00Z',
+      });
     }
 
     it('files it on a card made on the board, which then moves to PR review', async () => {
@@ -6228,7 +6251,8 @@ describe('pull request cards on the Work board', () => {
       const { card, binding } = await ownCard(harness);
       await provenance(harness, card.id, binding.id);
 
-      await harness.service.ingest(pullRequest('opened', 'delivery-open'));
+      // From the run binding's own branch: provenance names the binding, the binding names the branch.
+      await harness.service.ingest(openedFrom(`run/${card.id}`, 'factory-app[bot]'));
       await harness.dispatch();
 
       // One card: the pull request is on it, it stays source-less, and the build is out for review.
@@ -6286,7 +6310,7 @@ describe('pull request cards on the Work board', () => {
       const { card, binding } = await ownCard(harness, { board: 'lite', stage: 'make' });
       await provenance(harness, card.id, binding.id);
 
-      await harness.service.ingest(pullRequest('opened', 'delivery-open'));
+      await harness.service.ingest(openedFrom(`run/${card.id}`, 'factory-app[bot]'));
       await harness.dispatch();
 
       // No card of its own: the pull request is on the card that opened it. The board has no pull
@@ -6297,91 +6321,248 @@ describe('pull request cards on the Work board', () => {
       expect(cards[0]!.workItem.sources.map(source => source.sourceType)).toEqual(['pull-request']);
     });
 
-    it('files it when the run opens it, and the "opened" that follows files nothing again', async () => {
-      const harness = await workBoardHarness('read');
-      const { card, binding } = await ownCard(harness);
-      const pullsGet = vi.fn().mockResolvedValue({
-        data: {
-          number: 17,
-          html_url: 'https://github.com/acme/repo/pull/17',
-          state: 'open',
-          created_at: '2030-01-01T00:00:00Z',
-          user: { login: 'factory-app[bot]' },
-          head: { ref: `factory/item-${card.id}`, sha: 'a'.repeat(40) },
-          base: { ref: 'main', repo: { id: 10 } },
-        },
-      });
-      const github = {
-        ...harness.github,
-        getInstallationOctokit: vi.fn(() => ({ pulls: { get: pullsGet } })),
-      } as unknown as GithubIntegration;
-      const boards = createBoardRegistry({ boards: [reviewBoard] });
-      // The processor as Factory wires it, fed the way a Claude Agent session's Factory tool result is.
-      const processor = new FactoryPhaseStateProcessor({
-        configVersion: 'factory-config-v1',
-        boards,
-        storage: harness.workItems,
-        transitionService: new FactoryTransitionService({
-          storage: harness.workItems,
+    // The recorder, the attach and the move run for real; only GitHub's API is stubbed.
+    it.each(['Claude Agent', 'Mastra Code'] as const)(
+      'files it when a %s run opens it, and the "opened" that follows files nothing again',
+      async runtime => {
+        const harness = await workBoardHarness('read');
+        const { card, binding } = await ownCard(harness);
+        const pullsGet = vi.fn().mockResolvedValue({
+          data: {
+            number: 17,
+            html_url: 'https://github.com/acme/repo/pull/17',
+            state: 'open',
+            created_at: '2030-01-01T00:00:00Z',
+            user: { login: 'factory-app[bot]' },
+            head: { ref: `factory/item-${card.id}`, sha: 'a'.repeat(40), repo: { id: 10 } },
+            base: { ref: 'main', repo: { id: 10 } },
+          },
+        });
+        const github = {
+          ...harness.github,
+          getInstallationOctokit: vi.fn(() => ({ pulls: { get: pullsGet } })),
+        } as unknown as GithubIntegration;
+        const boards = createBoardRegistry({ boards: [reviewBoard] });
+        // The processor as Factory wires it, fed the way a Claude Agent session's Factory tool result is.
+        const processor = new FactoryPhaseStateProcessor({
           configVersion: 'factory-config-v1',
           boards,
-        }),
-        recordPullRequestProvenance: input =>
-          recordFactoryPullRequestProvenance(
-            github,
-            harness.sourceControl,
-            harness.integrationStorage as never,
-            harness.workItems,
-            input,
-          ),
-      });
-      const requestContext = new RequestContext();
-      requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
-      requestContext.set('controller', {
-        resourceId: 'user-1',
-        threadId: `thread-${card.id}`,
-        sessionId: `session-${card.id}`,
-        getState: () => ({ factoryProjectId: harness.project.id }),
-      });
-
-      await processor.ingestRuntimeToolResult(requestContext, {
-        callId: 'toolu_pr',
-        toolName: 'source_control_create_change_request',
-        input: { title: 'PR 17' },
-        status: 'success',
-        value: { url: 'https://github.com/acme/repo/pull/17', number: 17 },
-      });
-
-      // Right after the tool returns: the pull request is on the card and the card is in PR review.
-      const filed = (await harness.workItems.get({ orgId: 'org-1', id: card.id }))!;
-      expect(filed).toMatchObject({ stages: ['pr-review'], externalSource: null });
-      expect(filed.workItem.sources).toEqual([
-        expect.objectContaining({
-          sourceType: 'pull-request',
-          // Keyed exactly as GitHub's "opened" files it, so that event finds it here.
-          sourceKey: 'github:pull-request:github:10:pull-request:17',
-          role: 'attached',
-          metadata: expect.objectContaining({
-            githubRepositoryId: 10,
-            githubPullRequestNumber: 17,
-            headBranch: `factory/item-${card.id}`,
+          storage: harness.workItems,
+          transitionService: new FactoryTransitionService({
+            storage: harness.workItems,
+            configVersion: 'factory-config-v1',
+            boards,
           }),
-        }),
-      ]);
-      expect(
-        (await harness.integrationStorage.subscriptions.listByTarget('factory-pr-provenance:10:17'))[0]?.data,
-      ).toMatchObject({ workItemId: card.id, bindingId: binding.id });
+          recordPullRequestProvenance: input =>
+            recordFactoryPullRequestProvenance(
+              github,
+              harness.sourceControl,
+              harness.integrationStorage as never,
+              harness.workItems,
+              input,
+            ),
+        });
+        const requestContext = new RequestContext();
+        requestContext.set('user', { workosId: 'user-1', organizationId: 'org-1' });
+        requestContext.set('controller', {
+          resourceId: 'user-1',
+          threadId: `thread-${card.id}`,
+          sessionId: `session-${card.id}`,
+          getState: () => ({ factoryProjectId: harness.project.id }),
+        });
 
-      // GitHub's "opened" (a webhook, or the reconcile's missed-opens sweep) finds it filed.
-      await harness.service.ingest(openedFrom(`factory/item-${card.id}`, 'factory-app[bot]'));
-      await harness.dispatch();
-      await harness.service.ingest({ ...openedFrom(`factory/item-${card.id}`), deliveryId: 'poll:10:pull-request:17' });
+        const created = { url: 'https://github.com/acme/repo/pull/17', number: 17 };
+        if (runtime === 'Claude Agent') {
+          await processor.ingestRuntimeToolResult(requestContext, {
+            callId: 'toolu_pr',
+            toolName: 'source_control_create_change_request',
+            input: { title: 'PR 17' },
+            status: 'success',
+            value: created,
+          });
+        } else {
+          // The step after the tool call, as Mastra Code's agent loop runs its input processors.
+          await processor.processInputStep({
+            requestContext,
+            messages: [
+              {
+                id: 'assistant-1',
+                role: 'assistant',
+                createdAt: new Date(),
+                threadId: `thread-${card.id}`,
+                resourceId: 'user-1',
+                content: {
+                  format: 2,
+                  parts: [
+                    {
+                      type: 'tool-invocation',
+                      toolInvocation: {
+                        toolCallId: 'toolu_pr',
+                        toolName: 'source_control_create_change_request',
+                        args: { title: 'PR 17' },
+                        state: 'result',
+                        result: created,
+                      },
+                    },
+                  ],
+                },
+              },
+            ],
+            messageList: {},
+            steps: [{ toolResults: [{ toolCallId: 'toolu_pr' }] }],
+            stepNumber: 1,
+            state: {},
+            retryCount: 0,
+            abort: () => {
+              throw new Error('abort');
+            },
+          } as never);
+        }
+
+        // Right after the tool returns: the pull request is on the card and the card is in PR review.
+        const filed = (await harness.workItems.get({ orgId: 'org-1', id: card.id }))!;
+        expect(filed).toMatchObject({ stages: ['pr-review'], externalSource: null });
+        expect(filed.workItem.sources).toEqual([
+          expect.objectContaining({
+            sourceType: 'pull-request',
+            // Keyed exactly as GitHub's "opened" files it, so that event finds it here.
+            sourceKey: 'github:pull-request:github:10:pull-request:17',
+            role: 'attached',
+            metadata: expect.objectContaining({
+              githubRepositoryId: 10,
+              githubPullRequestNumber: 17,
+              headBranch: `factory/item-${card.id}`,
+            }),
+          }),
+        ]);
+        expect(
+          (await harness.integrationStorage.subscriptions.listByTarget('factory-pr-provenance:10:17'))[0]?.data,
+        ).toMatchObject({ workItemId: card.id, bindingId: binding.id });
+
+        // GitHub's "opened" (a webhook, or the reconcile's missed-opens sweep) finds it filed.
+        await harness.service.ingest(openedFrom(`factory/item-${card.id}`, 'factory-app[bot]'));
+        await harness.dispatch();
+        await harness.service.ingest({
+          ...openedFrom(`factory/item-${card.id}`),
+          deliveryId: 'poll:10:pull-request:17',
+        });
+        await harness.dispatch();
+
+        const cards = await harness.cards();
+        expect(cards).toHaveLength(1);
+        expect(cards[0]).toMatchObject({ id: card.id, stages: ['pr-review'], metadata: { openPullRequestNumber: 17 } });
+        expect(cards[0]!.workItem.sources).toHaveLength(1);
+      },
+    );
+
+    it("files it from a reconcile replay that names the head's repository", async () => {
+      const harness = await workBoardHarness('write');
+      const { card } = await ownCard(harness);
+
+      await harness.service.ingest(replayedFrom(`factory/item-${card.id}`, 10));
       await harness.dispatch();
 
       const cards = await harness.cards();
       expect(cards).toHaveLength(1);
-      expect(cards[0]).toMatchObject({ id: card.id, stages: ['pr-review'], metadata: { openPullRequestNumber: 17 } });
-      expect(cards[0]!.workItem.sources).toHaveLength(1);
+      expect(cards[0]).toMatchObject({ id: card.id, stages: ['pr-review'] });
+    });
+
+    // A trusted author's fork can name a branch after any card; only a same-repository head is the card's.
+    it.each([
+      ['a webhook from a fork', (id: string) => openedFrom(`factory/item-${id}`, 'maintainer', 99)],
+      [
+        'a webhook that does not say where its head lives',
+        (id: string) => openedFrom(`factory/item-${id}`, 'maintainer', null),
+      ],
+      ['a reconcile replay of a fork', (id: string) => replayedFrom(`factory/item-${id}`, 99)],
+      ['a reconcile replay that does not say where its head lives', (id: string) => replayedFrom(`factory/item-${id}`)],
+    ] as const)('never files a pull request on a card by its branch name from %s', async (_name, delivery) => {
+      const harness = await workBoardHarness('write');
+      const { card } = await ownCard(harness);
+
+      await harness.service.ingest(delivery(card.id));
+      await harness.dispatch();
+
+      const cards = await harness.cards();
+      expect(cards).toHaveLength(2);
+      expect(cards.find(entry => entry.id === card.id)).toMatchObject({ stages: ['execute'] });
+      expect(cards.find(entry => entry.id === card.id)?.workItem.sources).toEqual([]);
+    });
+
+    it("never files a pull request on a card by provenance alone: its head must be the run's branch", async () => {
+      const harness = await workBoardHarness('read');
+      const { card, binding } = await ownCard(harness);
+      // Provenance records whatever URL the run's tool result printed; a pull request from some
+      // other branch of the repository is not the card's because of it.
+      await provenance(harness, card.id, binding.id);
+
+      await harness.service.ingest(openedFrom('maintainer/other-work', 'factory-app[bot]'));
+      await harness.dispatch();
+
+      const cards = await harness.cards();
+      expect(cards).toHaveLength(2);
+      expect(cards.find(entry => entry.id === card.id)?.workItem.sources).toEqual([]);
+    });
+
+    it("honours a decision's ownPullRequest only for the card the decision is committed against", async () => {
+      const lite = defineBoard({
+        id: 'lite',
+        title: 'Lite',
+        initialPhase: 'inbox',
+        phases: {
+          inbox: { title: 'Inbox', kind: 'resting', nextPhases: ['make', 'done'] },
+          make: {
+            title: 'Make',
+            kind: 'working',
+            runner: { context: 'work', skill: 'factory-build' },
+            nextPhases: ['done'],
+          },
+          done: { title: 'Done', kind: 'terminal' },
+        },
+      });
+      const harness = await workBoardHarness('read', { boards: [lite] });
+      const { card } = await ownCard(harness, { board: 'lite', stage: 'make' });
+      const other = (
+        await harness.workItems.upsert({
+          orgId: 'org-1',
+          userId: 'user-1',
+          factoryProjectId: harness.project.id,
+          input: { board: 'work', title: 'Another card', stages: ['execute'], sessions: {}, metadata: {} },
+        })
+      ).item;
+      const decision = (idempotencyKey: string) => ({
+        type: 'upsertLinkedWorkItem',
+        idempotencyKey,
+        board: 'work',
+        stage: 'intake',
+        source: 'github-pr',
+        sourceKey: 'github:10:pull-request:17',
+        title: 'PR 17',
+        url: 'https://github.com/acme/repo/pull/17',
+        attachTo: { workItemId: card.id, ownPullRequest: true },
+        metadata: { githubRepositoryId: 10, githubPullRequestNumber: 17, state: 'open' },
+      });
+
+      // Committed against another card, a claim that the pull request is this card's is ignored: its
+      // board does not review pull requests, so the pull request gets a card of its own.
+      await harness.workItems.commitRuleEvaluation({
+        orgId: 'org-1',
+        factoryProjectId: harness.project.id,
+        workItemId: other.id,
+        ingress: { identity: 'claimed-elsewhere', triggerType: 'test' },
+        configVersion: 'factory-config-v1',
+        expectedRevision: other.revision,
+        actor: { type: 'system', id: 'test' },
+        outcome: { status: 'accepted' },
+        decisions: [decision('claimed-elsewhere:intake')],
+        causalChain: [],
+        now: new Date(),
+      });
+      await harness.dispatch();
+
+      const cards = await harness.cards();
+      expect(cards).toHaveLength(3);
+      expect(cards.find(entry => entry.id === card.id)?.workItem.sources).toEqual([]);
     });
 
     it("still files someone else's pull request as its own card", async () => {

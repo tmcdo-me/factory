@@ -1400,6 +1400,8 @@ export class GithubIntegration implements FactoryIntegration {
         requestedReviewers: pullRequest.requestedReviewers ?? [],
         labels: pullRequest.labels ?? [],
         headBranch: pullRequest.headBranch,
+        // fork(claude-agent): carried so a replayed event can tell a fork's branch apart.
+        ...(pullRequest.headRepositoryId !== undefined ? { headRepositoryId: pullRequest.headRepositoryId } : {}),
         baseBranch: pullRequest.baseBranch,
         ...(pullRequest.author ? { author: pullRequest.author } : {}),
         ...(pullRequest.createdAt ? { createdAt: pullRequest.createdAt } : {}),
@@ -1567,7 +1569,8 @@ interface GithubPullRequestData {
   merged_at?: string | null;
   mergeable?: boolean | null;
   base: { ref: string };
-  head: { ref: string; sha: string };
+  // fork(claude-agent): `repo` says whether the head is a fork's.
+  head: { ref: string; sha: string; repo?: { id?: number } | null };
   created_at: string;
   updated_at: string;
 }
@@ -1616,6 +1619,8 @@ function parsePullRequest(pr: GithubPullRequestData): PullRequest {
     baseBranch: pr.base.ref,
     headBranch: pr.head.ref,
     headSha: pr.head.sha,
+    // fork(claude-agent): the head's repository, so a replayed event can tell a fork's branch apart.
+    ...(typeof pr.head.repo?.id === 'number' ? { headRepositoryId: pr.head.repo.id } : {}),
     createdAt: pr.created_at,
     updatedAt: pr.updated_at,
   };

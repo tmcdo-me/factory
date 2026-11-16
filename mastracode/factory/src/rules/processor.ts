@@ -14,6 +14,7 @@ import type {
 import {
   boardFlow,
   boardForWorkItem,
+  isTerminalWorkItem,
   resolveBoardToolRule,
   reviewsPullRequest,
   workItemPhaseSemantics,
@@ -356,8 +357,10 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
         toolInput: FactoryRuleJsonValue;
         toolResult: FactoryRuleJsonValue;
         status: 'success' | 'error';
-        // fork(claude-agent): `attached` when the call opened a pull request and it was filed on the card.
-      }) => Promise<{ attached?: boolean } | void>;
+        /** fork(claude-agent): whether the card is still open; only an open card takes its pull request. */
+        itemOpen?: boolean;
+        // fork(claude-agent): set when the call opened a pull request that is on the card, and since when.
+      }) => Promise<{ attached?: boolean; attachedAt?: Date } | void>;
       /** fork(claude-agent): the project's intake routes; a route on "pull request opened" moves the card instead. */
       intakeRoutes?: IntakeRoutesReader;
     },
@@ -715,7 +718,7 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     item: Card,
     toolResult: CompletedToolResult,
   ): Promise<Card> {
-    let recorded: { attached?: boolean } | void = undefined;
+    let recorded: { attached?: boolean; attachedAt?: Date } | void = undefined;
     try {
       recorded = await this.options.recordPullRequestProvenance?.({
         binding,
@@ -726,13 +729,14 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
         toolInput: toolResult.input,
         toolResult: toolResult.value,
         status: toolResult.status,
+        itemOpen: !isTerminalWorkItem(await this.boards.load(binding), item),
       });
     } catch {
       // Provenance is supporting evidence and must not block authoritative rule ingress.
     }
-    if (!recorded?.attached) return item;
+    if (!recorded?.attached || !recorded.attachedAt) return item;
     try {
-      await this.handOffOwnPullRequest(binding, toolResult);
+      await this.handOffOwnPullRequest(binding, toolResult, recorded.attachedAt);
     } catch (error) {
       console.warn(`[factory] could not hand card ${item.id} to pull request review:`, error);
     }
@@ -746,10 +750,20 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
    * (an agent move, through the board's transition rules), made before the tool call's result reaches
    * the agent, so the card is already in review when the agent reads it. Nothing moves when the
    * card is elsewhere, the board has no such move, or the project's intake routes take "pull request
-   * opened" on that board: the event's route moves it then. Keyed by the tool call, so a result read
-   * again moves nothing twice.
+   * opened" on that board: the event's route moves it then.
+   *
+   * The same result is read again (the step, then the thread, and Mastra Code re-reads the latest
+   * tool result each step), and each read retries a hand-off that has not happened yet: a move that
+   * lost a race, or an attach that failed and went through on a later read. Once the card has been
+   * in review since the pull request was attached (moved here, by the agent, by "opened", or by a
+   * person), it is never moved again: a card sent back to build stays there. Each attempt is keyed
+   * by the tool call and the card's revision, so one read never moves it twice.
    */
-  private async handOffOwnPullRequest(binding: FactoryRunBindingRecord, toolResult: CompletedToolResult) {
+  private async handOffOwnPullRequest(
+    binding: FactoryRunBindingRecord,
+    toolResult: CompletedToolResult,
+    attachedAt: Date,
+  ) {
     const transitionService = this.options.transitionService;
     if (!transitionService) return;
     const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
@@ -759,6 +773,12 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     const { build, pullRequestReview } = boardFlow(board);
     if (!board || !build || !pullRequestReview || item.stages[0] !== build) return;
     if (!board.allowsTransition(build, pullRequestReview)) return;
+    const since = attachedAt.getTime();
+    if (
+      (item.stageHistory ?? []).some(entry => entry.stage === pullRequestReview && Date.parse(entry.enteredAt) >= since)
+    ) {
+      return;
+    }
     const routes = this.options.intakeRoutes
       ? await this.options.intakeRoutes.listIntakeRoutes({
           orgId: binding.orgId,
@@ -776,7 +796,13 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       actor: { type: 'agent', bindingId: binding.id, role: binding.role },
       ingress: {
         type: 'toolResult',
-        identity: JSON.stringify([binding.id, binding.threadId, toolResult.toolCallId, 'pull-request-handoff']),
+        identity: JSON.stringify([
+          binding.id,
+          binding.threadId,
+          toolResult.toolCallId,
+          'pull-request-handoff',
+          item.revision,
+        ]),
       },
       cause: 'Opened its pull request; the build is out for review.',
       completedTool: toolResult.toolName,

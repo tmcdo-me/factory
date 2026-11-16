@@ -1972,21 +1972,30 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
     url: 'https://github.com/acme/repo/pull/17',
   };
 
-  async function building(options: { attaches?: boolean; intakeRoutes?: unknown[] } = {}) {
+  async function building(options: { attaches?: boolean; intakeRoutes?: unknown[]; firstMoveLoses?: boolean } = {}) {
     const storage = (await createFactoryStorageForTests()).workItems;
     const prepared = await prepare(storage, 'work', 'issue', { id: 'work', stage: 'execute' });
     const boards = createBoardRegistry();
-    const transitionService = new FactoryTransitionService({ configVersion: 'rules-v1', boards, storage });
+    const service = new FactoryTransitionService({ configVersion: 'rules-v1', boards, storage });
+    let lost = !options.firstMoveLoses;
+    // A move that loses a race once, the way a concurrent write to the card makes it go stale.
+    const transitionService = {
+      transition: vi.fn(async (request: Parameters<FactoryTransitionService['transition']>[0]) => {
+        if (lost) return service.transition(request);
+        lost = true;
+        return { status: 'rejected' as const, code: 'stale', reason: 'The card changed.' } as never;
+      }),
+    };
     // Stands in for GitHub's provenance recorder, which files the pull request on the card.
     const recordPullRequestProvenance = vi.fn(async ({ item }: { item: { id: string } }) => {
       if (options.attaches === false) return undefined;
-      await storage.attachSource({
+      const attached = await storage.attachSource({
         orgId: 'org-1',
         id: item.id,
         source: pullRequest17,
         metadata: { state: 'open', githubRepositoryId: 10, githubPullRequestNumber: 17 },
       });
-      return { attached: true };
+      return { attached: true, attachedAt: attached!.item.workItem.sources.at(-1)!.createdAt };
     });
     const processor = new FactoryPhaseStateProcessor({
       configVersion: 'rules-v1',
@@ -1999,7 +2008,7 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
         : {}),
     });
     const card = () => storage.get({ orgId: 'org-1', id: prepared.item.id });
-    return { storage, prepared, processor, card, recordPullRequestProvenance };
+    return { storage, prepared, processor, card, recordPullRequestProvenance, service };
   }
 
   const created = { url: 'https://github.com/acme/repo/pull/17', number: 17 };
@@ -2040,6 +2049,43 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
       expect(await card()).toMatchObject({ stages: ['pr-review'], revision: moved!.revision });
     },
   );
+
+  it('retries a hand-off that lost a race when the same result is read again', async () => {
+    const { processor, card } = await building({ firstMoveLoses: true });
+
+    await runtimes['Claude Agent'](processor);
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+
+    // The thread's read of the same result (or Mastra Code's next step) hands it off.
+    await runtimes['Mastra Code'](processor);
+    expect(await card()).toMatchObject({ stages: ['pr-review'] });
+  });
+
+  it('never moves a card again once it has been in review since its pull request was attached', async () => {
+    const { processor, card, service, prepared } = await building();
+    await runtimes['Claude Agent'](processor);
+    const reviewing = (await card())!;
+    expect(reviewing).toMatchObject({ stages: ['pr-review'] });
+
+    // Review asks for changes: a person sends the card back to build.
+    expect(
+      await service.transition({
+        orgId: 'org-1',
+        factoryProjectId: PROJECT_ID,
+        workItemId: prepared.item.id,
+        board: 'work',
+        stage: 'execute',
+        expectedRevision: reviewing.revision,
+        actor: { type: 'human', id: 'user-1' },
+        ingress: { type: 'human', identity: 'back-to-build' },
+        cause: 'Changes requested.',
+      }),
+    ).toMatchObject({ status: 'accepted' });
+
+    // Mastra Code reads the latest tool result again on its next step: it is still the pull request's.
+    await runtimes['Mastra Code'](processor);
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+  });
 
   it('leaves the card where it is when no pull request was filed on it', async () => {
     const { processor, card } = await building({ attaches: false });
