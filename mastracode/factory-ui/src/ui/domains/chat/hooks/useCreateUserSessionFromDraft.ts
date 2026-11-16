@@ -51,6 +51,12 @@ export function useCreateUserSessionFromDraft() {
     const handoffModelId = draftKeepsServerDefaults || !onMastraCode ? undefined : activeModelId;
     const handoffThinkingLevel = onMastraCode ? thinkingLevelOverride : undefined;
     const draftPath = `/factories/${factoryId}/user/new/${draftSessionId}`;
+    // fork(claude-agent): a new session's whole history is in Factory's event log, so the thread draws
+    // it from there at once (the prompt shown while the session is created stays on screen).
+    queryClient.setQueryData<SessionRuntime>(runtimeKeys.session(draftSessionId), {
+      ...runtime,
+      transcript: 'factory',
+    });
     void queryClient
       .query({
         queryKey: queryKeys.userSession(draftSessionId),
@@ -66,7 +72,10 @@ export function useCreateUserSessionFromDraft() {
             // fork(claude-agent): choose the runtime before the first message, and remember it so that
             // message already goes to the right place.
             if (!onMastraCode) await assignSessionRuntime(baseUrl, draftSessionId, runtime);
-            queryClient.setQueryData<SessionRuntime>(runtimeKeys.session(draftSessionId), runtime);
+            queryClient.setQueryData<SessionRuntime>(runtimeKeys.session(draftSessionId), {
+              ...runtime,
+              transcript: 'factory',
+            });
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Session creation failed';
             throw new DraftSessionCreateError(

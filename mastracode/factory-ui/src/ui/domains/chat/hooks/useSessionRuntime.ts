@@ -12,7 +12,6 @@ import {
   runtimeKeys,
 } from '../services/factoryRuntimes';
 import type { SessionRuntime } from '../services/factoryRuntimes';
-import { transcriptSource } from '../services/transcript-source';
 
 export const CLAUDE_AGENT_DEFAULT_MODEL = 'claude-opus-5-5';
 
@@ -84,7 +83,10 @@ export function draftRuntimeChoice(draftId: string, projectDefault: string | und
   };
 }
 
-/** Whether this session is drawn from Factory's own session event log (every session's writes go through its API). */
+/**
+ * Whether this session is drawn from Factory's own session event log: every session is, unless the
+ * server says its conversation began before the log (and until it says, it is).
+ */
 export function usesFactorySessionApi(runtime: SessionRuntime | undefined): boolean {
-  return transcriptSource === 'factory' || runtime?.runtimeId === CLAUDE_AGENT_RUNTIME;
+  return runtime?.transcript !== 'mastra';
 }

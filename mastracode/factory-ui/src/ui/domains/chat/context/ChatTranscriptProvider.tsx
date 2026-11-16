@@ -3,7 +3,7 @@ import { isKnownAgentControllerEvent } from '@mastra/client-js';
 import { normalizeSessionTitle } from '@mastra/factory/session/session-title';
 import type { MastraDBMessage } from '@mastra/core/agent-controller';
 import type { ReactNode } from 'react';
-import { useContext, useEffect, useEffectEvent, useReducer, useState } from 'react';
+import { useCallback, useContext, useEffect, useEffectEvent, useMemo, useReducer, useState } from 'react';
 
 import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { chatSessionPhase } from '../../workspaces/services/sessionStatus';
@@ -11,12 +11,13 @@ import { useAgentControllerTranscript } from '../hooks/useAgentControllerTranscr
 import { useFactorySessionTranscript } from '../hooks/useFactorySessionTranscript';
 import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
 import { initialChatRuntime, runtimeReducer } from '../services/runtime';
-import type { ContextUsage } from '../services/contextUsage';
-import type { ChatRuntimeState, SessionStateSnapshot } from '../services/runtime';
+import type { SessionStateSnapshot } from '../services/runtime';
 import type { TranscriptState } from '../services/transcript';
 import { SessionFavicon } from '../components/SessionFavicon';
-import { ChatConnectionProvider } from './ChatConnectionProvider';
+import { ChatConnectionContext } from './ChatConnectionContext';
+import { useFactoryChatConnection, useMastraChatConnection } from './ChatConnectionProvider';
 import { ChatRuntimeContext } from './ChatRuntimeContext';
+import type { ChatRuntimeApi } from './ChatRuntimeContext';
 import { ChatThreadMessagesContext } from './ChatThreadMessagesContext';
 import { ChatTranscriptContext } from './ChatTranscriptContext';
 import type { ChatTranscriptApi, LoadMoreHistory } from './ChatTranscriptContext';
@@ -25,121 +26,112 @@ import { useChatMessagesError } from './useChatMessagesError';
 import { useChatMessagesInitializing } from './useChatMessagesInitializing';
 import { useChatSessionContext } from './useChatSessionContext';
 
-// fork(claude-agent): a session is drawn from Factory's session event log when it runs on Claude
-// Agent, or when the Factory transcript source is selected (thread id === session id). Each source is
-// its own component, so a provider always calls the same hook.
-type TranscriptProviderProps = Parameters<typeof MastraChatTranscriptProvider>[0];
-
-export function ChatTranscriptProvider(props: TranscriptProviderProps) {
-  const runtime = useSessionRuntimeQuery(props.threadId).data;
-  return usesFactorySessionApi(runtime) ? (
-    <FactoryChatTranscriptProvider {...props} />
-  ) : (
-    <MastraChatTranscriptProvider {...props} />
-  );
-}
-
-const useFactoryTranscript: typeof useAgentControllerTranscript = ({ initialThreadId, viewerId } = {}) =>
-  useFactorySessionTranscript({ sessionId: initialThreadId, viewerId });
-
-const MastraChatTranscriptProvider = transcriptProviderUsing(useAgentControllerTranscript);
-const FactoryChatTranscriptProvider = transcriptProviderUsing(useFactoryTranscript);
-
-function transcriptProviderUsing(useTranscript: typeof useAgentControllerTranscript) {
-  return function TranscriptProvider({
-    children,
-    threadId,
-    initialMessages,
-    hasMoreHistory = false,
-    isLoadingMoreHistory = false,
-    loadMoreHistory,
-  }: {
-    children: ReactNode;
-    threadId?: string;
-    initialMessages?: MastraDBMessage[];
-    hasMoreHistory?: boolean;
-    isLoadingMoreHistory?: boolean;
-    loadMoreHistory?: () => void;
-  }) {
-    const viewerId = useFactoryAuth().data?.user?.userId;
-    const transcriptApi = useTranscript({ initialThreadId: threadId, initialMessages, viewerId });
-    const [runtime, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
-    // fork(claude-agent): the name Mastra gives the session's conversation, which Factory also writes
-    // onto the session row (a session is one conversation: its thread id is its id).
-    const [namedTitle, setNamedTitle] = useState<string>();
-    const onEvent = (event: AgentControllerEvent) => {
-      transcriptApi.onEvent(event);
-      dispatchRuntime({ type: 'event', event });
-      const named = conversationTitle(event, threadId);
-      if (named) setNamedTitle(named);
-    };
-    const reset = (nextThreadId?: string, state?: SessionStateSnapshot) => {
-      transcriptApi.reset(nextThreadId);
-      dispatchRuntime({ type: 'reset', threadId: nextThreadId, state });
-    };
-    const mergeWindow = useEffectEvent((messages: MastraDBMessage[]) => transcriptApi.mergeWindow(messages));
-    useEffect(() => {
-      if (initialMessages === undefined) return;
-      mergeWindow(initialMessages);
-    }, [initialMessages]);
-
-    const loadMore: LoadMoreHistory = {
-      hasMore: hasMoreHistory,
-      isLoading: isLoadingMoreHistory,
-      load: loadMoreHistory,
-    };
-
-    return (
-      <ChatConnectionProvider onEvent={onEvent}>
-        <ChatRuntimeValueProvider
-          runtime={runtime}
-          threadId={transcriptApi.transcript.threadId ?? threadId}
-          context={transcriptApi.transcript.context}
-        >
-          <ChatTranscriptValueProvider
-            threadId={threadId}
-            viewerId={viewerId}
-            transcriptApi={transcriptApi}
-            title={namedTitle}
-            reset={reset}
-            loadMore={loadMore}
-          >
-            {children}
-          </ChatTranscriptValueProvider>
-        </ChatRuntimeValueProvider>
-      </ChatConnectionProvider>
-    );
-  };
-}
-
-function ChatRuntimeValueProvider({
-  children,
-  runtime,
-  threadId,
-  context,
-}: {
+// fork(claude-agent): every session is drawn from Factory's session event log, whatever its runtime,
+// with its runtime state (running, usage, context) read from the same log. A Mastra Code session
+// whose conversation began before Factory logged its events is drawn from Mastra memory and its
+// agent-controller stream instead (the server says which). Both sources' hooks are always called and
+// only the one in use is enabled, so learning the source never remounts the chat (a draft typed
+// while the session loads survives).
+interface TranscriptProviderProps {
   children: ReactNode;
-  runtime: ChatRuntimeState;
   threadId?: string;
-  /** fork(claude-agent): the context Factory's event log reports; wins over the Mastra stream's. */
-  context?: ContextUsage;
-}) {
-  const { state } = useChatConnection();
-  const sessionState = !threadId || state?.threadId === threadId ? state : undefined;
+  initialMessages?: MastraDBMessage[];
+  hasMoreHistory?: boolean;
+  isLoadingMoreHistory?: boolean;
+  loadMoreHistory?: () => void;
+}
+
+export function ChatTranscriptProvider({
+  children,
+  threadId,
+  initialMessages,
+  hasMoreHistory = false,
+  isLoadingMoreHistory = false,
+  loadMoreHistory,
+}: TranscriptProviderProps) {
+  const viewerId = useFactoryAuth().data?.user?.userId;
+  const runtimeQuery = useSessionRuntimeQuery(threadId);
+  const fromMastra = !usesFactorySessionApi(runtimeQuery.data);
+  // Until the server says where a session's history lives, neither source reads it.
+  const fromFactory = !fromMastra && !(Boolean(threadId) && runtimeQuery.isPending);
+
+  const factoryApi = useFactorySessionTranscript({ sessionId: fromFactory ? threadId : undefined, viewerId });
+  const factoryConnection = useFactoryChatConnection({
+    sessionId: threadId,
+    status: factoryApi.connection,
+    running: factoryApi.running,
+    enabled: fromFactory,
+  });
+  const { usage: factoryUsage } = factoryApi;
+  const factoryRuntime = useMemo<ChatRuntimeApi>(
+    () => ({
+      usage: factoryUsage && {
+        promptTokens: factoryUsage.inputTokens,
+        completionTokens: factoryUsage.outputTokens,
+        totalTokens: factoryUsage.inputTokens + factoryUsage.outputTokens,
+      },
+      context: factoryApi.transcript.context,
+      // Mastra's queued follow-ups and decode rate have no counterpart in the event log.
+      followUpCount: 0,
+      runsStarted: factoryApi.runsStarted,
+      tokensPerSec: 0,
+    }),
+    [factoryUsage, factoryApi.transcript.context, factoryApi.runsStarted],
+  );
+
+  const mastraApi = useAgentControllerTranscript({ initialThreadId: threadId, initialMessages, viewerId });
+  const [mastraRuntimeState, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
+  // fork(claude-agent): the name Mastra gives the session's conversation, which Factory also writes
+  // onto the session row (a session is one conversation: its thread id is its id).
+  const [namedTitle, setNamedTitle] = useState<string>();
+  const mastraConnection = useMastraChatConnection(event => {
+    mastraApi.onEvent(event);
+    dispatchRuntime({ type: 'event', event });
+    const named = conversationTitle(event, threadId);
+    if (named) setNamedTitle(named);
+  }, fromMastra);
+  const mergeWindow = useEffectEvent((messages: MastraDBMessage[]) => mastraApi.mergeWindow(messages));
+  useEffect(() => {
+    if (initialMessages === undefined) return;
+    mergeWindow(initialMessages);
+  }, [initialMessages]);
+  const mastraThreadId = mastraApi.transcript.threadId ?? threadId;
+  const mastraSessionState =
+    !mastraThreadId || mastraConnection.state?.threadId === mastraThreadId ? mastraConnection.state : undefined;
+  const mastraRuntime: ChatRuntimeApi = {
+    usage: mastraRuntimeState.usage ?? mastraSessionState?.tokenUsage,
+    context: mastraRuntimeState.context,
+    followUpCount: mastraRuntimeState.followUpCount,
+    runsStarted: mastraRuntimeState.runsStarted,
+    tokensPerSec: mastraRuntimeState.tokensPerSec,
+  };
+  const mastraReset = (nextThreadId?: string, state?: SessionStateSnapshot) => {
+    mastraApi.reset(nextThreadId);
+    dispatchRuntime({ type: 'reset', threadId: nextThreadId, state });
+  };
+  const factoryReset = useCallback((_threadId?: string, _state?: SessionStateSnapshot) => {}, []);
+
   return (
-    <ChatRuntimeContext.Provider
-      value={{
-        usage: runtime.usage ?? sessionState?.tokenUsage,
-        context: context ?? runtime.context,
-        followUpCount: runtime.followUpCount,
-        runsStarted: runtime.runsStarted,
-        tokensPerSec: runtime.tokensPerSec,
-      }}
-    >
-      {children}
-    </ChatRuntimeContext.Provider>
+    <ChatConnectionContext.Provider value={fromMastra ? mastraConnection : factoryConnection}>
+      <ChatRuntimeContext.Provider value={fromMastra ? mastraRuntime : factoryRuntime}>
+        <ChatTranscriptValueProvider
+          threadId={threadId}
+          viewerId={viewerId}
+          transcriptApi={fromMastra ? mastraApi : factoryApi}
+          title={fromMastra ? namedTitle : undefined}
+          reset={fromMastra ? mastraReset : factoryReset}
+          loadMore={
+            fromMastra ? { hasMore: hasMoreHistory, isLoading: isLoadingMoreHistory, load: loadMoreHistory } : NO_MORE
+          }
+        >
+          {children}
+        </ChatTranscriptValueProvider>
+      </ChatRuntimeContext.Provider>
+    </ChatConnectionContext.Provider>
   );
 }
+
+const NO_MORE: LoadMoreHistory = { hasMore: false, isLoading: false };
 
 function ChatTranscriptValueProvider({
   children,
@@ -153,9 +145,18 @@ function ChatTranscriptValueProvider({
   children: ReactNode;
   threadId?: string;
   viewerId?: string;
-  transcriptApi: ReturnType<typeof useAgentControllerTranscript>;
   /** fork(claude-agent): a name the session got while open, when its transcript doesn't carry it. */
   title?: string;
+  transcriptApi: Pick<
+    ReturnType<typeof useAgentControllerTranscript>,
+    | 'transcript'
+    | 'initialHistoryReady'
+    | 'localUser'
+    | 'failLocalUser'
+    | 'resolvePrompt'
+    | 'clearPending'
+    | 'pushNotice'
+  >;
   reset: ChatTranscriptApi['reset'];
   loadMore: LoadMoreHistory;
 }) {
@@ -172,7 +173,7 @@ function ChatTranscriptValueProvider({
     ...transcript,
     threadId: effectiveThreadId,
     tasks: connection.state?.tasks ?? transcript.tasks,
-    ...((transcript.title ?? title) ? { title: transcript.title ?? title } : {}),
+    ...(transcript.title ?? title ? { title: transcript.title ?? title } : {}),
   };
   const busy = connection.state?.running === true || effectiveTranscript.pending;
   const historyInitializing = Boolean(messagesThreadId) && !messagesError && !initialHistoryReady;

@@ -40,7 +40,23 @@ export const server = setupServer(
       defaultRuntimeId: 'mastra-code',
     }),
   ),
-  http.get('*/web/factory/sessions/:id/runtime', () => HttpResponse.json({ runtimeId: 'mastra-code' })),
+  // Most chat tests drive Mastra agent-controller events, so their sessions are drawn the way a Mastra
+  // Code session from before Factory's event log is; tests of the event-log path override it.
+  http.get('*/web/factory/sessions/:id/runtime', () =>
+    HttpResponse.json({ runtimeId: 'mastra-code', transcript: 'mastra' }),
+  ),
+  // Ambient Factory session API for a session drawn from its event log: nothing logged yet, and a
+  // stream that stays open. Tests of that path serve their own transcript and events.
+  http.get('*/web/factory/sessions/:id/transcript', ({ params }) =>
+    HttpResponse.json({ sessionId: params.id, lastSeq: 0, items: [], tasks: [] }),
+  ),
+  http.get(
+    '*/web/factory/sessions/:id/events',
+    () =>
+      new Response(new ReadableStream<Uint8Array>({ start() {}, cancel() {} }), {
+        headers: { 'content-type': 'text/event-stream' },
+      }),
+  ),
   http.get('*/web/factory/projects/:id/runtime', () => HttpResponse.json({ runtimeId: 'mastra-code' })),
   // Ambient run queue: no automated run waits for a slot. Run-queue tests override it with `server.use(...)`.
   http.get('*/web/factory/projects/:id/run-queue', () =>

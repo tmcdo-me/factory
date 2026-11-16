@@ -1,7 +1,9 @@
 // fork(claude-agent): which agent runtimes exist, which one a session runs on, and each project's default.
 /**
  * - `GET  /web/factory/runtimes` — the runtimes this deployment offers (Claude Agent with its models).
- * - `GET  /web/factory/sessions/:sessionId/runtime` — the session's runtime (default when unset).
+ * - `GET  /web/factory/sessions/:sessionId/runtime` — the session's runtime (default when unset), and
+ *   where its transcript is drawn from: `factory` (its event log), or `mastra` for a Mastra Code
+ *   session whose conversation began before Factory logged its events.
  * - `PUT  /web/factory/sessions/:sessionId/runtime` — choose it, before the session's first message;
  *   owner-only (`createSessionAccessGuard`).
  * - `GET|PUT /web/factory/projects/:projectId/runtime` — the project's default for new sessions.
@@ -35,6 +37,11 @@ export interface AgentRuntimeRoutesDependencies {
   sessions: Pick<AgentSessionsStorage, 'get' | 'assign' | 'getProjectDefault' | 'setProjectDefault'>;
   events: Pick<EventLog, 'list'>;
   projects: { get(args: { orgId: string; id: string }): Promise<unknown> };
+  /**
+   * Whether a Mastra Code session's conversation began before its event log (`historyPredatesEventLog`).
+   * Without it every session is drawn from its event log.
+   */
+  historyPredatesLog?: (sessionId: string) => Promise<boolean>;
 }
 
 export function buildAgentRuntimeRoutes({
@@ -42,6 +49,7 @@ export function buildAgentRuntimeRoutes({
   sessions,
   events,
   projects,
+  historyPredatesLog,
 }: AgentRuntimeRoutesDependencies): ApiRoute[] {
   const viewer = async (c: ReturnType<typeof loose>) => {
     if (!auth.enabled()) return { ok: true as const, orgId: undefined };
@@ -71,6 +79,17 @@ export function buildAgentRuntimeRoutes({
       ? { error: 'organization_required', message: 'Agent runtimes are set per organization.' }
       : { error: status === 401 ? 'unauthorized' : 'Project not found' };
 
+  /** A legacy session that can't be checked is drawn from its log: the log still shows what it recorded. */
+  const transcriptSource = async (runtimeId: string, sessionId: string): Promise<'factory' | 'mastra'> => {
+    if (runtimeId !== MASTRA_CODE_RUNTIME_ID || !historyPredatesLog) return 'factory';
+    try {
+      return (await historyPredatesLog(sessionId)) ? 'mastra' : 'factory';
+    } catch (error) {
+      console.warn(`[factory] Session ${sessionId}: checking where its history lives failed`, error);
+      return 'factory';
+    }
+  };
+
   return [
     registerApiRoute('/web/factory/runtimes', {
       method: 'GET',
@@ -87,10 +106,13 @@ export function buildAgentRuntimeRoutes({
       handler: async cc => {
         const c = loose(cc);
         if (!(await viewer(c)).ok) return c.json({ error: 'unauthorized' }, 401);
-        const record = await sessions.get(c.req.param('sessionId')!);
+        const sessionId = c.req.param('sessionId')!;
+        const record = await sessions.get(sessionId);
+        const runtimeId = record?.runtimeId ?? DEFAULT_RUNTIME_ID;
         return c.json({
-          runtimeId: record?.runtimeId ?? DEFAULT_RUNTIME_ID,
+          runtimeId,
           ...(record?.modelId ? { modelId: record.modelId } : {}),
+          transcript: await transcriptSource(runtimeId, sessionId),
         });
       },
     }),

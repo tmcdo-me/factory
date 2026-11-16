@@ -28,6 +28,11 @@ export interface FactoryRuntimeCatalog {
 export interface SessionRuntime {
   runtimeId: string;
   modelId?: string;
+  /**
+   * Where the session's transcript is drawn from: Factory's event log (the default), or Mastra memory
+   * for a Mastra Code session whose conversation began before Factory logged its events.
+   */
+  transcript?: 'factory' | 'mastra';
 }
 
 async function json<T>(response: Response, what: string): Promise<T> {

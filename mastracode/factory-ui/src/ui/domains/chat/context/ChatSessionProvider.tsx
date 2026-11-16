@@ -15,6 +15,7 @@ import { isSessionNotFound } from '../../workspaces/services/user-sessions';
 import type { FactoryUserSession } from '../../workspaces/services/user-sessions';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { opensWithPrompt } from '../hooks/useHandoffPrompt';
+import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
 import { readFailedDraft } from '../services/handoffFiles';
 import { ChatCommandsProvider } from './ChatCommandsProvider';
 import { ComposerImagesProvider } from './ComposerImagesProvider';
@@ -184,18 +185,24 @@ export function ChatSessionBoundary({
   const { sessionId, resourceReady, baseUrl, sessionThreadId, draftSessionId } = useChatSessionContext();
   const location = useLocation();
   const failedDraft = readFailedDraft(location.state, draftSessionId);
+  // fork(claude-agent): Mastra memory holds the history only of a session drawn from it; every other
+  // session's history comes with its Factory transcript.
+  const runtimeQuery = useSessionRuntimeQuery(threadId);
+  const fromMastra = !usesFactorySessionApi(runtimeQuery.data);
+  // Until the server says where the history lives, the history is still loading.
+  const sourcePending = Boolean(threadId) && runtimeQuery.isPending;
   const messagesQuery = useAgentControllerThreadMessages({
     agentControllerId: AGENT_CONTROLLER_ID,
     sessionId,
     threadId,
     baseUrl,
-    enabled: resourceReady && Boolean(threadId),
+    enabled: fromMastra && resourceReady && Boolean(threadId),
     isSessionThread: Boolean(threadId) && threadId === sessionThreadId,
   });
   const messages = {
     threadId,
-    isPending: Boolean(threadId) && messagesQuery.isPending,
-    error: messagesQuery.isError ? messagesQuery.error : undefined,
+    isPending: sourcePending || (fromMastra && Boolean(threadId) && messagesQuery.isPending),
+    error: fromMastra && messagesQuery.isError ? messagesQuery.error : undefined,
   };
 
   if (deferUntilMessagesReady && threadId && (messages.isPending || messages.error)) {
