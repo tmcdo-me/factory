@@ -4,6 +4,7 @@ import type { NotificationPriority } from '@mastra/core/notifications';
 import type { Context } from 'hono';
 import { requestsChangesVerdict } from '../../review-verdict.js';
 import type { FactoryRuntimeSessions } from '../../rules/runtime-sessions.js';
+import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
 import { announcePullRequest } from '../channel-thread-announcements.js';
 import { resolveSubscriptionSession, subscriptionRunContext } from '../subscription-session.js';
 import type { FactorySessionOwner } from '../subscription-session.js';
@@ -20,6 +21,95 @@ export interface GithubWebhookHandlerOptions {
   /** Integration providing webhook-secret verification + collaborator permission checks. */
   github: GithubIntegration;
   ingestFactoryEvent?: (event: ParsedGithubWebhook) => Promise<unknown>;
+  /**
+   * fork(claude-agent): events already handled, by what they are, so a review, comment, push or close
+   * that reached Factory by the active pull request poll too is handled once.
+   */
+  eventClaims?: GithubEventClaims;
+}
+
+/**
+ * fork(claude-agent): what an event is, however it reached Factory (a webhook, the active pull request
+ * poll): one pull request's close or merge, a push to its head, a review, a comment. `undefined` for
+ * events that can rightly happen again (a reopen, an edit) or that name no pull request.
+ */
+export function githubEventContentKey(parsed: ParsedGithubWebhook): string | undefined {
+  const payload = parsed.payload;
+  const action = typeof payload.action === 'string' ? payload.action : undefined;
+  const repositoryId = getNumber(getObject(payload.repository)?.id);
+  if (repositoryId === undefined) return undefined;
+  const pullRequest = getObject(payload.pull_request);
+  const issue = getObject(payload.issue);
+  const number = getNumber(pullRequest?.number) ?? (getObject(issue?.pull_request) ? getNumber(issue?.number) : undefined);
+  if (number === undefined) return undefined;
+  const base = `github:${repositoryId}:pull-request:${number}`;
+  const id = (value: unknown) => {
+    const found = getNumber(getObject(value)?.id);
+    return found === undefined ? undefined : String(found);
+  };
+  // A pull request merges once; it can be closed, reopened and closed again, each close its own.
+  if (parsed.event === 'pull_request' && action === 'closed') {
+    if (pullRequest?.merged === true) return `${base}:merged`;
+    const closedAt = getString(pullRequest?.closed_at);
+    return closedAt ? `${base}:closed:${closedAt}` : undefined;
+  }
+  // A push is from one head to another: a head pushed back to (A, B, then A again) is a push of its own.
+  if (parsed.event === 'pull_request' && action === 'synchronize') {
+    const sha = getString(getObject(pullRequest?.head)?.sha) ?? getString(payload.after);
+    const before = getString(payload.before);
+    return sha && before ? `${base}:synchronize:${before.toLowerCase()}..${sha.toLowerCase()}` : undefined;
+  }
+  if (parsed.event === 'pull_request_review' && action === 'submitted') {
+    const review = id(payload.review);
+    return review ? `${base}:review:${review}` : undefined;
+  }
+  if (parsed.event === 'issue_comment' && action === 'created') {
+    const comment = id(payload.comment);
+    return comment ? `${base}:comment:${comment}` : undefined;
+  }
+  if (parsed.event === 'pull_request_review_comment' && action === 'created') {
+    const comment = id(payload.comment);
+    return comment ? `${base}:review-comment:${comment}` : undefined;
+  }
+  return undefined;
+}
+
+/**
+ * fork(claude-agent): handle one GitHub event as a webhook delivery is handled (the board's rules
+ * ingress, then the sessions subscribed to its pull request), once per event whichever way it came:
+ * an event already handled (`githubEventContentKey`, kept in storage) is a `duplicate`, and one
+ * another caller is handling right now is `busy` (it may yet fail and give it back: try again later).
+ * A failure gives the event back, so its next delivery (GitHub's retry, the next poll) handles it;
+ * sessions that already heard it don't hear it again (their notifications carry the same dedupe key).
+ */
+export async function processGithubEvent(
+  parsed: ParsedGithubWebhook,
+  deps: {
+    claims?: GithubEventClaims;
+    ingest?: (event: ParsedGithubWebhook) => Promise<unknown>;
+    dispatch?: (event: ParsedGithubWebhook) => Promise<{ failed: number }>;
+  },
+): Promise<'handled' | 'duplicate' | 'busy'> {
+  const key = deps.claims ? githubEventContentKey(parsed) : undefined;
+  let token: string | undefined;
+  if (key) {
+    const claim = await deps.claims!.claim(key);
+    if (claim.state === 'done') return 'duplicate';
+    if (claim.state === 'busy') return 'busy';
+    token = claim.token;
+  }
+  try {
+    await deps.ingest?.(parsed);
+    const result = await deps.dispatch?.(parsed);
+    if (result && result.failed > 0) {
+      throw new Error(`${result.failed} subscribed target(s) failed for delivery ${parsed.deliveryId}.`);
+    }
+  } catch (error) {
+    if (key && token) await deps.claims!.release(key, token).catch(() => undefined);
+    throw error;
+  }
+  if (key && token) await deps.claims!.done(key, token);
+  return 'handled';
 }
 
 const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set([
@@ -563,6 +653,8 @@ export async function dispatchGithubWebhook(
             text: overrides?.summary ?? notification.summary,
             source: 'github',
             wake: notification.priority !== 'low',
+            // One notification per event, whichever way it arrived and however often.
+            dedupeKey: `github:${githubEventContentKey(parsed) ?? parsed.deliveryId}`,
             attributes: {
               kind: notification.kind,
               ...(notification.metadata.repository ? { repository: notification.metadata.repository } : {}),
@@ -614,7 +706,8 @@ export async function dispatchGithubWebhook(
           priority: notification.priority,
           payload: overrides?.payload ?? notification.payload,
           sourceId: parsed.deliveryId,
-          dedupeKey: `${parsed.deliveryId}:${subscription.sessionId}:${subscription.threadId}`,
+          // fork(claude-agent): the event's own key, so it is one notification however it arrived.
+          dedupeKey: `${githubEventContentKey(parsed) ?? parsed.deliveryId}:${subscription.sessionId}:${subscription.threadId}`,
           coalesceKey: `github:${subscription.data.repositoryExternalId}:pull-request:${subscription.data.changeRequestId}`,
           metadata: {
             event: notification.metadata.event,
@@ -661,27 +754,40 @@ export async function handleGithubWebhook(
   const metadata = normalizeGithubWebhookMetadata(parsed);
   console.info('[GitHub Webhook]', metadata);
 
-  if (options.ingestFactoryEvent) {
-    await options.ingestFactoryEvent(parsed);
-  }
-
-  if (!options.controller) {
-    return { status: 202, body: { ok: true } };
-  }
-
-  const result = await dispatchGithubWebhook(parsed, {
-    onSenderRejected: notification => {
-      console.info('[GitHub Webhook] sender not authorized', {
-        deliveryId: parsed.deliveryId,
-        repository: notification.metadata.repository,
-        sender: notification.metadata.sender,
-        kind: notification.kind,
-      });
-    },
-    ...(options as GithubWebhookDispatchDependencies),
+  // fork(claude-agent): once per event, also when the active pull request poll saw it first.
+  let ignored = false;
+  const controller = options.controller;
+  const outcome = await processGithubEvent(parsed, {
+    ...(options.eventClaims ? { claims: options.eventClaims } : {}),
+    ...(options.ingestFactoryEvent ? { ingest: options.ingestFactoryEvent } : {}),
+    ...(controller
+      ? {
+          dispatch: async (event: ParsedGithubWebhook) => {
+            const result = await dispatchGithubWebhook(event, {
+              onSenderRejected: notification => {
+                console.info('[GitHub Webhook] sender not authorized', {
+                  deliveryId: event.deliveryId,
+                  repository: notification.metadata.repository,
+                  sender: notification.metadata.sender,
+                  kind: notification.kind,
+                });
+              },
+              ...(options as GithubWebhookDispatchDependencies),
+              controller,
+            });
+            ignored = result.ignored;
+            if (result.failed > 0) {
+              console.warn(
+                `[GitHub Webhook] ${result.failed} subscribed target(s) failed for delivery ${event.deliveryId}.`,
+              );
+            }
+            // As before, a target that failed is only logged: the delivery was answered 202.
+            return { failed: 0 };
+          },
+        }
+      : {}),
   });
-  if (result.failed > 0) {
-    console.warn(`[GitHub Webhook] ${result.failed} subscribed target(s) failed for delivery ${parsed.deliveryId}.`);
-  }
-  return { status: 202, body: { ok: true, ...(result.ignored ? { ignored: true as const } : {}) } };
+  // Handled already, or being handled by the active pull request poll (which retries if it fails).
+  if (outcome !== 'handled') return { status: 202, body: { ok: true, ignored: true } };
+  return { status: 202, body: { ok: true, ...(ignored ? { ignored: true as const } : {}) } };
 }

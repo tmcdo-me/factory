@@ -296,27 +296,36 @@ export class GithubReconcileWorker extends MastraWorker {
    * is skipped rather than failing the sweep for the others.
    */
   async #targets(): Promise<ReconcileRepository[]> {
-    const keys = await this.#sourceControl.projectRepositories.listConfiguredExternalKeys();
-    const targets: ReconcileRepository[] = [];
-    for (const key of keys) {
-      const installationId = Number(key.installationExternalId);
-      const repositoryId = Number(key.repositoryExternalId);
-      if (!Number.isSafeInteger(installationId) || !Number.isSafeInteger(repositoryId)) continue;
-      const projects = await this.#sourceControl.projectRepositories.listByExternalRepository(key);
-      const orgId = projects[0]?.orgId;
-      if (!orgId) continue;
-      const repository = await this.#sourceControl.repositories.findByExternalId({
-        orgId,
-        externalId: key.repositoryExternalId,
-      });
-      if (!repository?.slug) continue;
-      targets.push({ id: repositoryId, fullName: repository.slug, installationId });
-    }
-    return targets;
+    return reconcileTargets(this.#sourceControl);
   }
 }
 
-function getLeaseProvider(pubsub: PubSub): LeaseProvider {
+/**
+ * Configured (installation, repository) pairs resolved to the numeric ids and slug sweeps address
+ * GitHub with. fork(claude-agent): shared with the active pull request poll.
+ */
+export async function reconcileTargets(sourceControl: GithubReconcileRepositorySource): Promise<ReconcileRepository[]> {
+  const keys = await sourceControl.projectRepositories.listConfiguredExternalKeys();
+  const targets: ReconcileRepository[] = [];
+  for (const key of keys) {
+    const installationId = Number(key.installationExternalId);
+    const repositoryId = Number(key.repositoryExternalId);
+    if (!Number.isSafeInteger(installationId) || !Number.isSafeInteger(repositoryId)) continue;
+    const projects = await sourceControl.projectRepositories.listByExternalRepository(key);
+    const orgId = projects[0]?.orgId;
+    if (!orgId) continue;
+    const repository = await sourceControl.repositories.findByExternalId({
+      orgId,
+      externalId: key.repositoryExternalId,
+    });
+    if (!repository?.slug) continue;
+    targets.push({ id: repositoryId, fullName: repository.slug, installationId });
+  }
+  return targets;
+}
+
+// fork(claude-agent): exported for the active pull request poll.
+export function getLeaseProvider(pubsub: PubSub): LeaseProvider {
   const getProvider = (pubsub as PubSub & { getLeaseProvider?: () => LeaseProvider | undefined }).getLeaseProvider;
   if (typeof getProvider === 'function') return getProvider.call(pubsub) ?? NoopLeaseProvider;
   return isLeaseProvider(pubsub) ? pubsub : NoopLeaseProvider;

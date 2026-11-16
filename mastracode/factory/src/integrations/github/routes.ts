@@ -531,6 +531,7 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
         const result = await handleGithubWebhook(loose(c), {
           github,
           ingestFactoryEvent: options.ingestFactoryEvent,
+          ...(github.eventClaims ? { eventClaims: github.eventClaims } : {}), // fork(claude-agent)
           ...(options.controller
             ? {
                 controller: options.controller,

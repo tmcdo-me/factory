@@ -784,6 +784,34 @@ function signedGithubWebhookRequest(event: string, payload: Record<string, unkno
 }
 
 describe('webhook route', () => {
+  // fork(claude-agent): the webhook and the active pull request poll handle each event once.
+  it('handles one review once, though GitHub delivers it twice under two delivery ids', async () => {
+    const { InMemoryGithubEventClaims } = await import('../../storage/domains/github-events/base.js');
+    (githubStub as { eventClaims?: unknown }).eventClaims = new InMemoryGithubEventClaims();
+    try {
+      vi.spyOn(console, 'info').mockImplementation(() => {});
+      const ingestFactoryEvent = vi.fn(async () => undefined);
+      const app = buildApp(null, { ingestFactoryEvent });
+      const review = {
+        action: 'submitted',
+        installation: { id: 7 },
+        repository: { id: 99, full_name: 'octo/hello' },
+        sender: { login: 'ada' },
+        review: { id: 4242, state: 'changes_requested', body: 'Fix it.' },
+        pull_request: { number: 34, html_url: 'https://github.com/octo/hello/pull/34' },
+      };
+      const first = await app.request(signedGithubWebhookRequest('pull_request_review', review));
+      const again = await app.request(
+        signedGithubWebhookRequest('pull_request_review', review, { headers: { 'x-github-delivery': 'delivery-2' } }),
+      );
+      expect(first.status).toBe(202);
+      expect(await again.json()).toEqual({ ok: true, ignored: true });
+      expect(ingestFactoryEvent).toHaveBeenCalledTimes(1);
+    } finally {
+      delete (githubStub as { eventClaims?: unknown }).eventClaims;
+    }
+  });
+
   it('accepts a valid signed issues event without guessing a Factory project repository', async () => {
     seedMaterializedProject();
     const logSpy = vi.spyOn(console, 'info').mockImplementation(() => {});

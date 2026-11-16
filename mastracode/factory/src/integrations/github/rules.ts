@@ -1800,7 +1800,8 @@ export function sameStrings(left: unknown, right: string[] | undefined): boolean
  * a project mapped to multiple repositories must not reconcile one repo's
  * card against another repo's PR number.
  */
-function reconcilablePullRequestNumber(item: Card, repository: ReconcileRepository): number | undefined {
+// fork(claude-agent): exported for the active pull request poll.
+export function reconcilablePullRequestNumber(item: Card, repository: ReconcileRepository): number | undefined {
   if (item.externalSource?.type !== 'pull-request') return undefined;
   const url = item.externalSource.url;
   if (url) {
@@ -1816,7 +1817,11 @@ function reconcilablePullRequestNumber(item: Card, repository: ReconcileReposito
 }
 
 /** The number of an attached pull request source, when it belongs to the given repository. */
-function attachedPullRequestNumber(source: WorkItemSourceRow, repository: ReconcileRepository): number | undefined {
+// fork(claude-agent): exported for the active pull request poll.
+export function attachedPullRequestNumber(
+  source: WorkItemSourceRow,
+  repository: ReconcileRepository,
+): number | undefined {
   if (source.integrationId !== 'github') return undefined;
   if (source.url) {
     const match = /^https?:\/\/[^/]+\/(.+)\/pull\/(\d+)(?:[/?#]|$)/.exec(source.url);

@@ -115,6 +115,12 @@ export interface FactoryRuntimeSessions {
        * session can answer it, and the sender's rate limit counts it.
        */
       delivery?: { id: string } & AgentMessageDelivery;
+      /**
+       * fork(claude-agent): what the message is about, so it reaches the session once however often it
+       * is sent (a GitHub event that came by webhook and by poll, or again after a restart). A second
+       * message with the same key is dropped, for as long as the first is remembered.
+       */
+      dedupeKey?: string;
     },
     requestContext: RequestContext,
   ): Promise<{ runId?: string }>;

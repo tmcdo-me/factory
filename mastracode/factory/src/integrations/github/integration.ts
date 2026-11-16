@@ -47,7 +47,17 @@ import type {
   ReviewComment,
   VersionControl,
 } from '../../capabilities/version-control.js';
+import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
+import {
+  GithubActivePullRequestPollWorker,
+  GithubEventBusy,
+  GithubRateLimited,
+  activePullRequestPollInterval,
+  createActivePullRequestPoll,
+  rateLimitResumeAt,
+} from './active-pull-request-poll.js';
+import type { ConditionalGithubGet } from './active-pull-request-poll.js';
 import type { GithubEventRules, GithubRuleOverrides } from './default-rules.js';
 import { resolveGithubRules } from './default-rules.js';
 import { attachGithubIssueReconciler } from './issue-reconciler.js';
@@ -58,6 +68,7 @@ import {
   attachGithubPullRequestDiscovery,
   attachGithubReconciler,
   attachGithubRules,
+  githubRulesOptions,
   openPullRequestLister,
 } from './rules.js';
 import type { ReconcileIssueState, ReconcilePullRequestState } from './rules.js';
@@ -69,6 +80,8 @@ import {
 } from './session-subscriptions.js';
 import { settleOrAbort } from './settle-or-abort.js';
 import type { GithubSubscriptionStorage } from './subscriptions.js';
+import { dispatchGithubWebhook, processGithubEvent } from './webhook.js';
+import type { ParsedGithubWebhook } from './webhook.js';
 
 type InputOf<TMethod extends keyof VersionControl> =
   NonNullable<VersionControl[TMethod]> extends (input: infer TInput) => unknown ? TInput : never;
@@ -1338,6 +1351,8 @@ export class GithubIntegration implements FactoryIntegration {
       process.env.MASTRACODE_GITHUB_ISSUE_RECONCILE_ENABLED,
       process.env.MASTRACODE_GITHUB_RECONCILE_ENABLED,
     );
+    // fork(claude-agent): the pull requests of cards in an active column, polled every minute or so.
+    const activePoll = pullRequestEnabled ? this.#activePullRequestPoll(ctx) : undefined;
     if (!pullRequestEnabled && !issueEnabled) return [];
 
     const reconcile = pullRequestEnabled
@@ -1354,7 +1369,7 @@ export class GithubIntegration implements FactoryIntegration {
           input => this.listOpenIssueStates(input),
         )
       : undefined;
-    if (!reconcile && !issues && !discover) return [];
+    if (!reconcile && !issues && !discover) return activePoll ? [activePoll] : [];
 
     const legacyInterval = reconcileInterval(process.env.MASTRACODE_GITHUB_RECONCILE_INTERVAL_MS);
     const intervalMs = reconcileInterval(process.env.MASTRACODE_GITHUB_PR_RECONCILE_INTERVAL_MS) ?? legacyInterval;
@@ -1371,8 +1386,89 @@ export class GithubIntegration implements FactoryIntegration {
         ...(issueIntervalMs ? { issueIntervalMs } : {}),
         ...(discoveryIntervalMs ? { discoveryIntervalMs } : {}),
       }),
+      ...(activePoll ? [activePoll] : []),
     ];
   }
+
+  /**
+   * fork(claude-agent): the poll of the pull requests on cards in an active column (Factory can run
+   * where GitHub can't reach it). What it finds goes where a webhook delivery goes: the board's rules
+   * ingress, then the sessions subscribed to the pull request. Off with
+   * `MASTRACODE_GITHUB_ACTIVE_PR_POLL_INTERVAL_MS=0`.
+   */
+  #activePullRequestPoll(ctx: IntegrationContext): GithubActivePullRequestPollWorker | undefined {
+    const intervalMs = activePullRequestPollInterval(process.env.MASTRACODE_GITHUB_ACTIVE_PR_POLL_INTERVAL_MS);
+    const options = githubRulesOptions(this, ctx);
+    if (!intervalMs || !options) return undefined;
+    const ingest = attachGithubRules(this, ctx);
+    const controller = ctx.controller;
+    // As a webhook delivery is handled, once per event: one the webhook brought first is a duplicate.
+    const deliver = async (event: ParsedGithubWebhook) => {
+      const outcome = await processGithubEvent(event, {
+        ...(this.eventClaims ? { claims: this.eventClaims } : {}),
+        ...(ingest ? { ingest } : {}),
+        ...(controller
+          ? {
+              dispatch: (polled: ParsedGithubWebhook) =>
+                dispatchGithubWebhook(polled, {
+                  github: this,
+                  controller,
+                  ...(ctx.runtimeSessions ? { runtimeSessions: ctx.runtimeSessions } : {}),
+                  onTargetError: (subscription, error) =>
+                    console.warn(`[GitHub poll] Delivery failed for subscription ${subscription.id}.`, error),
+                }),
+            }
+          : {}),
+      });
+      // The webhook is handling it right now: read it again next tick, in case that fails.
+      if (outcome === 'busy') throw new GithubEventBusy(event.deliveryId);
+    };
+    return new GithubActivePullRequestPollWorker({
+      poll: createActivePullRequestPoll(options, { get: input => this.conditionalGet(input), deliver }),
+      sourceControl: ctx.storage.sourceControl,
+      intervalMs,
+      ...(this.activePollPreferred ? { preferred: this.activePollPreferred } : {}),
+    });
+  }
+
+  /**
+   * fork(claude-agent): GitHub events already handled, by what they are (`githubEventContentKey`), kept
+   * in storage, so the webhook and the active pull request poll handle each one once. Set by the host.
+   */
+  eventClaims: GithubEventClaims | undefined;
+
+  /**
+   * fork(claude-agent): whether this process should run the active pull request poll first (the one
+   * running Claude Agent sessions); another takes the poll's lease only once it was left free.
+   */
+  activePollPreferred: (() => Promise<boolean>) | undefined;
+
+  /** fork(claude-agent): a REST read conditional on its last ETag; a `304` is free against the rate limit. */
+  readonly conditionalGet: ConditionalGithubGet = async ({ installationId, path, etag }) => {
+    try {
+      const response = await this.getInstallationOctokit(installationId).request({
+        method: 'GET',
+        url: path,
+        headers: etag ? { 'if-none-match': etag } : {},
+      });
+      if ((response.status as number) === 304) return { status: 304 };
+      const header = response.headers.etag;
+      const link = response.headers.link;
+      return {
+        status: 200,
+        ...(typeof header === 'string' ? { etag: header } : {}),
+        ...(typeof link === 'string' ? { link } : {}),
+        data: response.data,
+      };
+    } catch (error) {
+      const failed = error as { status?: unknown; response?: { headers?: Record<string, unknown> } };
+      // Octokit reports a 304 as an error.
+      if (failed.status === 304) return { status: 304 };
+      const resumeAt = rateLimitResumeAt(failed.status, failed.response?.headers);
+      if (resumeAt !== undefined) throw new GithubRateLimited(resumeAt);
+      throw error;
+    }
+  };
 
   /**
    * Reads live PR state for the merge reconciler. Returns undefined when the PR

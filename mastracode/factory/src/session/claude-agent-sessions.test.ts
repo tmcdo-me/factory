@@ -1878,3 +1878,35 @@ describe('ClaudeAgentSessions under a concurrency cap', () => {
     expect(fake.started).not.toContain('/sandboxes/board/repo');
   });
 });
+
+// fork(claude-agent): one GitHub event is one notification, whether it came by webhook or poll, or again.
+describe('ClaudeAgentSessions: messages with a dedupe key', () => {
+  it('tells the session about an event once, however often it is sent', async () => {
+    const { sessions, log } = setup([claude('s1')]);
+    const runs = sessions.runtimeSessions();
+    const owner = hostContext('user-a', false);
+    const review = {
+      text: 'ada requested changes on #34.',
+      source: 'github',
+      wake: true,
+      dedupeKey: 'github:github:99:pull-request:34:review:4242',
+    };
+    expect(await runs.message('s1', review, owner)).toMatchObject({ runId: expect.any(String) });
+    expect(await runs.message('s1', review, owner)).toEqual({});
+    // Held for the next turn: kept once too.
+    const comment = { ...review, wake: false, dedupeKey: 'github:github:99:pull-request:34:comment:7' };
+    await runs.message('s1', comment, owner);
+    await runs.message('s1', comment, owner);
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(1),
+    );
+    await sessions.commands().send('s1', { text: 'next' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(2),
+    );
+    const told = (await log.list('s1')).filter(
+      e => e.event.type === 'notice' && e.event.tag === 'factory-message' && e.event.text.includes('ada'),
+    );
+    expect(told).toHaveLength(2);
+  });
+});

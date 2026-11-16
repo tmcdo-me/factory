@@ -208,6 +208,7 @@ import { ChannelIdentityStorage } from './storage/domains/channel-identity/base.
 import { ModelCredentialsStorage } from './storage/domains/credentials/base.js';
 import { CustomProvidersStorage } from './storage/domains/custom-providers/base.js';
 import { FilesystemStorage } from './storage/domains/filesystem/base.js';
+import { GithubEventsSeenStorage, failOpenGithubEventClaims } from './storage/domains/github-events/base.js';
 import { IntakeStorage } from './storage/domains/intake/base.js';
 import { IntegrationStorage } from './storage/domains/integrations/base.js';
 import { MemorySettingsStorage } from './storage/domains/memory-settings/base.js';
@@ -975,6 +976,8 @@ export class MastraFactory {
     const agentInteractionsStorage = storage.registerDomain(new AgentInteractionsStorage());
     // fork(claude-agent): Factory's messages to Claude Agent sessions, kept across restarts.
     const agentMessagesStorage = storage.registerDomain(new AgentMessagesStorage());
+    // fork(claude-agent): GitHub events handled, by what they are (webhook and active pull request poll).
+    const githubEventsStorage = storage.registerDomain(new GithubEventsSeenStorage());
     this.#agentSeam = {
       events: agentEventHub,
       interactions: agentInteractionsStorage,
@@ -1895,6 +1898,15 @@ export class MastraFactory {
       identity: claudeAgentHostIdentity(claudeAgentHome()),
     });
     this.#claudeAgentHost = claudeAgentHost;
+    // fork(claude-agent): a GitHub event is handled once, whether the webhook or the active pull request
+    // poll brought it; the poll runs first in the process that runs Claude Agent sessions.
+    if (githubIntegration) {
+      githubIntegration.eventClaims = failOpenGithubEventClaims(async () => {
+        await githubEventsStorage.ensureReady();
+        return githubEventsStorage;
+      });
+      githubIntegration.activePollPreferred = () => claudeAgentHost.held();
+    }
     // fork(claude-agent): without the domain, Claude Agent sessions' held messages live in memory only.
     const agentMessagesReady = storage.isDomainReady('agent-messages');
     if (!agentMessagesReady) {
@@ -2799,6 +2811,8 @@ export class MastraFactory {
           buildIntegrationContext(
             {
               controller: prepared.base.controller,
+              // fork(claude-agent): what the workers deliver (the active pull request poll) reaches Claude Agent sessions too.
+              ...(this.#claudeAgentSessions ? { runtimeSessions: this.#claudeAgentSessions.runtimeSessions() } : {}),
               publicOrigin,
               auth: routeAuth,
               stateSigner,
