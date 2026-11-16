@@ -117,7 +117,8 @@ if out=$(docker exec "$name" factory-snapshot 2>&1); then
 else
   fail "factory-snapshot with a vector index: $out"
 fi
-listing=$(docker exec "$name" find /data -printf '%u %m %p\n')
+# As node: root in this container has no capability to read node's 0700/0711 directories.
+listing=$(docker exec -u node "$name" find /data -printf '%u %m %p\n')
 echo "$listing" | sed 's/^/  /'
 [ "$(echo "$listing" | awk '$1 != "node"' | wc -l)" = 0 ] && say "everything on /data is node's" ||
   fail "files on /data that are not node's"
