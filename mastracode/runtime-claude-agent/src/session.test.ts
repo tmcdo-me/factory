@@ -218,8 +218,20 @@ describe('ClaudeAgentSession', () => {
       allowDangerouslySkipPermissions: true,
       settingSources: ['project'],
       systemPrompt: { type: 'preset', preset: 'claude_code', append: 'You are working on a Factory card.' },
-      disallowedTools: ['AskUserQuestion'],
+      disallowedTools: ['AskUserQuestion', 'Skill'],
     });
+  });
+
+  it("keeps the session apart from the operator's Claude setup: no connectors, skills, MCP or memory", async () => {
+    const { session, events, fake } = setup();
+    await session.send({ text: 'hi' });
+    await settled(events);
+    expect(fake.calls[0]!.options).toMatchObject({
+      settings: { disableClaudeAiConnectors: true, disableBundledSkills: true, autoMemoryEnabled: false },
+      strictMcpConfig: true,
+      skills: [],
+    });
+    expect((fake.calls[0]!.options as { disallowedTools?: string[] }).disallowedTools).toContain('Skill');
   });
 
   it('keeps one Claude Code process across turns and closes runs in order', async () => {
@@ -338,6 +350,19 @@ describe('claudeProcessEnv', () => {
       CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
       GH_TOKEN: 'ghs_sandbox',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
+    });
+  });
+
+  it("gives Claude Code a home of its own, overriding the operator's and any CLAUDE_CONFIG_DIR", () => {
+    const env = claudeProcessEnv(
+      { HOME: '/Users/tim', CLAUDE_CONFIG_DIR: '/Users/tim/.claude', CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x' },
+      {},
+      { home: '/srv/factory/claude-home/' },
+    );
+    expect(env).toMatchObject({
+      HOME: '/srv/factory/claude-home/',
+      CLAUDE_CONFIG_DIR: '/srv/factory/claude-home/.claude',
+      CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
     });
   });
 });

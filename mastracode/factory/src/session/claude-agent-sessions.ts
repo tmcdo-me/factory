@@ -1,4 +1,8 @@
 // fork(claude-agent): Factory's live Claude Agent sessions.
+import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
+
 import { SessionPublisher } from '@factory/agent-runtime';
 import type { CommandResult, SessionCommands, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_RUNTIME_ID, ClaudeAgentSession, claudeProcessEnv } from '@factory/runtime-claude-agent';
@@ -20,8 +24,19 @@ export interface ClaudeAgentSessionsDeps {
   workspace(sessionId: string, requestContext: unknown): Promise<{ cwd: string; env: Record<string, string> }>;
   /** Factory's instructions for every Claude Agent session. */
   instructions?: string;
+  /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
+  home?: string;
   hostEnv?: Record<string, string | undefined>;
   query?: QueryFn;
+}
+
+/**
+ * Where Claude Code keeps its config, transcripts and login for Factory sessions: apart from the
+ * operator's own `~/.claude`, so their skills, plugins, memory and connectors never reach a session.
+ * `FACTORY_CLAUDE_AGENT_HOME` overrides the default.
+ */
+export function claudeAgentHome(env: Record<string, string | undefined> = process.env): string {
+  return env.FACTORY_CLAUDE_AGENT_HOME?.trim() || join(homedir(), '.mastracode', 'web', 'claude-agent-home');
 }
 
 /**
@@ -55,6 +70,8 @@ export class ClaudeAgentSessions {
       return undefined;
     }
     const { cwd, env } = await this.#deps.workspace(sessionId, requestContext);
+    const home = this.#deps.home;
+    if (home) await mkdir(home, { recursive: true, mode: 0o700 });
     const publisher = new SessionPublisher(this.#deps.hub, sessionId, {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
     });
@@ -63,7 +80,7 @@ export class ClaudeAgentSessions {
     const session: ClaudeAgentSession = new ClaudeAgentSession({
       sessionId,
       cwd,
-      env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env),
+      env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, home ? { home } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
       ...(this.#deps.instructions ? { instructions: this.#deps.instructions } : {}),

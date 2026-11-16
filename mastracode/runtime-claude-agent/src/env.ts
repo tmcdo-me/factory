@@ -39,9 +39,20 @@ const PASSTHROUGH = [
   'ANTHROPIC_VERTEX_PROJECT_ID',
 ] as const;
 
+export interface ClaudeProcessEnvOptions {
+  /**
+   * A home directory of Claude Code's own. When set, the subprocess gets it as `HOME` and keeps its
+   * config, transcripts and login under `<home>/.claude` (`CLAUDE_CONFIG_DIR`), apart from the
+   * operator's. A saved login of the operator's does not carry over: use `CLAUDE_CODE_OAUTH_TOKEN`
+   * (from `claude setup-token`), or sign in once with this home.
+   */
+  home?: string;
+}
+
 export function claudeProcessEnv(
   hostEnv: Record<string, string | undefined>,
   sandboxEnv: Record<string, string> = {},
+  options: ClaudeProcessEnvOptions = {},
 ): Record<string, string> {
   const env: Record<string, string> = {};
   for (const name of PASSTHROUGH) {
@@ -50,6 +61,10 @@ export function claudeProcessEnv(
   }
   // Sandbox-scoped values (git credentials for the checkout) win over the host's.
   Object.assign(env, sandboxEnv);
+  if (options.home) {
+    env.HOME = options.home;
+    env.CLAUDE_CONFIG_DIR = `${options.home.replace(/\/+$/, '')}/.claude`;
+  }
   // Identifies the embedding app in Claude Code's User-Agent.
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'factory';
   return env;
