@@ -4,6 +4,8 @@ packages:
   - mastracode/factory
   - mastracode/factory-ui
   - mastracode/mastra-factory
+  # fork(claude-agent): Factory agent runtime seam and adapters
+  - mastracode/agent-runtime
   - docs
   - packages/_vendored/*
   - packages/_internals/*

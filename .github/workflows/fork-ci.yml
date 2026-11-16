@@ -1,0 +1,45 @@
+# fork(claude-agent): CI for tmcdo-me/factory. Upstream's workflows are disabled on this fork;
+# this one builds, typechecks and tests the fork-only @factory/* packages (and what they depend on).
+name: Fork CI
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: fork-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  factory-packages:
+    if: github.repository == 'tmcdo-me/factory'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+
+      - name: Install @factory/* and their dependencies
+        run: pnpm install --frozen-lockfile --filter "@factory/*..."
+
+      - name: Build dependencies of @factory/*
+        run: pnpm turbo build --filter "@factory/*^..."
+
+      - name: Typecheck
+        run: pnpm --filter "@factory/*" check
+
+      - name: Test
+        run: pnpm --filter "@factory/*" test
+
+      - name: Build
+        run: pnpm --filter "@factory/*" build
