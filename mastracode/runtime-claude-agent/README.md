@@ -15,6 +15,18 @@ Credentials: Factory never handles Claude credentials. The binary uses its own s
 (`claude /login`) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` set by the operator in the
 server's environment.
 
+Isolation: a session gets nothing of the operator's Claude setup beyond the model.
+
+- **Home:** `claudeProcessEnv(…, { home })` gives Claude Code its own `HOME` and `CLAUDE_CONFIG_DIR`.
+  Factory sets it to `FACTORY_CLAUDE_AGENT_HOME`, default `~/.mastracode/web/claude-agent-home`.
+  The operator's saved login does not carry over, so set `CLAUDE_CODE_OAUTH_TOKEN` (from
+  `claude setup-token`) or sign in once with that home.
+- **Settings:** only the repository's own CLAUDE.md and settings load (`settingSources: ['project']`),
+  plus `CLAUDE_AGENT_ISOLATION`. That turns off claude.ai connectors, bundled skills and
+  auto-memory.
+- **MCP:** only servers Factory passes (`strictMcpConfig`).
+- **Skills:** none (`skills: []`), and the `Skill` tool is disallowed.
+
 ```sh
 pnpm --filter @factory/runtime-claude-agent test
 # one real turn against the bundled Claude Code, on this machine's Claude login:

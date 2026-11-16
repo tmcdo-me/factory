@@ -1,11 +1,15 @@
 // fork(claude-agent)
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
 import type { SessionCommands } from '@factory/agent-runtime';
 import type { QueryFn } from '@factory/runtime-claude-agent';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
-import { ClaudeAgentSessions, routeSessionCommands } from './claude-agent-sessions.js';
+import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './claude-agent-sessions.js';
 
 const now = new Date(0);
 
@@ -51,7 +55,7 @@ function fakeQuery() {
   return { fn, options };
 }
 
-function setup(records: AgentSessionRecord[]) {
+function setup(records: AgentSessionRecord[], home?: string) {
   const log = new InMemoryEventLog();
   const store = memoryStore(records);
   const fake = fakeQuery();
@@ -66,6 +70,7 @@ function setup(records: AgentSessionRecord[]) {
     instructions: 'Factory instructions',
     hostEnv: { HOME: '/home/u', DATABASE_URL: 'postgres://secret' },
     query: fake.fn,
+    ...(home ? { home } : {}),
   });
   return { sessions, store, fake, workspace, log };
 }
@@ -102,6 +107,29 @@ describe('ClaudeAgentSessions', () => {
     expect(fake.options[0]!.env).not.toHaveProperty('DATABASE_URL');
     await vi.waitFor(() => expect(store.setRuntimeState).toHaveBeenCalledWith('s1', { claudeSessionId: 'claude-xyz' }));
     expect(store.setRuntimeState).toHaveBeenCalledTimes(1); // only when it changes
+  });
+
+  it("runs Claude Code in a home of its own, created on first use (private to the server's user)", async () => {
+    const root = await mkdtemp(join(tmpdir(), 'claude-home-'));
+    const home = join(root, 'claude-agent-home');
+    try {
+      const { sessions, fake, log } = setup([claude('s1')], home);
+      await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
+      await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+      expect(fake.options[0]!.env).toMatchObject({
+        HOME: home,
+        CLAUDE_CONFIG_DIR: `${home}/.claude`,
+        GH_TOKEN: 'ghs_x',
+      });
+      expect((await stat(home)).mode & 0o777).toBe(0o700);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('puts that home under the server user, unless FACTORY_CLAUDE_AGENT_HOME says otherwise', () => {
+    expect(claudeAgentHome({})).toMatch(/\.mastracode\/web\/claude-agent-home$/);
+    expect(claudeAgentHome({ FACTORY_CLAUDE_AGENT_HOME: ' /srv/claude ' })).toBe('/srv/claude');
   });
 
   it('resumes the stored Claude session after a restart', async () => {

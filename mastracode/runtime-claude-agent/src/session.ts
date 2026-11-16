@@ -6,6 +6,13 @@ import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runti
 
 import { ClaudeAgentEventMapper } from './event-mapper';
 
+/** Claude Code settings that keep a Factory session apart from the operator's own Claude setup. */
+export const CLAUDE_AGENT_ISOLATION = {
+  disableClaudeAiConnectors: true,
+  disableBundledSkills: true,
+  autoMemoryEnabled: false,
+} as const;
+
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
 export interface ClaudeAgentSessionOptions {
@@ -158,13 +165,20 @@ export class ClaudeAgentSession {
         allowDangerouslySkipPermissions: true,
         // The repository's CLAUDE.md and .claude/ apply; the operator's personal ~/.claude does not.
         settingSources: ['project'],
+        // Isolation: nothing of the operator's Claude account or install reaches the session beyond
+        // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but the ones
+        // Factory passes, no skills (bundled or the repository's), no auto-memory across sessions.
+        settings: { ...CLAUDE_AGENT_ISOLATION },
+        strictMcpConfig: true,
+        skills: [],
         systemPrompt: {
           type: 'preset',
           preset: 'claude_code',
           ...(options.instructions ? { append: options.instructions } : {}),
         },
         // Claude Code's own question tool has no human on the other end yet; Factory's lands later.
-        disallowedTools: ['AskUserQuestion'],
+        // Skills are off; the Skill tool goes too so nothing can invoke one.
+        disallowedTools: ['AskUserQuestion', 'Skill'],
         ...(options.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: options.spawnClaudeCodeProcess } : {}),
         ...(options.pathToClaudeCodeExecutable
           ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable }

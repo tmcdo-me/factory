@@ -155,7 +155,7 @@ import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
-import { ClaudeAgentSessions, routeSessionCommands } from './session/claude-agent-sessions.js';
+import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
 import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
@@ -1802,6 +1802,7 @@ export class MastraFactory {
         resolveWorkspace: workspaceFactory,
         getMastra: () => this.#prepared?.base.controller.getMastra(),
       }),
+      home: claudeAgentHome(),
     });
     this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>
