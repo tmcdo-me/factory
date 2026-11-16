@@ -11,7 +11,11 @@ import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 const alice = { workosId: 'user-alice', organizationId: 'org-1' };
 
 async function setup(
-  options: { user?: { workosId: string; organizationId?: string }; authEnabled?: boolean } = { user: alice },
+  options: {
+    user?: { workosId: string; organizationId?: string };
+    authEnabled?: boolean;
+    historyPredatesLog?: (sessionId: string) => Promise<boolean>;
+  } = { user: alice },
 ) {
   const storage = new LibSQLFactoryStorage({ id: 'agent-runtimes-test', url: ':memory:' });
   const sessions = storage.registerDomain(new AgentSessionsStorage());
@@ -30,6 +34,7 @@ async function setup(
       sessions,
       events: log,
       projects: { get: async ({ orgId, id }) => (orgId === 'org-1' && id === 'p1' ? { id } : null) },
+      historyPredatesLog: options.historyPredatesLog,
     }),
   );
   return { app, sessions, log };
@@ -58,7 +63,10 @@ describe('agent runtime routes', () => {
 
   it('chooses a session runtime before it starts, and not after', async () => {
     const { app, log } = await setup();
-    expect(await (await app.request('/web/factory/sessions/s1/runtime')).json()).toEqual({ runtimeId: 'mastra-code' });
+    expect(await (await app.request('/web/factory/sessions/s1/runtime')).json()).toEqual({
+      runtimeId: 'mastra-code',
+      transcript: 'factory',
+    });
 
     expect(
       (
@@ -71,6 +79,7 @@ describe('agent runtime routes', () => {
     expect(await (await app.request('/web/factory/sessions/s1/runtime')).json()).toEqual({
       runtimeId: 'claude-agent',
       modelId: 'claude-opus-5-5',
+      transcript: 'factory',
     });
     const fixed = await app.request('/web/factory/sessions/s1/runtime', put({ runtimeId: 'mastra-code' }));
     expect(fixed.status).toBe(409);
@@ -82,6 +91,31 @@ describe('agent runtime routes', () => {
     expect(await started.json()).toMatchObject({ reason: 'session_started' });
 
     expect((await app.request('/web/factory/sessions/s3/runtime', put({ runtimeId: 'pi' }))).status).toBe(400);
+  });
+
+  it('draws a Mastra Code session from Mastra memory only when its conversation began before its event log', async () => {
+    const legacy = new Set(['old']);
+    const { app, sessions } = await setup({
+      user: alice,
+      historyPredatesLog: async sessionId => {
+        if (sessionId === 'unreadable') throw new Error('storage down');
+        return legacy.has(sessionId);
+      },
+    });
+    const transcript = async (sessionId: string) =>
+      ((await (await app.request(`/web/factory/sessions/${sessionId}/runtime`)).json()) as { transcript?: string })
+        .transcript;
+
+    expect(await transcript('old')).toBe('mastra');
+    expect(await transcript('new')).toBe('factory');
+    // A check that fails answers 503 so the UI asks again: it never guesses where the history is.
+    const unreadable = await app.request('/web/factory/sessions/unreadable/runtime');
+    expect(unreadable.status).toBe(503);
+    expect(await unreadable.json()).toMatchObject({ error: 'unavailable' });
+    // Claude Agent sessions only ever have the event log.
+    legacy.add('claude');
+    await sessions.assign('claude', 'claude-agent', 'claude-opus-5-5');
+    expect(await transcript('claude')).toBe('factory');
   });
 
   it("reads and sets a project's default runtime within the caller's organization", async () => {

@@ -23,7 +23,7 @@ import { existsSync } from 'node:fs';
 
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
-import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code';
+import { createMastraCodeSessionCommands, historyPredatesEventLog } from '@factory/runtime-mastra-code';
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
 import type { MastraCodeConfig } from '@mastra/code-sdk';
@@ -2510,6 +2510,13 @@ export class MastraFactory {
                 await factoryProjectsStorage.ensureReady();
                 return factoryProjectsStorage.get(args);
               },
+            },
+            // A Mastra Code session that began before its events were logged is drawn from Mastra memory.
+            historyPredatesLog: async sessionId => {
+              const controller = this.#prepared?.base.controller;
+              // Not started yet: the route answers 503 and the UI asks again, rather than guess.
+              if (!controller) throw new Error('Factory has not started yet');
+              return historyPredatesEventLog({ conversation: controller, events: agentEventHub.log, sessionId });
             },
           }),
           // fork(claude-agent): Factory's runtime-neutral session API.

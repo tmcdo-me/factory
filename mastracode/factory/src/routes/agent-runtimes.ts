@@ -1,7 +1,10 @@
 // fork(claude-agent): which agent runtimes exist, which one a session runs on, and each project's default.
 /**
  * - `GET  /web/factory/runtimes` — the runtimes this deployment offers (Claude Agent with its models).
- * - `GET  /web/factory/sessions/:sessionId/runtime` — the session's runtime (default when unset).
+ * - `GET  /web/factory/sessions/:sessionId/runtime` — the session's runtime (default when unset), and
+ *   where its transcript is drawn from: `factory` (its event log), or `mastra` for a Mastra Code
+ *   session whose conversation began before Factory logged its events. 503 while that can't be
+ *   told (Factory starting, storage unreachable): the UI asks again rather than draw it wrong.
  * - `PUT  /web/factory/sessions/:sessionId/runtime` — choose it, before the session's first message;
  *   owner-only (`createSessionAccessGuard`).
  * - `GET|PUT /web/factory/projects/:projectId/runtime` — the project's default for new sessions.
@@ -35,6 +38,11 @@ export interface AgentRuntimeRoutesDependencies {
   sessions: Pick<AgentSessionsStorage, 'get' | 'assign' | 'getProjectDefault' | 'setProjectDefault'>;
   events: Pick<EventLog, 'list'>;
   projects: { get(args: { orgId: string; id: string }): Promise<unknown> };
+  /**
+   * Whether a Mastra Code session's conversation began before its event log (`historyPredatesEventLog`).
+   * Without it every session is drawn from its event log.
+   */
+  historyPredatesLog?: (sessionId: string) => Promise<boolean>;
 }
 
 export function buildAgentRuntimeRoutes({
@@ -42,6 +50,7 @@ export function buildAgentRuntimeRoutes({
   sessions,
   events,
   projects,
+  historyPredatesLog,
 }: AgentRuntimeRoutesDependencies): ApiRoute[] {
   const viewer = async (c: ReturnType<typeof loose>) => {
     if (!auth.enabled()) return { ok: true as const, orgId: undefined };
@@ -71,6 +80,17 @@ export function buildAgentRuntimeRoutes({
       ? { error: 'organization_required', message: 'Agent runtimes are set per organization.' }
       : { error: status === 401 ? 'unauthorized' : 'Project not found' };
 
+  /** Where a session's history lives; `undefined` when a Mastra Code session's can't be told now. */
+  const transcriptSource = async (runtimeId: string, sessionId: string): Promise<'factory' | 'mastra' | undefined> => {
+    if (runtimeId !== MASTRA_CODE_RUNTIME_ID || !historyPredatesLog) return 'factory';
+    try {
+      return (await historyPredatesLog(sessionId)) ? 'mastra' : 'factory';
+    } catch (error) {
+      console.warn(`[factory] Session ${sessionId}: checking where its history lives failed`, error);
+      return undefined;
+    }
+  };
+
   return [
     registerApiRoute('/web/factory/runtimes', {
       method: 'GET',
@@ -87,11 +107,17 @@ export function buildAgentRuntimeRoutes({
       handler: async cc => {
         const c = loose(cc);
         if (!(await viewer(c)).ok) return c.json({ error: 'unauthorized' }, 401);
-        const record = await sessions.get(c.req.param('sessionId')!);
-        return c.json({
-          runtimeId: record?.runtimeId ?? DEFAULT_RUNTIME_ID,
-          ...(record?.modelId ? { modelId: record.modelId } : {}),
-        });
+        const sessionId = c.req.param('sessionId')!;
+        const record = await sessions.get(sessionId);
+        const runtimeId = record?.runtimeId ?? DEFAULT_RUNTIME_ID;
+        const transcript = await transcriptSource(runtimeId, sessionId);
+        if (!transcript) {
+          return c.json(
+            { error: 'unavailable', message: "Where the session's history lives could not be read; try again." },
+            503,
+          );
+        }
+        return c.json({ runtimeId, ...(record?.modelId ? { modelId: record.modelId } : {}), transcript });
       },
     }),
     registerApiRoute('/web/factory/sessions/:sessionId/runtime', {

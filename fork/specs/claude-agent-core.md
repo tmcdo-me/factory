@@ -307,11 +307,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      behind the existing session access guard.
    - **3b** ✅ richer `FactoryEvent` for what the UI renders for any runtime (message meta and
      attachments, streamed tool input, exits, progress, notices, tasks, subagents, error codes).
-   - **3c** UI data layer: `useFactorySessionTranscript` (snapshot, then stream from `seq`, gap →
+   - **3c** ✅ UI data layer: `useFactorySessionTranscript` (snapshot, then stream from `seq`, gap →
      resync) and `projectTranscript` (Factory transcript → the existing timeline entry shapes, so
-     the 4k+ LOC of renderers keep working). Selected by `VITE_FACTORY_TRANSCRIPT_SOURCE=factory` or
-     `localStorage['factory:transcript-source']`; default stays Mastra until 3d.
-   - **3d** writes through Factory routes (send, abort, approvals, suspensions, model), runtime
+     the 4k+ LOC of renderers keep working). (Selected by `VITE_FACTORY_TRANSCRIPT_SOURCE` /
+     `localStorage['factory:transcript-source']` until 3d made it the default and removed the flag.)
+   - **3d** ✅ writes through Factory routes (send, abort, approvals, suspensions, model), runtime
      state (running, usage) from the seam, removal of the dropped Mastra-only UI (goals, OM,
      permissions, multi-thread sessions), then flip the default to `factory`.
      Renderers move from the projection to native transcript items opportunistically afterwards.
@@ -332,6 +332,22 @@ Each slice: implement → focused tests → manual check where noted → commit.
        and to the session; route thread switching and thread lists are gone, and the tab title is
        the session's own). Server routes for these stay. A chat-only Slack channel session's
        threads (`?sessionId=channel:…`) can no longer be switched between in the UI.
+     - ✅ Every session is drawn from Factory's event log by default, with its runtime state from
+       the seam for both runtimes: running (the composer's stop/steer, the favicon, the activity
+       line), connected/reconnecting (which gates sending), usage (`/cost`) and the context meter
+       come from `/transcript` + `/events`. The UI no longer creates (init, state seed) or streams
+       Mastra's agent-controller session for it; it still reads a Mastra Code session's model from
+       Mastra's session state (where its model and thinking settings live), and that read rebuilds
+       the live Mastra session on the server. The transcript-source flag is gone. The Mastra path stays for one case: a Mastra Code session whose conversation began
+       before Factory mirrored it into the log (its first stored message is over a minute older
+       than its first logged event, `historyPredatesEventLog` in `@factory/runtime-mastra-code`);
+       `GET /web/factory/sessions/:id/runtime` says `transcript: 'mastra'` for it, and the UI draws
+       it from Mastra memory and its agent-controller stream as before. While that can't be told
+       (Factory starting, storage unreachable) the route answers 503 and the UI shows the history as
+       failed to load, retrying, rather than guess; the answer is read again after 5 minutes. A session the composer
+       creates is drawn from the log at once. Both sources' hooks are mounted and only one is
+       enabled, so learning which one never remounts the chat. Mastra's queued-follow-up count
+       and decode rate (tok/s) have no counterpart in the log and show only on that path.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,

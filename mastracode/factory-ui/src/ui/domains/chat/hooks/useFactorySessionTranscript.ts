@@ -9,12 +9,17 @@ import { applyEvent, emptyTranscript } from '@factory/agent-runtime/browser';
 import type { EventEnvelope, Transcript } from '@factory/agent-runtime/browser';
 import type { AgentControllerEvent, MastraDBMessage } from '@mastra/client-js';
 import type { MastraMessagePart } from '@mastra/core/agent-controller';
-import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import { useApiConfig } from '../../../../api/config';
 import { contextFromFactoryUsage } from '../services/contextUsage';
 import { projectTranscript } from '../services/factory-transcript-projection';
-import { fetchFactoryTranscript, streamFactorySessionEvents } from '../services/factorySessionEvents';
+import {
+  FactorySessionRequestError,
+  fetchFactoryTranscript,
+  streamFactorySessionEvents,
+} from '../services/factorySessionEvents';
+import type { ConnectionStatus } from './useAgentControllerConnection';
 import { createLocalMessageId } from '../services/transcript';
 import type { MessageEntry, NoticeEntry, OutgoingFile, TimelineEntry, TranscriptState } from '../services/transcript';
 
@@ -58,7 +63,11 @@ const initial = (sessionId?: string): State => ({
 function reducer(state: State, action: Action): State {
   switch (action.type) {
     case 'reset':
-      return initial(action.sessionId);
+      // Mounting resets to the session it already holds: keep what a child put there first (a
+      // handed-off prompt shown while its session is created).
+      return action.sessionId === state.sessionId && !state.ready && state.transcript.lastSeq === 0
+        ? state
+        : initial(action.sessionId);
     case 'snapshot':
       if (action.sessionId !== state.sessionId) return state;
       // A snapshot never moves the transcript backwards (a stream may already be ahead of it).
@@ -93,18 +102,34 @@ function reducer(state: State, action: Action): State {
 const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
+/** The session is gone or not the viewer's: retrying can't help. */
+const isRefused = (error: unknown) => error instanceof FactorySessionRequestError && [403, 404].includes(error.status);
+
+/** Signed out: show it, and keep asking so the stream comes back once the viewer signs in again. */
+const isSignedOut = (error: unknown) => error instanceof FactorySessionRequestError && error.status === 401;
+
 export function useFactorySessionTranscript({ sessionId }: { sessionId?: string; viewerId?: string } = {}) {
   const { baseUrl } = useApiConfig();
   const [state, dispatch] = useReducer(reducer, sessionId, initial);
+  // fork(claude-agent): the live stream's state, which gates sending like the Mastra connection did.
+  const [connection, setConnection] = useState<{ sessionId?: string; status: ConnectionStatus }>({
+    sessionId,
+    status: 'connecting',
+  });
   const lastSeq = useRef(0);
   lastSeq.current = state.transcript.lastSeq;
 
   useEffect(() => {
     dispatch({ type: 'reset', sessionId });
+    setConnection({ sessionId, status: 'connecting' });
     lastSeq.current = 0;
     if (!sessionId) return;
     const controller = new AbortController();
     const { signal } = controller;
+    let connectedOnce = false;
+    const report = (status: ConnectionStatus) => {
+      if (!signal.aborted) setConnection({ sessionId, status });
+    };
 
     void (async () => {
       let delay = RECONNECT_MIN_MS;
@@ -125,6 +150,8 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
             {
               onConnected: () => {
                 delay = RECONNECT_MIN_MS;
+                connectedOnce = true;
+                report('ready');
               },
               onEnvelope: envelope => {
                 if (envelope.seq <= lastSeq.current) return;
@@ -140,8 +167,16 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
             },
             AbortSignal.any([signal, gap.signal]),
           );
-        } catch {
+          // The server closed the stream: reconnect from the last event.
+          report(connectedOnce ? 'reconnecting' : 'connecting');
+        } catch (error) {
           if (signal.aborted) return;
+          if (isRefused(error)) {
+            report('error');
+            return;
+          }
+          if (isSignedOut(error)) report('error');
+          else report(connectedOnce ? 'reconnecting' : 'connecting');
         }
         if (signal.aborted) return;
         await new Promise(resolve => setTimeout(resolve, delay));
@@ -154,6 +189,10 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
   const projected = useMemo(() => projectTranscript(state.transcript), [state.transcript]);
   const usage = state.transcript.usage;
   const context = useMemo(() => contextFromFactoryUsage(usage), [usage]);
+  const runsStarted = useMemo(
+    () => state.transcript.items.filter(item => item.kind === 'run').length,
+    [state.transcript.items],
+  );
 
   const transcript: TranscriptState = useMemo(() => {
     const userTexts = projected.entries.flatMap(entry =>
@@ -224,6 +263,11 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
 
   return {
     transcript,
+    /** fork(claude-agent): runtime state read from the seam, for every runtime. */
+    connection: connection.sessionId === sessionId ? connection.status : ('connecting' as const),
+    running: projected.running,
+    usage,
+    runsStarted,
     initialHistoryReady: state.ready || !sessionId,
     reset,
     onEvent,
