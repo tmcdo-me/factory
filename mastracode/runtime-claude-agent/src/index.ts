@@ -9,6 +9,7 @@ export {
 } from './bash-sandbox';
 export type { ClaudeAgentBashSandboxOptions } from './bash-sandbox';
 export { bashSandboxProbeScript, parseBashSandboxProbe } from './bash-sandbox-probe';
+export { CLAUDE_CREDENTIALS_FILE, claudeAgentFileToolDeny, claudeAgentSecretFiles } from './secret-files';
 export type { BashSandboxProbeOptions } from './bash-sandbox-probe';
 export { CLAUDE_AGENT_ISOLATION, ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove } from './session';
 export type {

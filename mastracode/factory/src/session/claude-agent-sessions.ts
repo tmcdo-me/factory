@@ -169,8 +169,9 @@ export function claudeAgentBashSandbox(env: Record<string, string | undefined> =
  * loads `mastracode/web/.env`, which is where `CLAUDE_CODE_OAUTH_TOKEN` usually lives), found
  * from the server's entry point and working directory upwards; the operator's own Claude login
  * (`~/.claude/.credentials.json` on Linux); and `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`
- * (comma-separated paths) for anywhere else the operator keeps it. The sandbox lets commands read
- * everything else on this machine.
+ * (comma-separated paths) for anywhere else the operator keeps it. Claude's file tools (Read, Grep,
+ * Edit, …) are refused them in every session, and with the Bash sandbox its commands too; the sandbox
+ * lets commands read everything else on this machine.
  */
 export function claudeAgentHostSecretFiles(
   env: Record<string, string | undefined> = process.env,
@@ -333,8 +334,10 @@ export class ClaudeAgentSessions {
         ? async () => claudeProcessEnv(hostEnv, await freshEnv(), envOptions)
         : claudeProcessEnv(hostEnv, env, envOptions),
       idleCloseMs: this.#deps.idleCloseMs ?? claudeAgentIdleCloseMs(),
-      // On this host its commands must not read the files holding Claude's credential either.
-      ...(bashSandbox ? { bashSandbox: launch ? true : { denyRead: claudeAgentHostSecretFiles(hostEnv) } } : {}),
+      ...(bashSandbox ? { bashSandbox: true } : {}),
+      // On this host Claude's file tools, and with the sandbox its commands, must not read the files
+      // holding Claude's credential either; in a sandbox, only Claude's own saved login (always denied).
+      ...(launch ? {} : { secretFiles: claudeAgentHostSecretFiles(hostEnv) }),
       recycleAfterMs: CLAUDE_AGENT_RECYCLE_AFTER_MS,
       processDeadlineMs: CLAUDE_AGENT_PROCESS_DEADLINE_MS,
       backgroundMaxMs: this.#deps.backgroundMaxMs ?? claudeAgentBackgroundMaxMs(),

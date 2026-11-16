@@ -12,6 +12,7 @@ through the Claude Agent SDK. Design and compliance constraints:
 | `factory-tools.ts` | Factory's tools (`FactoryToolDef`) as the in-process MCP server `factory`; each call gets the context the host binds for Claude's `tool_use` id and run                                  |
 | `skills.ts`        | `writeSkillsPlugin`: the host's chosen skills written as one local plugin (`factory:<name>`), skills only; `skillKickoffText` starts one for a board run                                 |
 | `builtin-tools.ts` | The allow-list of Claude Code's built-in tools, and the deny-list of those that act outside the session                                                                                  |
+| `secret-files.ts`  | The files holding Claude's credential (`claudeAgentSecretFiles`), one list for the Bash sandbox and the file tools' deny rules (`claudeAgentFileToolDeny`)                               |
 | `env.ts`           | Subprocess environment allow-list: Claude's own credential passes through untouched; server secrets never do                                                                             |
 | `install.ts`       | `ensureClaudeCode`: the official installer in a sandbox, pinned to the SDK's bundled CLI version and its release checksums; `runInProcesses` runs it with no environment                 |
 | `launch.ts`        | `sandboxClaudeCodeLaunch`: Claude Code inside a sandbox, started through its `spawn` behind a checksum and managed-settings check                                                        |
@@ -84,7 +85,7 @@ inside it, with the same isolation as on the host:
   turns it off for trusted sessions, never for untrusted ones) runs every Bash command in Claude
   Code's own sandbox (`claudeAgentBashSandbox`): Claude's credentials unset, other processes out of
   sight (Seatbelt on macOS; on Linux bubblewrap's own PID namespace and `/proc`), Claude's saved
-  login and `denyRead` files (Factory: the server's env files) unreadable, no unsandboxed escape.
+  login and `secretFiles` (Factory: the server's env files) unreadable, no unsandboxed escape.
   The network stays open (no allow-list under `bypassPermissions`; `gh` verifies TLS on macOS
   through `enableWeakerNetworkIsolation`). Writes go to the checkout, the temp directory and the
   package caches under Claude's home (`BASH_SANDBOX_WRITABLE_HOME_DIRS`); Claude Code keeps
@@ -93,9 +94,15 @@ add`) fails in Claude's shell, while commits and pushes work. In a Sprite, `ensu
   installs bubblewrap and socat (apt), and the launch drops the Sprite user's ambient capabilities
   and unmasks `/proc` so bubblewrap can mount a fresh one; without them Claude Code refuses to
   start (`LAUNCH_BASH_SANDBOX_UNAVAILABLE`). On a Linux host it needs bubblewrap and socat
-  installed. Checked live on macOS and in a Sprite (`bashSandboxProbeScript`, spec §6 9c). Not
-  covered: Claude's own Read/Grep tools (they run in Claude Code's process, unsandboxed), hooks of a
-  trusted checkout's `.claude/settings.json`, and anything else on this host the operator keeps the
+  installed. Checked live on macOS and in a Sprite (`bashSandboxProbeScript`, spec §6 9c).
+- **Claude's credential and its file tools:** Read, Grep, Glob, Edit, Write and NotebookEdit run in
+  Claude Code's own process, outside the Bash sandbox. Every session gets permission deny rules for
+  them (`claudeAgentFileToolDeny`, in `disallowedTools`; deny rules hold under `bypassPermissions`)
+  over the same list the sandbox denies (`claudeAgentSecretFiles`: Claude's saved login plus
+  `secretFiles`), sandbox on or off, and over `/proc` where Claude Code runs on Linux or elsewhere
+  (`spawnClaudeCodeProcess`: a Sprite), since `/proc/self/environ` is Claude Code's own environment.
+  Checked live on macOS (Factory's `claude-agent-sessions.live.test.ts`); the `/proc` rule was not
+  checked in a Sprite. Not covered: hooks of a trusted checkout's `.claude/settings.json`, and anything else on this host the operator keeps the
   token in (the sandbox lets commands read everything else). `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is
   not used: it drops `bypassPermissions` and scrubs `GH_TOKEN` too (see `env.ts`).
 - **Skills:** `writeSkillsPlugin(dir, skills, launch.files)` writes the plugin on the sandbox's
@@ -109,4 +116,7 @@ pnpm --filter @factory/runtime-claude-agent test
 # CLAUDE_CODE_OAUTH_TOKEN also one in the Bash sandbox, probed for the token (macOS: adds and
 # removes a throwaway keychain item):
 CLAUDE_AGENT_LIVE=1 pnpm --filter @factory/runtime-claude-agent exec vitest run src/session.live.test.ts
+# with CLAUDE_CODE_OAUTH_TOKEN: two turns through Factory's sessions, checking that Read and Grep
+# are refused a FACTORY_CLAUDE_AGENT_BASH_DENY_READ file and still read the checkout:
+CLAUDE_AGENT_LIVE=1 pnpm --filter @mastra/factory exec vitest run src/session/claude-agent-sessions.live.test.ts
 ```

@@ -187,9 +187,11 @@ describe('ClaudeAgentSessions', () => {
       });
       await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
       await vi.waitFor(() => expect(fake.options).toHaveLength(1));
-      const settings = (fake.options[0] as { settings: { sandbox?: { credentials: { files: { path: string }[] } } } })
-        .settings;
-      return { sandbox: settings.sandbox, opened, home };
+      const sdk = fake.options[0] as {
+        settings: { sandbox?: { credentials: { files: { path: string }[] } } };
+        disallowedTools: string[];
+      };
+      return { sandbox: sdk.settings.sandbox, disallowedTools: sdk.disallowedTools, opened, home };
     };
 
     // On by default, on this host with its secret files denied and the cache directories made.
@@ -207,6 +209,15 @@ describe('ClaudeAgentSessions', () => {
     const off = await run({ bashSandbox: false, posture: 'trusted' });
     expect(off.sandbox).toBeUndefined();
     expect(off.opened).toEqual([{ bashSandbox: false }]);
+    // Claude's file tools run outside the Bash sandbox: sandboxed or not, they are refused the same files.
+    for (const { sandbox, disallowedTools } of [byDefault, off]) {
+      expect(disallowedTools).toEqual(
+        expect.arrayContaining(['Read(//etc/factory/claude.env)', 'Edit(//etc/factory/claude.env)']),
+      );
+      for (const path of sandbox?.credentials.files.map(file => file.path) ?? []) {
+        expect(disallowedTools).toContain(`Read(${path.startsWith('/') ? `/${path}` : path})`);
+      }
+    }
     const untrusted = await run({ bashSandbox: false, posture: 'untrusted' });
     expect(untrusted.sandbox).toMatchObject({ enabled: true });
     expect(untrusted.opened).toEqual([{ bashSandbox: true }]);

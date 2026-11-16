@@ -474,10 +474,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
      refuses to start Claude Code without one (exit 97). It is on by default
      (`FACTORY_CLAUDE_AGENT_BASH_SANDBOX=0` turns it off for trusted sessions); an untrusted
      checkout always runs sandboxed, and a session whose posture changes restarts with it. On a
-     Linux host bubblewrap and socat must be installed or Claude Code refuses to start. Not
-     covered: Claude's own Read/Grep tools, which run in Claude Code's process (a Read of
-     `/proc/self/environ` in a Sprite would run as Claude Code itself; not checked); hooks in a
-     trusted checkout's `.claude/settings.json` (they run outside the sandbox); files on the host
+     Linux host bubblewrap and socat must be installed or Claude Code refuses to start.
+     Claude's file tools (Read, Grep, Glob, Edit, Write, NotebookEdit) run in Claude Code's own
+     process, outside the sandbox, so every session also gets permission deny rules for them
+     (`claudeAgentFileToolDeny`, passed as `disallowedTools`: deny rules hold under
+     `bypassPermissions`, and `--disallowedTools` ones even where managed settings drop other
+     settings' rules) over the same files the sandbox denies (`claudeAgentSecretFiles`: Claude's
+     saved login, and on the host the server's env files and `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`),
+     with the Bash sandbox on or off; where Claude Code runs on Linux or in a Sprite, `/proc` too
+     (`/proc/self/environ` is Claude Code's own environment). A `Read` rule covers Grep and Glob,
+     an `Edit` rule Write and NotebookEdit. Checked live on macOS
+     (`claude-agent-sessions.live.test.ts`): with a stand-in file named in
+     `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`, Read was refused it directly and through a symlink in
+     the checkout, Grep over its folder returned nothing of it, the stand-in value appeared nowhere
+     in the session's events, and a Read of a checkout file worked. The `/proc` rule was not checked
+     in a Sprite. Not covered: hooks in a trusted checkout's `.claude/settings.json` (they run outside the sandbox); files on the host
      other than those denied (the sandbox lets commands read the rest of the machine); and `sudo`
      inside the sandbox (bubblewrap sets `no_new_privs`, so `sudo apt-get install` from Claude's
      shell doesn't work).
@@ -552,7 +563,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`     | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
 | `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` | 60 minutes     | Stop a Claude Code kept running only by background work after this long       |
 | `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | on             | `0`: trusted sessions' Bash outside Claude Code's sandbox (9c)                |
-| `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's commands may not read (comma-separated paths)        |
+| `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's file tools and commands may not read (comma list)    |
 | `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)   |
 
 ## 9. Upstream
