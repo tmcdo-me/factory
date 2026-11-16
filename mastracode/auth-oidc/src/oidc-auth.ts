@@ -17,6 +17,12 @@ export interface OidcAuthOptions {
   sessionSecret: string;
   /** Everyone the provider lets in belongs to this one Factory organization. */
   organizationId?: string;
+  /**
+   * The callback URL registered with the provider (e.g. `https://factory.example/auth/callback`).
+   * The token exchange must repeat it; without it, the URL given to `getLoginUrl` is remembered per
+   * login, which does not survive a restart mid-login.
+   */
+  redirectUri?: string;
   /** Text on the sign-in button. */
   displayName?: string;
   scopes?: string[];
@@ -59,11 +65,14 @@ const base64url = (buffer: Buffer) => buffer.toString('base64url');
  * so the flow needs no server-side store and no extra cookie.
  */
 export class OidcAuth extends MastraAuthProvider<OidcUser> {
-  readonly #options: Required<Omit<OidcAuthOptions, 'fetch' | 'displayName'>> & { displayName?: string };
+  readonly #options: Required<Omit<OidcAuthOptions, 'fetch' | 'displayName' | 'redirectUri'>> &
+    Pick<OidcAuthOptions, 'displayName' | 'redirectUri'>;
   readonly #fetch: typeof fetch;
   readonly #key: Uint8Array;
   #discovery: Promise<Discovery> | undefined;
   #jwks: ReturnType<typeof createRemoteJWKSet> | undefined;
+  /** state → redirect URI for logins in flight, oldest first (bounded). */
+  readonly #pending = new Map<string, string>();
 
   constructor(options: OidcAuthOptions) {
     super({ name: 'oidc' });
@@ -80,6 +89,7 @@ export class OidcAuth extends MastraAuthProvider<OidcUser> {
       sessionSecret: options.sessionSecret,
       organizationId: options.organizationId ?? 'homelab',
       displayName: options.displayName,
+      redirectUri: options.redirectUri,
       scopes: options.scopes ?? DEFAULT_SCOPES,
       cookieName: options.cookieName ?? 'factory_oidc_session',
       sessionMaxAge: options.sessionMaxAge ?? 7 * 24 * 60 * 60,
@@ -92,6 +102,8 @@ export class OidcAuth extends MastraAuthProvider<OidcUser> {
 
   async getLoginUrl(redirectUri: string, state: string): Promise<string> {
     const discovery = await this.#discover();
+    this.#pending.set(state, redirectUri);
+    while (this.#pending.size > 100) this.#pending.delete(this.#pending.keys().next().value!);
     // PKCE S256: the challenge is the SHA-256 of the verifier derived from this login's state.
     const challenge = base64url(createHash('sha256').update(this.#derive('pkce', state)).digest());
     const params = new URLSearchParams({
@@ -113,6 +125,8 @@ export class OidcAuth extends MastraAuthProvider<OidcUser> {
     redirectUri?: string,
   ): Promise<{ user: OidcUser; tokens: { accessToken: string; idToken?: string }; cookies: string[] }> {
     const discovery = await this.#discover();
+    const redirect = redirectUri ?? this.#pending.get(state) ?? this.#options.redirectUri;
+    this.#pending.delete(state);
     const response = await this.#fetch(discovery.token_endpoint, {
       method: 'POST',
       headers: {
@@ -125,7 +139,7 @@ export class OidcAuth extends MastraAuthProvider<OidcUser> {
         grant_type: 'authorization_code',
         code,
         code_verifier: this.#derive('pkce', state),
-        ...(redirectUri ? { redirect_uri: redirectUri } : {}),
+        ...(redirect ? { redirect_uri: redirect } : {}),
       }),
     });
     if (!response.ok) throw new Error(`Sign-in failed: the identity provider refused the code (${response.status})`);

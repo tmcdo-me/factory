@@ -174,6 +174,9 @@ if (authDisabled) {
     clientId: process.env.OIDC_CLIENT_ID!.trim(),
     clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(),
     sessionSecret: process.env.FACTORY_SESSION_SECRET?.trim() ?? '',
+    redirectUri: process.env.MASTRACODE_PUBLIC_URL?.trim()
+      ? new URL('/auth/callback', process.env.MASTRACODE_PUBLIC_URL.trim()).toString()
+      : undefined,
     organizationId: process.env.OIDC_ORGANIZATION_ID?.trim() || 'homelab',
     displayName: process.env.OIDC_DISPLAY_NAME?.trim() || 'Pocket ID',
   });

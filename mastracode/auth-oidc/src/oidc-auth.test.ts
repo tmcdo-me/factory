@@ -13,7 +13,7 @@ const REDIRECT = 'https://factory.example.ts.net/auth/callback';
 async function fakeProvider(overrides: { audience?: string; nonce?: string; tokenStatus?: number } = {}) {
   const { privateKey, publicKey } = await generateKeyPair('RS256');
   const jwk = { ...(await exportJWK(publicKey)), kid: 'k1', alg: 'RS256', use: 'sig' };
-  const logins = new Map<string, { challenge: string; nonce: string }>();
+  const logins = new Map<string, { challenge: string; nonce: string; redirect: string }>();
   const requests: string[] = [];
 
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -36,6 +36,7 @@ async function fakeProvider(overrides: { audience?: string; nonce?: string; toke
       const verifier = body.get('code_verifier')!;
       const challenge = createHash('sha256').update(verifier).digest('base64url');
       if (!login || login.challenge !== challenge) return new Response('PKCE mismatch', { status: 400 });
+      if (body.get('redirect_uri') !== login.redirect) return new Response('redirect_uri mismatch', { status: 400 });
       const idToken = await new SignJWT({
         email: 'tim@example.com',
         name: 'Tim',
@@ -58,7 +59,11 @@ async function fakeProvider(overrides: { audience?: string; nonce?: string; toke
   const authorize = (loginUrl: string) => {
     const params = new URL(loginUrl).searchParams;
     const code = `code-${logins.size + 1}`;
-    logins.set(code, { challenge: params.get('code_challenge')!, nonce: params.get('nonce')! });
+    logins.set(code, {
+      challenge: params.get('code_challenge')!,
+      nonce: params.get('nonce')!,
+      redirect: params.get('redirect_uri')!,
+    });
     return { code, state: params.get('state')! };
   };
   return { fetch, authorize, requests };
@@ -155,6 +160,18 @@ describe('OidcAuth', () => {
     const auth = makeAuth(provider.fetch);
     const { code } = provider.authorize(await auth.getLoginUrl(REDIRECT, 'real-state'));
     await expect(auth.handleCallback(code, 'forged-state')).rejects.toThrow(/refused the code/);
+  });
+
+  it('repeats the redirect URI in the token exchange, from config after a restart', async () => {
+    const provider = await fakeProvider();
+    const before = makeAuth(provider.fetch);
+    const { code, state } = provider.authorize(await before.getLoginUrl(REDIRECT, 'state-r'));
+    // A fresh instance has no memory of the login; the configured callback URL carries it.
+    const after = makeAuth(provider.fetch, { redirectUri: REDIRECT });
+    await expect(after.handleCallback(code, state)).resolves.toMatchObject({ user: { id: 'user-123' } });
+    const forgetful = makeAuth(provider.fetch);
+    const second = provider.authorize(await before.getLoginUrl(REDIRECT, 'state-s'));
+    await expect(forgetful.handleCallback(second.code, second.state)).rejects.toThrow(/refused the code/);
   });
 
   it('logs out through the end-session endpoint and clears the cookie', async () => {
