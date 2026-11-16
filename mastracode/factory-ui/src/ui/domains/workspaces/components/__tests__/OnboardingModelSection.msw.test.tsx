@@ -1,3 +1,4 @@
+// fork(claude-agent): sign-in cases use device-code providers (xAI, OpenAI); Anthropic takes an API key only now.
 import { Command } from '@mastra/playground-ui/components/Command';
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -6,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/render';
-import type { ProviderInfo } from '../../../../../api/types';
+import type { OAuthStartResponse, ProviderInfo } from '../../../../../api/types';
 import { datedModels } from '../../../settings/components/__tests__/fixtures/models';
 import { CreateFactoryModelStep } from '../create-factory/CreateFactoryModelStep';
 import {
@@ -16,6 +17,17 @@ import {
   openProviderList,
   renderModelSection,
 } from './fixtures/modelSection';
+
+/** A device-code sign-in that never reaches its first poll: these tests are about how a sign-in starts or is cancelled. */
+const pendingDeviceCodeSession: OAuthStartResponse = {
+  sessionId: 'session-1',
+  kind: 'device-code',
+  url: 'https://example.com/device',
+  userCode: 'ABCD-1234',
+  instructions: 'Enter this code on the provider authorization page.',
+  expiresAt: Date.now() + 600_000,
+  nextPollMs: 600_000,
+};
 
 function registerAuthHandler() {
   server.use(
@@ -62,7 +74,7 @@ describe('Model provider onboarding', () => {
   describe('when the provider catalog contains sign-in and API-key providers', () => {
     it('shows API-key providers first, switches to subscriptions, and searches across both', async () => {
       const providers: ProviderInfo[] = [
-        { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: [] } },
+        { provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
         { provider: 'amazon-bedrock', source: 'none' },
         { provider: 'groq', source: 'none' },
       ];
@@ -86,7 +98,7 @@ describe('Model provider onboarding', () => {
 
       await user.clear(screen.getByRole('searchbox', { name: 'Search model providers' }));
       await user.click(screen.getByRole('radio', { name: 'Subscription' }));
-      expect(screen.getByRole('button', { name: 'Continue with Anthropic' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Continue with xAI' })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Amazon Bedrock' })).not.toBeInTheDocument();
 
       // A match only under API key brings that tab forward instead of showing an empty list.
@@ -116,7 +128,7 @@ describe('Model provider onboarding', () => {
         http.get(`${TEST_BASE_URL}/web/config/providers`, () =>
           HttpResponse.json({
             providers: [
-              { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: [] } },
+              { provider: 'anthropic', source: 'none' },
               { provider: 'groq', source: 'none' },
               connected
                 ? {
@@ -336,7 +348,7 @@ describe('Model provider onboarding', () => {
         http.get(`${TEST_BASE_URL}/web/config/providers`, () =>
           HttpResponse.json({
             providers: [
-              { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: [] } },
+              { provider: 'anthropic', source: 'none' },
               { provider: 'mastra', source: 'none', orgKey: false },
             ],
           }),
@@ -489,32 +501,27 @@ describe('Model provider onboarding', () => {
   describe('when a provider supports browser sign-in', () => {
     it('starts the OAuth flow directly from its sign-in button', async () => {
       const providers: ProviderInfo[] = [
-        { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+        { provider: 'openai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
       ];
       const onStart = vi.fn<(body: unknown) => void>();
       registerAuthHandler();
       server.use(
         http.get(`${TEST_BASE_URL}/web/config/providers`, () => HttpResponse.json({ providers })),
         http.get(`${TEST_BASE_URL}/web/config/models`, () => HttpResponse.json({ models: [] })),
-        http.post(`${TEST_BASE_URL}/web/config/providers/anthropic/oauth/start`, async ({ request }) => {
+        http.post(`${TEST_BASE_URL}/web/config/providers/openai/oauth/start`, async ({ request }) => {
           onStart(await request.json());
-          return HttpResponse.json({
-            sessionId: 'session-1',
-            kind: 'paste-code',
-            url: 'https://claude.ai/oauth/authorize',
-            instructions: 'Open the link, authorize, then paste the code shown on the final page.',
-            expiresAt: Date.now() + 600_000,
-          });
+          return HttpResponse.json(pendingDeviceCodeSession);
         }),
       );
       const user = userEvent.setup();
 
       renderModelSection();
 
-      await chooseSubscription(user, 'Continue with Anthropic');
+      await chooseSubscription(user, 'Continue with OpenAI');
 
       expect(await screen.findByRole('dialog')).toBeInTheDocument();
-      expect(onStart).toHaveBeenCalledWith({ mode: 'paste-code', scope: 'org' });
+      expect(screen.getByText('ABCD-1234')).toBeInTheDocument();
+      expect(onStart).toHaveBeenCalledWith({ mode: 'device-code', scope: 'org' });
     });
   });
 
@@ -596,21 +603,15 @@ describe('Model provider onboarding', () => {
           HttpResponse.json({
             providers: [
               { provider: 'openai', source: 'stored-org', orgCredential: 'api_key', orgKey: true },
-              { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+              { provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
             ],
           }),
         ),
         http.get(`${TEST_BASE_URL}/web/config/models`, () => HttpResponse.json({ models: openaiModels })),
-        http.post(`${TEST_BASE_URL}/web/config/providers/anthropic/oauth/start`, () =>
-          HttpResponse.json({
-            sessionId: 'session-1',
-            kind: 'paste-code',
-            url: 'https://claude.ai/oauth/authorize',
-            instructions: 'Open the link, authorize, then paste the code shown on the final page.',
-            expiresAt: Date.now() + 600_000,
-          }),
+        http.post(`${TEST_BASE_URL}/web/config/providers/xai/oauth/start`, () =>
+          HttpResponse.json(pendingDeviceCodeSession),
         ),
-        http.delete(`${TEST_BASE_URL}/web/config/providers/anthropic/oauth/session/:session`, () =>
+        http.delete(`${TEST_BASE_URL}/web/config/providers/xai/oauth/session/:session`, () =>
           HttpResponse.json({ ok: true }),
         ),
       );
@@ -620,7 +621,7 @@ describe('Model provider onboarding', () => {
       await chooseProvider(user, 'OpenAI');
       expect(await screen.findByRole('combobox')).toHaveValue('GPT-5.6 Sol');
 
-      await chooseSubscription(user, 'Continue with Anthropic');
+      await chooseSubscription(user, 'Continue with xAI');
       await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Cancel' }));
 
       expect(screen.getByRole('button', { name: 'Provider: OpenAI' })).toBeInTheDocument();
@@ -796,7 +797,7 @@ describe('Model provider onboarding', () => {
             orgKeyAdmin: false,
             providers: [
               { provider: 'openai', source: 'stored-org', orgCredential: 'api_key', orgKey: true },
-              { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+              { provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
               { provider: 'groq', source: 'none' },
             ],
           }),
@@ -811,7 +812,7 @@ describe('Model provider onboarding', () => {
       expect(screen.getByRole('button', { name: 'OpenAI' })).toBeEnabled();
       expect(screen.getByRole('button', { name: 'Groq' })).toBeDisabled();
       await user.click(screen.getByRole('radio', { name: 'Subscription' }));
-      expect(screen.getByRole('button', { name: 'Continue with Anthropic' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'Continue with xAI' })).toBeDisabled();
       await user.click(screen.getByRole('radio', { name: 'API key' }));
 
       await user.click(screen.getByRole('button', { name: 'OpenAI' }));

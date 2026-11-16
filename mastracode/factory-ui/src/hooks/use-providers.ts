@@ -138,24 +138,6 @@ export function useStartProviderOAuth() {
   });
 }
 
-export interface CompleteProviderOAuthArgs extends ProviderOAuthArgs {
-  sessionId: string;
-  code: string;
-}
-
-export function useCompleteProviderOAuth() {
-  const { client } = useApiConfig();
-  const queryClient = useQueryClient();
-  return useMutation({
-    mutationFn: ({ provider, sessionId, code }: CompleteProviderOAuthArgs) =>
-      client.post<{ status: 'complete' }>(`/web/config/providers/${encodeURIComponent(provider)}/oauth/complete`, {
-        sessionId,
-        code,
-      }),
-    onSuccess: () => invalidateCredentialDependentQueries(queryClient),
-  });
-}
-
 export interface PollProviderOAuthArgs extends ProviderOAuthArgs {
   sessionId: string;
 }

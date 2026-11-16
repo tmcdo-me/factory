@@ -26,7 +26,7 @@ export function runCredential(requestContext: RequestContext | undefined, provid
 
 /**
  * Stamps each assistant reply with the credential that answered it, as
- * `content.metadata.credentialLabel` ("Claude Pro/Max", "Anthropic API key")
+ * `content.metadata.credentialLabel` ("ChatGPT Plus/Pro", "Anthropic API key")
  * and, for a personal credential, `content.metadata.credentialOwnerId`. A
  * reply without an owner id was answered by the organization's credential.
  * Stamped at send time so a reply keeps its label after the thread's

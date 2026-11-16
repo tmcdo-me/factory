@@ -1,3 +1,4 @@
+import { CLAUDE_SUBSCRIPTION_REFUSED_ERROR } from '@mastra/code-sdk/auth/claude-subscription-policy';
 import { PROVIDER_AUTH_REQUIRED_ERROR } from '@mastra/code-sdk/auth/provider-auth-error';
 import { MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
 import {
@@ -32,6 +33,10 @@ export function describeRunError(error: RunErrorIdentity): RunErrorDescription {
 function explainRunError(error: RunErrorIdentity): Omit<RunErrorDescription, 'model'> {
   if (error.name === PROVIDER_AUTH_REQUIRED_ERROR) {
     return { title: 'Provider sign-in required', message: error.message, recoveries: ['credentials', 'model'] };
+  }
+  // fork(claude-agent): Mastra Code refused a Claude subscription sign-in (§2 of the Claude Agent spec).
+  if (error.name === CLAUDE_SUBSCRIPTION_REFUSED_ERROR) {
+    return { title: 'Anthropic API key required', message: error.message, recoveries: ['credentials', 'model'] };
   }
   switch (classifyProviderError(error)) {
     case 'quota':

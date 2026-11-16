@@ -1,3 +1,4 @@
+// fork(claude-agent): sign-in tests use device-code providers (the Anthropic paste-code sign-in is gone) and cover a refused Claude subscription.
 import { screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { delay, http, HttpResponse } from 'msw';
@@ -5,31 +6,21 @@ import { describe, expect, it } from 'vitest';
 
 import { server } from '../../../../../../../../e2e/ui/msw-server';
 import { TEST_BASE_URL, renderWithProviders } from '../../../../../../../../e2e/ui/render';
-import type { OAuthStartResponse, ProviderInfo } from '../../../../../../../api/types';
+import type { ProviderInfo } from '../../../../../../../api/types';
 import { useAvailableModelsQuery } from '../../../../../../../hooks/useAvailableModels';
 import type { AvailableModelOption } from '../../../../../../../hooks/useAvailableModels';
 import { ProviderList } from '../ProviderList';
 import {
   PROVIDERS_URL,
+  deviceCodeSession,
   keyUrl,
   oauthUrl,
   openAddProvider,
-  pasteCodeSession,
   pickRowAction,
   rowFor,
   saveKey,
   stubProviders,
 } from './provider-list-test-utils';
-
-const deviceCodeSession = (sessionId: string, userCode: string, nextPollMs: number): OAuthStartResponse => ({
-  sessionId,
-  kind: 'device-code',
-  url: 'https://example.com/device',
-  userCode,
-  instructions: 'Enter this code.',
-  expiresAt: Date.now() + 60_000,
-  nextPollMs,
-});
 
 describe('ProviderList', () => {
   it('shows a skeleton while loading, then only the connected providers', async () => {
@@ -39,7 +30,7 @@ describe('ProviderList', () => {
         return HttpResponse.json({
           providers: [
             { provider: 'openai', source: 'stored' },
-            { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+            { provider: 'anthropic', source: 'none' },
           ],
         });
       }),
@@ -62,7 +53,7 @@ describe('ProviderList', () => {
             connected
               ? { provider: 'mastra', source: 'stored-user', userCredential: 'api_key', connectWithMastraAccount: true }
               : { provider: 'mastra', source: 'none', connectWithMastraAccount: true },
-            { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+            { provider: 'anthropic', source: 'none' },
           ],
         }),
       ),
@@ -129,20 +120,20 @@ describe('ProviderList', () => {
   it('offers sign-in providers first and finds API-key providers by search', async () => {
     stubProviders([
       { provider: 'openai', source: 'none' },
-      { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
+      { provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
       { provider: 'google', source: 'none' },
     ]);
     const user = userEvent.setup();
     renderWithProviders(<ProviderList credentialScope="user" />);
 
     const dialog = await openAddProvider(user);
-    expect(within(dialog).getByText('Anthropic')).toBeInTheDocument();
+    expect(within(dialog).getByText('xAI')).toBeInTheDocument();
     expect(within(dialog).queryByText('OpenAI')).not.toBeInTheDocument();
     expect(within(dialog).getByText('2 more take an API key. Type to find one.')).toBeInTheDocument();
 
     await user.type(within(dialog).getByLabelText('Search providers'), 'open');
     expect(within(dialog).getByText('OpenAI')).toBeInTheDocument();
-    expect(within(dialog).queryByText('Anthropic')).not.toBeInTheDocument();
+    expect(within(dialog).queryByText('xAI')).not.toBeInTheDocument();
 
     await user.type(within(dialog).getByLabelText('Search providers'), 'zzz');
     expect(within(dialog).getByText('No providers match “openzzz”.')).toBeInTheDocument();
@@ -218,51 +209,20 @@ describe('ProviderList', () => {
     await waitFor(() => expect(screen.queryByText('OpenAI')).not.toBeInTheDocument());
   });
 
-  it('signs in with a paste code from the add dialog', async () => {
-    const providers: ProviderInfo[] = [
-      { provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } },
-    ];
-    let startBody: unknown;
-    let completeBody: unknown;
-    server.use(
-      http.get(PROVIDERS_URL, () => HttpResponse.json({ providers })),
-      http.post(oauthUrl('anthropic', 'start'), async ({ request }) => {
-        startBody = await request.json();
-        return HttpResponse.json(pasteCodeSession('session-1'));
-      }),
-      http.post(oauthUrl('anthropic', 'complete'), async ({ request }) => {
-        completeBody = await request.json();
-        providers[0] = { ...providers[0], source: 'oauth-user' };
-        return HttpResponse.json({ status: 'complete', ok: true });
-      }),
-    );
-    const user = userEvent.setup();
-    renderWithProviders(<ProviderList credentialScope="user" />);
-
-    const dialog = await openAddProvider(user);
-    await user.click(within(dialog).getByRole('button', { name: 'Sign in to Anthropic' }));
-    await user.type(await screen.findByLabelText('Authorization code'), 'code#state');
-    await user.click(screen.getByRole('button', { name: 'Complete sign in' }));
-
-    expect(startBody).toEqual({ mode: 'paste-code' });
-    await waitFor(() => expect(completeBody).toEqual({ sessionId: 'session-1', code: 'code#state' }));
-    await waitFor(() => expect(within(rowFor('anthropic')).getByText('Signed in')).toBeInTheDocument());
-  });
-
   it('shows a failed sign-in start in the add dialog and forgets it once the dialog closes', async () => {
-    stubProviders([{ provider: 'anthropic', source: 'none', oauth: { supported: true, modes: ['paste-code'] } }]);
+    stubProviders([{ provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } }]);
     server.use(
-      http.post(oauthUrl('anthropic', 'start'), () =>
-        HttpResponse.json({ error: 'Anthropic sign-in is unavailable' }, { status: 503 }),
+      http.post(oauthUrl('xai', 'start'), () =>
+        HttpResponse.json({ error: 'xAI sign-in is unavailable' }, { status: 503 }),
       ),
     );
     const user = userEvent.setup();
     renderWithProviders(<ProviderList credentialScope="user" />);
 
     const dialog = await openAddProvider(user);
-    await user.click(within(dialog).getByRole('button', { name: 'Sign in to Anthropic' }));
-    expect(await within(dialog).findByRole('alert')).toHaveTextContent('Anthropic sign-in is unavailable');
-    expect(within(dialog).getByRole('button', { name: 'Sign in to Anthropic' })).toBeEnabled();
+    await user.click(within(dialog).getByRole('button', { name: 'Sign in to xAI' }));
+    expect(await within(dialog).findByRole('alert')).toHaveTextContent('xAI sign-in is unavailable');
+    expect(within(dialog).getByRole('button', { name: 'Sign in to xAI' })).toBeEnabled();
 
     await user.keyboard('{Escape}');
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add provider' })).not.toBeInTheDocument());
@@ -275,9 +235,13 @@ describe('ProviderList', () => {
       { provider: 'xai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
     ];
     let pollCount = 0;
+    let startBody: unknown;
     server.use(
       http.get(PROVIDERS_URL, () => HttpResponse.json({ providers })),
-      http.post(oauthUrl('xai', 'start'), () => HttpResponse.json(deviceCodeSession('session-2', 'GROK-123', 100))),
+      http.post(oauthUrl('xai', 'start'), async ({ request }) => {
+        startBody = await request.json();
+        return HttpResponse.json(deviceCodeSession('session-2', 'GROK-123', 100));
+      }),
       http.post(oauthUrl('xai', 'poll'), () => {
         pollCount += 1;
         if (pollCount === 1) return HttpResponse.json({ status: 'pending', nextPollMs: 100 });
@@ -292,6 +256,7 @@ describe('ProviderList', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Sign in to xAI' }));
 
     expect(await screen.findByText('GROK-123')).toBeInTheDocument();
+    expect(startBody).toEqual({ mode: 'device-code' });
     await waitFor(() => expect(within(rowFor('xai')).getByText('Signed in')).toBeInTheDocument());
   });
 
@@ -329,12 +294,12 @@ describe('ProviderList', () => {
 
   it('signs out from the row menu', async () => {
     const providers: ProviderInfo[] = [
-      { provider: 'anthropic', source: 'oauth-user', oauth: { supported: true, modes: ['paste-code'] } },
+      { provider: 'openai', source: 'oauth-user', oauth: { supported: true, modes: ['device-code'] } },
     ];
     let signedOut = false;
     server.use(
       http.get(PROVIDERS_URL, () => HttpResponse.json({ providers })),
-      http.delete(`${PROVIDERS_URL}/anthropic/oauth`, () => {
+      http.delete(`${PROVIDERS_URL}/openai/oauth`, () => {
         signedOut = true;
         providers[0] = { ...providers[0], source: 'none' };
         return HttpResponse.json({ ok: true });
@@ -343,10 +308,52 @@ describe('ProviderList', () => {
     const user = userEvent.setup();
     renderWithProviders(<ProviderList credentialScope="user" />);
 
-    await screen.findByText('Anthropic');
-    await pickRowAction(user, 'anthropic', 'Sign out');
+    await screen.findByText('OpenAI');
+    await pickRowAction(user, 'openai', 'Sign out');
 
     await waitFor(() => expect(signedOut).toBe(true));
+    await waitFor(() => expect(screen.queryByText('OpenAI')).not.toBeInTheDocument());
+  });
+
+  // A Claude subscription stored before Factory dropped Claude sign-in is refused by Mastra Code, so the
+  // server reports it apart from the connection (`source` stays 'none'). It must still be listed, so the
+  // person sees why Anthropic models fail and can remove it, and Anthropic must no longer offer sign-in.
+  it('lists a stored Claude subscription as not usable, offers no Claude sign-in, and signs it out', async () => {
+    const providers: ProviderInfo[] = [
+      { provider: 'anthropic', source: 'none', userCredentialRefused: 'oauth' },
+      { provider: 'openai', source: 'none', oauth: { supported: true, modes: ['device-code'] } },
+    ];
+    let signOutCalls = 0;
+    server.use(
+      http.get(PROVIDERS_URL, () => HttpResponse.json({ providers })),
+      http.delete(`${PROVIDERS_URL}/anthropic/oauth`, () => {
+        signOutCalls += 1;
+        providers[0] = { provider: 'anthropic', source: 'none' };
+        return HttpResponse.json({ ok: true });
+      }),
+    );
+    const user = userEvent.setup();
+    renderWithProviders(<ProviderList credentialScope="user" />);
+
+    await screen.findByText('Anthropic');
+    expect(within(rowFor('anthropic')).getByText('Not usable')).toBeInTheDocument();
+    expect(within(rowFor('anthropic')).queryByText('Signed in')).not.toBeInTheDocument();
+
+    const drawer = await openAddProvider(user);
+    expect(within(drawer).getByText('Sign in with a subscription')).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Sign in to OpenAI' })).toBeInTheDocument();
+    expect(within(drawer).queryByText('Anthropic')).not.toBeInTheDocument();
+    expect(within(drawer).getByText('1 more take an API key. Type to find one.')).toBeInTheDocument();
+    await user.type(within(drawer).getByLabelText('Search providers'), 'anthropic');
+    expect(within(drawer).getByText('Not usable')).toBeInTheDocument();
+    expect(within(drawer).getByRole('button', { name: 'Add API key for Anthropic' })).toBeInTheDocument();
+    expect(within(drawer).queryByRole('button', { name: 'Sign in to Anthropic' })).not.toBeInTheDocument();
+    await user.keyboard('{Escape}');
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Add provider' })).not.toBeInTheDocument());
+
+    await pickRowAction(user, 'anthropic', 'Sign out');
+
+    await waitFor(() => expect(signOutCalls).toBe(1));
     await waitFor(() => expect(screen.queryByText('Anthropic')).not.toBeInTheDocument());
   });
 });

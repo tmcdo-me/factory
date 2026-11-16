@@ -34,13 +34,19 @@ vi.mock('@mastra/core/llm', async importOriginal => ({
   getModelReasoningOptions: vi.fn(),
 }));
 
-function makeAuthStorage(opts: { loggedIn?: string[]; storedKeys?: string[] }): AuthStorage {
+function makeAuthStorage(opts: {
+  loggedIn?: string[];
+  storedKeys?: string[];
+  storedKeyValues?: Record<string, string>;
+}): AuthStorage {
   const loggedIn = new Set(opts.loggedIn ?? []);
-  const storedKeys = new Set(opts.storedKeys ?? []);
+  const storedKeys = new Set([...(opts.storedKeys ?? []), ...Object.keys(opts.storedKeyValues ?? {})]);
   return {
     get: (provider: string) => (loggedIn.has(provider) ? { type: 'oauth', refresh: 'r', access: 'a' } : undefined),
     isLoggedIn: (provider: string) => loggedIn.has(provider),
     hasStoredApiKey: (provider: string) => storedKeys.has(provider),
+    getStoredApiKey: (provider: string) =>
+      storedKeys.has(provider) ? (opts.storedKeyValues?.[provider] ?? `${provider}-stored-key`) : undefined,
   } as unknown as AuthStorage;
 }
 
@@ -124,15 +130,56 @@ describe('listProviders', () => {
   });
 
   it('labels an OAuth-logged-in provider as oauth (not stored)', async () => {
-    const auth = makeAuthStorage({ loggedIn: ['anthropic'], storedKeys: ['anthropic'] });
+    const auth = makeAuthStorage({ loggedIn: ['xai'], storedKeys: ['xai'] });
 
     const list = await listProviders({
-      controller: makeAgentController([{ provider: 'anthropic', hasApiKey: true, apiKeyEnvVar: 'ANTHROPIC_API_KEY' }]),
+      controller: makeAgentController([{ provider: 'xai', hasApiKey: true, apiKeyEnvVar: 'XAI_API_KEY' }]),
       authStorage: auth,
     });
 
     expect(list).toHaveLength(1);
     expect(list[0]?.source).toBe('oauth');
+  });
+
+  // fork(claude-agent): Mastra Code refuses Claude subscription credentials (spec §2); Settings lists
+  // them as refused so they can be removed, never as a working source.
+  it('lists a local Claude subscription sign-in as refused, not as a source', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const list = await listProviders({
+      controller: makeAgentController([{ provider: 'anthropic', hasApiKey: false, apiKeyEnvVar: 'ANTHROPIC_API_KEY' }]),
+      authStorage: makeAuthStorage({ loggedIn: ['anthropic'] }),
+    });
+
+    expect(list[0]).toMatchObject({ provider: 'anthropic', source: 'none', userCredentialRefused: 'oauth' });
+  });
+
+  it('keeps a local Anthropic API key usable next to a refused sign-in', async () => {
+    const list = await listProviders({
+      controller: makeAgentController([{ provider: 'anthropic', hasApiKey: true, apiKeyEnvVar: 'ANTHROPIC_API_KEY' }]),
+      authStorage: makeAuthStorage({ loggedIn: ['anthropic'], storedKeyValues: { anthropic: 'sk-ant-api03-k' } }),
+    });
+
+    expect(list[0]).toMatchObject({ source: 'stored', userCredentialRefused: 'oauth' });
+  });
+
+  it('lists a Claude subscription token saved as a local Anthropic key as refused', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const list = await listProviders({
+      controller: makeAgentController([{ provider: 'anthropic', hasApiKey: false, apiKeyEnvVar: 'ANTHROPIC_API_KEY' }]),
+      authStorage: makeAuthStorage({ storedKeyValues: { anthropic: 'sk-ant-oat01-token' } }),
+    });
+
+    expect(list[0]).toMatchObject({ source: 'none', userCredentialRefused: 'api_key' });
+  });
+
+  it('does not count a Claude subscription token in ANTHROPIC_API_KEY', async () => {
+    process.env.ANTHROPIC_API_KEY = 'sk-ant-oat01-token';
+    const list = await listProviders({
+      controller: makeAgentController([{ provider: 'anthropic', hasApiKey: false, apiKeyEnvVar: 'ANTHROPIC_API_KEY' }]),
+      authStorage: makeAuthStorage({}),
+    });
+
+    expect(list[0]?.source).toBe('none');
   });
 
   it('maps the openai catalog provider to the openai-codex OAuth slot', async () => {
@@ -191,7 +238,8 @@ describe('listProviders', () => {
       ]),
     });
     const byProvider = Object.fromEntries(list.map(p => [p.provider, p]));
-    expect(byProvider.anthropic?.oauth).toEqual({ supported: true, modes: ['paste-code'] });
+    // fork(claude-agent): no Claude subscription sign-in.
+    expect(byProvider.anthropic?.oauth).toBeUndefined();
     expect(byProvider.openai?.oauth).toEqual({ supported: true, modes: ['device-code'] });
     expect(byProvider.xai?.oauth).toEqual({ supported: true, modes: ['device-code'] });
     expect(byProvider.google?.oauth).toBeUndefined();
@@ -412,6 +460,7 @@ describe('provider key routes with a tenant', () => {
 
   const controller = makeAgentController([
     { provider: 'anthropic', hasApiKey: false, apiKeyEnvVar: 'ANTHROPIC_API_KEY' },
+    { provider: 'xai', hasApiKey: false, apiKeyEnvVar: 'XAI_API_KEY' },
   ]);
 
   function buildApp(user: { workosId: string; organizationId?: string } | null, authStorage?: AuthStorage) {
@@ -590,57 +639,98 @@ describe('provider key routes with a tenant', () => {
 
   describe('a personal sign-in whose token can no longer be renewed', () => {
     const tenant = { orgId: 'org1', userId: 'user-a' };
-    const anthropic = setupServer();
+    const xaiAuth = setupServer();
 
-    const tokenUrl = 'https://console.anthropic.com/v1/oauth/token';
+    const tokenUrl = 'https://auth.x.ai/oauth2/token';
 
-    const listedAnthropic = async () => {
+    const listedXai = async () => {
       const listed = await buildApp(userA).request('/web/config/providers');
-      return (await listed.json()).providers.find((p: { provider: string }) => p.provider === 'anthropic');
+      return (await listed.json()).providers.find((p: { provider: string }) => p.provider === 'xai');
     };
 
-    beforeAll(() => anthropic.listen({ onUnhandledRequest: 'error' }));
-    afterEach(() => anthropic.resetHandlers());
-    afterAll(() => anthropic.close());
+    beforeAll(() => xaiAuth.listen({ onUnhandledRequest: 'error' }));
+    afterEach(() => xaiAuth.resetHandlers());
+    afterAll(() => xaiAuth.close());
 
     beforeEach(async () => {
-      await seed.credentials.setCredential(tenant, 'anthropic', {
+      await seed.credentials.setCredential(tenant, 'xai', {
         type: 'oauth',
         access: 'a-old',
         refresh: 'r-old',
         expires: Date.now() - 1000,
       });
-      anthropic.use(http.post(tokenUrl, () => HttpResponse.json({ error: 'invalid_grant' }, { status: 400 })));
-      await new TenantCredentialStore('org1', 'user-a', seed.credentials, 'user').getApiKey('anthropic');
+      xaiAuth.use(http.post(tokenUrl, () => HttpResponse.json({ error: 'invalid_grant' }, { status: 400 })));
+      await new TenantCredentialStore('org1', 'user-a', seed.credentials, 'user').getApiKey('xai');
     });
 
     it('shows as expired instead of signed in', async () => {
-      expect(await listedAnthropic()).toMatchObject({ userCredential: 'oauth', userCredentialExpired: true });
+      expect(await listedXai()).toMatchObject({ userCredential: 'oauth', userCredentialExpired: true });
     });
 
     it('stops showing as expired once the user signs in again', async () => {
-      await seed.credentials.setCredential(tenant, 'anthropic', {
+      await seed.credentials.setCredential(tenant, 'xai', {
         type: 'oauth',
         access: 'a-new',
         refresh: 'r-new',
         expires: Date.now() + 3_600_000,
       });
 
-      expect(await listedAnthropic()).not.toHaveProperty('userCredentialExpired');
+      expect(await listedXai()).not.toHaveProperty('userCredentialExpired');
     });
 
     it('stops showing as expired once a later renewal succeeds', async () => {
-      anthropic.use(
+      xaiAuth.use(
         http.post(tokenUrl, () =>
           HttpResponse.json({ access_token: 'a-renewed', refresh_token: 'r-renewed', expires_in: 3600 }),
         ),
       );
-      const renewed = await new TenantCredentialStore('org1', 'user-a', seed.credentials, 'user').getApiKey(
-        'anthropic',
-      );
+      const renewed = await new TenantCredentialStore('org1', 'user-a', seed.credentials, 'user').getApiKey('xai');
 
       expect(renewed).toBe('a-renewed');
-      expect(await listedAnthropic()).not.toHaveProperty('userCredentialExpired');
+      expect(await listedXai()).not.toHaveProperty('userCredentialExpired');
+    });
+  });
+
+  // fork(claude-agent): Mastra Code refuses Claude subscription credentials (spec §2).
+  describe('Claude subscription credentials', () => {
+    const tenant = { orgId: 'org1', userId: 'user-a' };
+    const listedAnthropic = async () => {
+      const listed = await buildApp(userA).request('/web/config/providers');
+      return (await listed.json()).providers.find((p: { provider: string }) => p.provider === 'anthropic');
+    };
+
+    it('lists a stored Claude sign-in as refused, falling through to the org key', async () => {
+      await seed.credentials.setCredential(tenant, 'anthropic', {
+        type: 'oauth',
+        access: 'a',
+        refresh: 'r',
+        expires: Date.now() + 3_600_000,
+      });
+      await seed.credentials.setCredential({ orgId: 'org1' }, 'anthropic', { type: 'api_key', key: 'sk-ant-api03' });
+
+      const anthropic = await listedAnthropic();
+      expect(anthropic).toMatchObject({
+        source: 'stored-org',
+        userCredentialRefused: 'oauth',
+        orgCredential: 'api_key',
+      });
+      expect(anthropic).not.toHaveProperty('userCredential');
+      expect(anthropic).not.toHaveProperty('oauth');
+    });
+
+    it('refuses to save a Claude subscription token as an Anthropic API key', async () => {
+      const res = await putKey(buildApp(userA), { key: 'sk-ant-oat01-from-setup-token' });
+
+      expect(res.status).toBe(400);
+      expect(await res.json()).toMatchObject({ error: 'claude_subscription_token' });
+      expect(await seed.credentials.getCredential(tenant, 'anthropic')).toBeUndefined();
+    });
+
+    it('still saves an Anthropic API key', async () => {
+      const res = await putKey(buildApp(userA), { key: 'sk-ant-api03-real' });
+
+      expect(res.status).toBe(200);
+      expect(await listedAnthropic()).toMatchObject({ source: 'stored-user', userCredential: 'api_key' });
     });
   });
 
@@ -982,6 +1072,13 @@ describe('GET /web/config/models', () => {
 
   it('includes only models reachable through tenant credentials', async () => {
     const seed = await createFactoryStorageForTests();
+    await seed.credentials.setCredential({ orgId: 'org1', userId: 'user-a' }, 'openai-codex', {
+      type: 'oauth',
+      refresh: 'refresh',
+      access: 'access',
+      expires: Date.now() + 60_000,
+    });
+    // fork(claude-agent): a stored Claude subscription sign-in reaches no model (spec §2).
     await seed.credentials.setCredential({ orgId: 'org1', userId: 'user-a' }, 'anthropic', {
       type: 'oauth',
       refresh: 'refresh',
@@ -991,8 +1088,8 @@ describe('GET /web/config/models', () => {
     const controller = {
       listAvailableModels: async () => [
         { id: 'anthropic/claude-fable-5', modelName: 'claude-fable-5', provider: 'anthropic', hasApiKey: false },
-        { id: 'openai/gpt-5.6', modelName: 'gpt-5.6', provider: 'openai', hasApiKey: true },
-        { id: 'google/gemini', modelName: 'gemini', provider: 'google', hasApiKey: false },
+        { id: 'openai/gpt-5.6', modelName: 'gpt-5.6', provider: 'openai', hasApiKey: false },
+        { id: 'google/gemini', modelName: 'gemini', provider: 'google', hasApiKey: true },
       ],
     };
     const app = new Hono();
@@ -1010,12 +1107,11 @@ describe('GET /web/config/models', () => {
     expect(await res.json()).toEqual({
       models: [
         {
-          id: 'anthropic/claude-fable-5',
-          provider: 'anthropic',
-          modelName: 'claude-fable-5',
+          id: 'openai/gpt-5.6',
+          provider: 'openai',
+          modelName: 'gpt-5.6',
           hasApiKey: true,
-          reasoningOptions: fableReasoning,
-          credentialLabel: 'Claude Pro/Max',
+          credentialLabel: 'ChatGPT Plus/Pro',
           credentialHolder: 'personal',
         },
       ],
@@ -1066,17 +1162,17 @@ describe('GET /web/config/models', () => {
 
   it('names the credential and its holder from the scope a reply will use, not a personal login that shadows it', async () => {
     const seed = await createFactoryStorageForTests();
-    await seed.credentials.setCredential({ orgId: 'org1', userId: 'user-a' }, 'anthropic', {
+    await seed.credentials.setCredential({ orgId: 'org1', userId: 'user-a' }, 'openai-codex', {
       type: 'oauth',
       refresh: 'refresh',
       access: 'access',
       expires: Date.now() + 60_000,
     });
-    await seed.credentials.setCredential({ orgId: 'org1' }, 'anthropic', { type: 'api_key', key: 'sk-org' });
+    await seed.credentials.setCredential({ orgId: 'org1' }, 'openai-codex', { type: 'api_key', key: 'sk-org' });
     const orgProject = await seed.projects.create({ orgId: 'org1', userId: 'user-a', input: { name: 'Org' } });
     const controller = {
       listAvailableModels: async () => [
-        { id: 'anthropic/claude-fable-5', modelName: 'claude-fable-5', provider: 'anthropic', hasApiKey: false },
+        { id: 'openai/gpt-5.6', modelName: 'gpt-5.6', provider: 'openai', hasApiKey: false },
       ],
     };
     const app = new Hono<{ Variables: { factoryAuthUser: { workosId: string; organizationId: string } } }>();
@@ -1102,11 +1198,11 @@ describe('GET /web/config/models', () => {
     };
 
     expect(await credential(`?factoryId=${orgProject.id}`)).toEqual({
-      credentialLabel: 'Anthropic API key',
+      credentialLabel: 'OpenAI API key',
       credentialHolder: 'organization',
     });
     expect(await credential('?scope=user')).toEqual({
-      credentialLabel: 'Claude Pro/Max',
+      credentialLabel: 'ChatGPT Plus/Pro',
       credentialHolder: 'personal',
     });
   });

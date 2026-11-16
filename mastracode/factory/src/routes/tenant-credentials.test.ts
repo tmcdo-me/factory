@@ -111,64 +111,64 @@ describe('TenantCredentialStore', () => {
   });
 
   it('getApiKey serves non-expired OAuth tokens without refreshing', async () => {
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', FRESH_OAUTH);
     const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
 
-    await expect(store.getApiKey('anthropic')).resolves.toBe('a-1');
+    await expect(store.getApiKey('xai')).resolves.toBe('a-1');
     expect(refreshToken).not.toHaveBeenCalled();
   });
 
   it('getApiKey refreshes expired OAuth tokens through the domain and updates the snapshot', async () => {
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', EXPIRED_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', EXPIRED_OAUTH);
     const refreshed = { refresh: 'r-new', access: 'a-new', expires: Date.now() + 3_600_000 };
     refreshToken.mockResolvedValue(refreshed);
 
     const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await expect(store.getApiKey('anthropic')).resolves.toBe('a-new');
+    await expect(store.getApiKey('xai')).resolves.toBe('a-new');
     expect(refreshToken).toHaveBeenCalledWith(expect.objectContaining({ refresh: 'r-old' }));
 
     // Persisted through the domain, not just in memory.
-    const persisted = await seed.credentials.getCredential(USER_TENANT, 'anthropic');
+    const persisted = await seed.credentials.getCredential(USER_TENANT, 'xai');
     expect(persisted).toEqual(expect.objectContaining({ type: 'oauth', access: 'a-new' }));
     // Snapshot updated for subsequent sync reads.
-    expect(store.get('anthropic')).toEqual(expect.objectContaining({ access: 'a-new' }));
+    expect(store.get('xai')).toEqual(expect.objectContaining({ access: 'a-new' }));
   });
 
   it('getApiKey returns undefined when refresh fails (re-login required)', async () => {
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', EXPIRED_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', EXPIRED_OAUTH);
     refreshToken.mockRejectedValue(new Error('invalid_grant'));
 
     const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await expect(store.getApiKey('anthropic')).resolves.toBeUndefined();
+    await expect(store.getApiKey('xai')).resolves.toBeUndefined();
   });
 
   it('forceRefreshActiveAccount replaces a rejected, unexpired token and persists it', async () => {
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', FRESH_OAUTH);
     refreshToken.mockResolvedValue({ refresh: 'r-2', access: 'a-2', expires: Date.now() + 3_600_000 });
     const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await expect(store.getApiKey('anthropic')).resolves.toBe('a-1');
+    await expect(store.getApiKey('xai')).resolves.toBe('a-1');
 
-    await expect(store.forceRefreshActiveAccount('anthropic')).resolves.toBe('a-2');
+    await expect(store.forceRefreshActiveAccount('xai')).resolves.toBe('a-2');
     expect(refreshToken).toHaveBeenCalledTimes(1);
     expect(refreshToken).toHaveBeenCalledWith(expect.objectContaining({ refresh: 'r-1' }));
-    expect(await seed.credentials.getCredential(USER_TENANT, 'anthropic')).toMatchObject({ access: 'a-2' });
+    expect(await seed.credentials.getCredential(USER_TENANT, 'xai')).toMatchObject({ access: 'a-2' });
     // A resumed or later session reads the persisted token.
     const resumed = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await expect(resumed.getApiKey('anthropic')).resolves.toBe('a-2');
+    await expect(resumed.getApiKey('xai')).resolves.toBe('a-2');
   });
 
   it('forceRefreshActiveAccount reuses a token another store already refreshed', async () => {
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', FRESH_OAUTH);
     refreshToken.mockResolvedValueOnce({ refresh: 'r-2', access: 'a-2', expires: Date.now() + 3_600_000 });
     const replicaA = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
     const replicaB = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await replicaA.getApiKey('anthropic');
-    await replicaB.getApiKey('anthropic');
+    await replicaA.getApiKey('xai');
+    await replicaB.getApiKey('xai');
 
     // Both were served a-1 and both see it rejected; only one refresh may spend r-1.
     const tokens = await Promise.all([
-      replicaA.forceRefreshActiveAccount('anthropic'),
-      replicaB.forceRefreshActiveAccount('anthropic'),
+      replicaA.forceRefreshActiveAccount('xai'),
+      replicaB.forceRefreshActiveAccount('xai'),
     ]);
     expect(tokens).toEqual(['a-2', 'a-2']);
     expect(refreshToken).toHaveBeenCalledTimes(1);
@@ -176,15 +176,15 @@ describe('TenantCredentialStore', () => {
 
   it('forceRefreshActiveAccount returns undefined when the refresh fails or there is no OAuth credential', async () => {
     const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
-    await expect(store.forceRefreshActiveAccount('anthropic')).resolves.toBeUndefined();
+    await expect(store.forceRefreshActiveAccount('xai')).resolves.toBeUndefined();
 
     await seed.credentials.setCredential(USER_TENANT, 'openai', { type: 'api_key', key: 'user-key' });
     await expect(store.forceRefreshActiveAccount('openai')).resolves.toBeUndefined();
 
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', FRESH_OAUTH);
     refreshToken.mockRejectedValue(new Error('invalid_grant'));
-    await expect(store.forceRefreshActiveAccount('anthropic')).resolves.toBeUndefined();
-    expect(await seed.credentials.getCredential(USER_TENANT, 'anthropic')).toMatchObject({ access: 'a-1' });
+    await expect(store.forceRefreshActiveAccount('xai')).resolves.toBeUndefined();
+    expect(await seed.credentials.getCredential(USER_TENANT, 'xai')).toMatchObject({ access: 'a-1' });
   });
 
   it('getApiKey returns undefined for OAuth credentials of providers without a registered flow', async () => {
@@ -230,6 +230,41 @@ describe('TenantCredentialStore', () => {
     vi.setSystemTime(Date.now() + 15_000);
     await store.getApiKey('openai');
     expect(ensureReady).toHaveBeenCalledTimes(2);
+  });
+});
+
+// fork(claude-agent): Mastra Code may use an Anthropic API key, never a Claude subscription (spec §2).
+describe('TenantCredentialStore with Claude subscription credentials', () => {
+  it('never serves or refreshes a stored Anthropic sign-in, and keeps the row', async () => {
+    await seed.credentials.setCredential(USER_TENANT, 'anthropic', EXPIRED_OAUTH);
+    const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
+    await store.ensureFresh();
+
+    expect(store.get('anthropic')).toBeUndefined();
+    await expect(store.getApiKey('anthropic')).resolves.toBeUndefined();
+    await expect(store.forceRefreshActiveAccount('anthropic')).resolves.toBeUndefined();
+    expect(refreshToken).not.toHaveBeenCalled();
+    expect(getApiKeyFromCreds).not.toHaveBeenCalled();
+    // Refused, not deleted: the person removes it from Settings.
+    expect(await seed.credentials.getCredential(USER_TENANT, 'anthropic')).toMatchObject({ access: 'a-old' });
+  });
+
+  it('refuses a Claude subscription token saved as an Anthropic key', async () => {
+    await seed.credentials.setCredential(ORG_TENANT, 'anthropic', { type: 'api_key', key: 'sk-ant-oat01-setup' });
+    const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'factory');
+    await store.ensureFresh();
+
+    expect(store.getStoredApiKey('anthropic')).toBeUndefined();
+    await expect(store.getApiKey('anthropic')).resolves.toBeUndefined();
+  });
+
+  it('still serves an Anthropic API key', async () => {
+    await seed.credentials.setCredential(USER_TENANT, 'anthropic', { type: 'api_key', key: 'sk-ant-api03-k' });
+    const store = new TenantCredentialStore(ORG, USER, seed.credentials, 'user');
+    await store.ensureFresh();
+
+    expect(store.getStoredApiKey('anthropic')).toBe('sk-ant-api03-k');
+    await expect(store.getApiKey('anthropic')).resolves.toBe('sk-ant-api03-k');
   });
 });
 
@@ -399,10 +434,21 @@ describe('resolveTenantProviderDefaultModel', () => {
   it('prefers providers in subscription-default order', async () => {
     registerTenantCredentialResolver(seed.credentials);
     await seed.credentials.setCredential(USER_TENANT, 'xai', { type: 'api_key', key: 'user-xai' });
-    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+    await seed.credentials.setCredential(USER_TENANT, 'anthropic', { type: 'api_key', key: 'sk-ant-api03-user' });
 
     await expect(resolveTenantProviderDefaultModel(USER_SCOPE, 'google/gemini')).resolves.toBe(
       'anthropic/claude-fable-5',
+    );
+  });
+
+  // fork(claude-agent): a stored Claude subscription sign-in doesn't make Anthropic a connected provider.
+  it('does not default to Anthropic on a refused Claude subscription sign-in', async () => {
+    registerTenantCredentialResolver(seed.credentials);
+    await seed.credentials.setCredential(USER_TENANT, 'xai', { type: 'api_key', key: 'user-xai' });
+    await seed.credentials.setCredential(USER_TENANT, 'anthropic', FRESH_OAUTH);
+
+    await expect(resolveTenantProviderDefaultModel(USER_SCOPE, 'anthropic/claude-opus-5')).resolves.toBe(
+      'xai/grok-4.5',
     );
   });
 

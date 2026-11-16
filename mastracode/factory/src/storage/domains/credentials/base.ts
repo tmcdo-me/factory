@@ -19,8 +19,8 @@
  * rest is out of scope, matching the existing posture.
  *
  * The domain also owns `oauth_login_sessions`: pending web login flows
- * (paste-code PKCE verifiers, device-code poll state) persisted server-side so
- * any replica can complete or poll a flow started on another.
+ * (device-code poll state) persisted server-side so any replica can poll a
+ * flow started on another.
  */
 
 import type { AuthCredential, OAuthCredential } from '@mastra/code-sdk/auth/types';
@@ -55,8 +55,14 @@ export interface ResolvedCredential {
   credential: AuthCredential;
 }
 
-/** Kind of pending web login flow a session row tracks. */
-export type LoginSessionKind = 'paste-code' | 'device-code';
+/**
+ * Kind of pending web login flow a session row tracks.
+ *
+ * fork(claude-agent): `paste-code` (the removed Anthropic sign-in) is gone. A
+ * row written before the removal still reads back as `paste-code`; it expires
+ * within ten minutes and the poll route rejects it as the wrong kind.
+ */
+export type LoginSessionKind = 'device-code';
 
 /** Scope the completed credential should be written to. */
 export type LoginCredentialScope = 'user' | 'org';

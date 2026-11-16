@@ -53,12 +53,12 @@ describe('FactoryReplyCredentialProcessor', () => {
   afterEach(() => setCredentialStoreProvider(undefined));
 
   it('stamps a personal subscription with the user whose credential answered', async () => {
-    const [message] = await stamp({ orgId: 'org-1', userId: 'user-1', credentialScope: 'user' }, { anthropic: oauth }, [
-      reply('m1', { provider: 'anthropic.messages', modelId: 'claude-opus-4-6' }),
+    const [message] = await stamp({ orgId: 'org-1', userId: 'user-1', credentialScope: 'user' }, { xai: oauth }, [
+      reply('m1', { provider: 'xai.responses', modelId: 'grok-4.5' }),
     ]);
 
     expect(message?.content.metadata).toMatchObject({
-      credentialLabel: 'Claude Pro/Max',
+      credentialLabel: 'SuperGrok/X Premium+',
       credentialOwnerId: 'user-1',
     });
   });

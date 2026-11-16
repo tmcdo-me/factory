@@ -10,16 +10,29 @@ import type { OAuthStartResponse, ProviderInfo } from '../../../../../../../api/
 
 export const PROVIDERS_URL = `${TEST_BASE_URL}/web/config/providers`;
 export const keyUrl = (provider: string) => `${PROVIDERS_URL}/${encodeURIComponent(provider)}/key`;
-export const oauthUrl = (provider: string, action: 'start' | 'complete' | 'poll') =>
+export const oauthUrl = (provider: string, action: 'start' | 'poll') =>
   `${PROVIDERS_URL}/${encodeURIComponent(provider)}/oauth/${action}`;
 
-export const pasteCodeSession = (sessionId: string): OAuthStartResponse => ({
+// fork(claude-agent): every web sign-in is a device-code flow now that the Anthropic paste-code sign-in is gone.
+export const deviceCodeSession = (sessionId: string, userCode = 'ABCD-1234', nextPollMs = 10): OAuthStartResponse => ({
   sessionId,
-  kind: 'paste-code',
-  url: 'https://example.com/authorize',
-  instructions: 'Authorize and paste the code.',
+  kind: 'device-code',
+  url: 'https://example.com/device',
+  userCode,
+  instructions: 'Enter this code.',
   expiresAt: Date.now() + 60_000,
+  nextPollMs,
 });
+
+/** Answers the dialog's first poll with a completed sign-in, after `onComplete` updates the server state. */
+export function completeOnPoll(provider: string, onComplete: () => void) {
+  server.use(
+    http.post(oauthUrl(provider, 'poll'), () => {
+      onComplete();
+      return HttpResponse.json({ status: 'complete', ok: true });
+    }),
+  );
+}
 
 export function stubProviders(providers: ProviderInfo[], orgKeyAdmin?: boolean) {
   server.use(http.get(PROVIDERS_URL, () => HttpResponse.json({ providers, orgKeyAdmin })));

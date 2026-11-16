@@ -31,14 +31,15 @@ function slackRun(sessionModelId?: string) {
   return { requestContext };
 }
 
-const claudeSubscription: AuthCredential = { type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 60_000 };
+// fork(claude-agent): an xAI subscription stands in for the removed Claude Pro/Max sign-in.
+const xaiSubscription: AuthCredential = { type: 'oauth', access: 'a', refresh: 'r', expires: Date.now() + 60_000 };
 
 async function slackRunOn(sessionModelId: string, credentialScope: CredentialTenant['credentialScope']) {
   setCredentialStoreProvider(
     () => ({
       allowEnvironmentFallback: false,
       reload() {},
-      get: provider => (provider === 'anthropic' ? claudeSubscription : undefined),
+      get: provider => (provider === 'xai' ? xaiSubscription : undefined),
       getStoredApiKey: () => undefined,
       getApiKey: async () => undefined,
     }),
@@ -53,7 +54,7 @@ function accountRateLimit() {
   return Object.assign(new Error("This request would exceed your account's rate limit. Please try again later."), {
     name: 'AI_APICallError',
     statusCode: 429,
-    requestBodyValues: { model: 'claude-opus-4-5' },
+    requestBodyValues: { model: 'grok-4.5' },
   });
 }
 
@@ -81,24 +82,20 @@ describe('slackRunErrorCard', () => {
   });
 
   it('names the organization’s subscription behind a rate limit, so nobody reconnects their own account', async () => {
-    const card = rendered(
-      slackRunErrorCard(accountRateLimit(), await slackRunOn('anthropic/claude-opus-4-5', 'factory')),
-    );
+    const card = rendered(slackRunErrorCard(accountRateLimit(), await slackRunOn('xai/grok-4.5', 'factory')));
 
     expect(card).toContain('Provider rate limit reached');
-    expect(card).toContain('Runs on Claude Pro/Max · Shared by the organization');
+    expect(card).toContain('Runs on SuperGrok/X Premium+ · Shared by the organization');
   });
 
   it('says a rate limit hit a personal subscription when the session runs on one', async () => {
-    const card = rendered(slackRunErrorCard(accountRateLimit(), await slackRunOn('anthropic/claude-opus-4-5', 'user')));
+    const card = rendered(slackRunErrorCard(accountRateLimit(), await slackRunOn('xai/grok-4.5', 'user')));
 
-    expect(card).toContain('Runs on Claude Pro/Max · Personal credential');
+    expect(card).toContain('Runs on SuperGrok/X Premium+ · Personal credential');
   });
 
   it('names no credential once the session runs on a model other than the one that failed', async () => {
-    const card = rendered(
-      slackRunErrorCard(accountRateLimit(), await slackRunOn('anthropic/claude-sonnet-4-5', 'factory')),
-    );
+    const card = rendered(slackRunErrorCard(accountRateLimit(), await slackRunOn('xai/grok-4.4', 'factory')));
 
     expect(card).toContain('Provider rate limit reached');
     expect(card).not.toContain('Runs on');

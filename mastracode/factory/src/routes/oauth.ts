@@ -1,9 +1,8 @@
 /**
  * Web OAuth sign-in routes for model providers (Settings › Providers).
  *
- * Wraps the SDK's step-based OAuth primitives (start/complete for Anthropic's
- * paste-code PKCE flow, start/poll for the Codex/Copilot/xAI device flows) in
- * HTTP routes. Flow state lives in login sessions — the `model-credentials`
+ * Wraps the SDK's step-based OAuth primitives (start/poll for the
+ * Codex/Copilot/xAI device flows) in HTTP routes. Flow state lives in login sessions — the `model-credentials`
  * domain's `oauth_login_sessions` table in tenant mode (any replica can
  * complete/poll), an in-memory store in local mode — so a flow can span
  * requests. Completed credentials are **user-scoped by default**; org admins
@@ -12,10 +11,13 @@
  *
  * Tokens never leave the server; responses only carry flow metadata (URLs,
  * user codes, poll delays).
+ *
+ * fork(claude-agent): there is no Anthropic (Claude Pro/Max) sign-in and so no
+ * paste-code flow or `/complete` route. A Claude subscription may be used by
+ * Claude Code only, which Factory runs as Claude Agent (spec §2.6).
  */
 
 import { nextPollDelayMs } from '@mastra/code-sdk/auth/device-code';
-import { completeAnthropicLogin, startAnthropicLogin } from '@mastra/code-sdk/auth/providers/anthropic';
 import {
   copilotNextPollDelayMs,
   pollGitHubCopilotDeviceLogin,
@@ -39,16 +41,13 @@ import type { CredentialContext } from './provider-credentials.js';
 import { loose, Route } from './route.js';
 import type { RouteDependencies } from './route.js';
 
-/** Lifetime of a paste-code session (Anthropic gives no explicit expiry). */
-const PASTE_CODE_TTL_MS = 10 * 60 * 1000;
-
 interface OAuthFlowStart {
   url: string;
   userCode?: string;
   instructions: string;
   /** ms epoch after which the flow expires. */
   expiresAt: number;
-  /** Delay before the first upstream poll (device-code flows only). */
+  /** Delay before the first upstream poll. */
   nextPollMs?: number;
   /** Serializable flow state persisted in the login session. */
   pending: Record<string, unknown>;
@@ -62,27 +61,12 @@ type OAuthFlowPoll =
 interface OAuthFlow {
   kind: LoginSessionKind;
   start(): Promise<OAuthFlowStart>;
-  /** Paste-code flows: exchange the pasted code for credentials. Throws on bad input. */
-  complete?(pending: Record<string, unknown>, code: string): Promise<OAuthCredentials>;
-  /** Device-code flows: perform exactly one upstream poll. */
-  poll?(pending: Record<string, unknown>): Promise<OAuthFlowPoll>;
+  /** Perform exactly one upstream poll. */
+  poll(pending: Record<string, unknown>): Promise<OAuthFlowPoll>;
 }
 
 /** Web OAuth flows keyed by *catalog* provider id (mirrors {@link WEB_OAUTH_PROVIDERS}). */
 const OAUTH_FLOWS: Record<string, OAuthFlow> = {
-  anthropic: {
-    kind: 'paste-code',
-    start: async () => {
-      const { url, verifier } = await startAnthropicLogin();
-      return {
-        url,
-        instructions: 'Open the link, authorize, then paste the code shown on the final page.',
-        expiresAt: Date.now() + PASTE_CODE_TTL_MS,
-        pending: { verifier },
-      };
-    },
-    complete: (pending, code) => completeAnthropicLogin(code, String(pending.verifier ?? '')),
-  },
   openai: {
     kind: 'device-code',
     start: async () => {
@@ -247,7 +231,6 @@ export interface OAuthRoutesDeps extends RouteDependencies {
 /**
  * Provider OAuth sign-in routes as Mastra `apiRoutes`:
  *   - `POST   /web/config/providers/:provider/oauth/start`              — begin a sign-in flow
- *   - `POST   /web/config/providers/:provider/oauth/complete`           — paste-code exchange
  *   - `POST   /web/config/providers/:provider/oauth/poll`               — one device-code poll
  *   - `DELETE /web/config/providers/:provider/oauth/session/:sessionId` — cancel a flow
  *   - `DELETE /web/config/providers/:provider/oauth`                    — sign out (caller only)
@@ -319,66 +302,6 @@ export class OAuthRoutes extends Route<OAuthRoutesDeps> {
         },
       }),
 
-      registerApiRoute('/web/config/providers/:provider/oauth/complete', {
-        method: 'POST',
-        requiresAuth: false,
-        handler: async c => {
-          const ctx = await resolveCredentialContext({ c: loose(c), auth, credentials: modelCredentials });
-          if ('response' in ctx) return ctx.response;
-
-          const provider = c.req.param('provider');
-          const flow = OAUTH_FLOWS[provider];
-          if (!flow?.complete) return c.json({ error: 'oauth_not_supported' }, 404);
-
-          const body = await readJsonBody(loose(c));
-          const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
-          const code = typeof body.code === 'string' ? body.code.trim() : '';
-          if (!sessionId || !code) return c.json({ error: 'Missing required fields: sessionId, code' }, 400);
-
-          const session = await loadOwnedSession({ ctx, provider, sessionId });
-          if (!session) return c.json({ error: 'session_not_found' }, 404);
-          if (session.kind !== 'paste-code') return c.json({ error: 'wrong_session_kind' }, 400);
-          // Org-scoped flows recheck admin access at completion time — the
-          // caller may have lost admin since the flow was started.
-          if (
-            session.credentialScope === 'org' &&
-            ctx.mode === 'tenant' &&
-            !(await auth.isOrganizationAdmin(loose(c), ctx.orgId))
-          ) {
-            return c.json({ error: 'forbidden', message: 'Only org admins can sign in for the whole org' }, 403);
-          }
-
-          const claimed = await (
-            await sessionStore(ctx)
-          ).claimLoginSession(sessionId, {
-            orgId: session.orgId,
-            userId: session.userId,
-            provider,
-            kind: 'paste-code',
-          });
-          if (!claimed) return c.json({ error: 'oauth_in_progress' }, 409);
-
-          let credentials: OAuthCredentials;
-          try {
-            credentials = await flow.complete(claimed.pending, code);
-          } catch (error) {
-            await (await sessionStore(ctx)).touchLoginSession(sessionId, { nextPollAt: null });
-            return c.json({ error: error instanceof Error ? error.message : String(error) }, 400);
-          }
-
-          await persistOAuthCredential({
-            ctx,
-            provider,
-            scope: session.credentialScope,
-            credentials,
-            authStorage,
-            onCredentialsChanged,
-          });
-          await (await sessionStore(ctx)).deleteLoginSession(sessionId);
-          return c.json({ status: 'complete', ok: true });
-        },
-      }),
-
       registerApiRoute('/web/config/providers/:provider/oauth/poll', {
         method: 'POST',
         requiresAuth: false,
@@ -388,7 +311,7 @@ export class OAuthRoutes extends Route<OAuthRoutesDeps> {
 
           const provider = c.req.param('provider');
           const flow = OAUTH_FLOWS[provider];
-          if (!flow?.poll) return c.json({ error: 'oauth_not_supported' }, 404);
+          if (!flow) return c.json({ error: 'oauth_not_supported' }, 404);
 
           const body = await readJsonBody(loose(c));
           const sessionId = typeof body.sessionId === 'string' ? body.sessionId : '';
