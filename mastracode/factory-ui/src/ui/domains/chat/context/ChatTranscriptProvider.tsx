@@ -7,7 +7,7 @@ import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { chatSessionPhase } from '../../workspaces/services/sessionStatus';
 import { useAgentControllerTranscript } from '../hooks/useAgentControllerTranscript';
 import { useFactorySessionTranscript } from '../hooks/useFactorySessionTranscript';
-import { transcriptSource } from '../services/transcript-source';
+import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
 import { initialChatRuntime, runtimeReducer } from '../services/runtime';
 import type { ChatRuntimeState, SessionStateSnapshot } from '../services/runtime';
 import type { TranscriptState } from '../services/transcript';
@@ -22,65 +22,81 @@ import { useChatMessagesError } from './useChatMessagesError';
 import { useChatMessagesInitializing } from './useChatMessagesInitializing';
 import { useChatSessionContext } from './useChatSessionContext';
 
-// fork(claude-agent): draw from Factory's session event log when selected (thread id === session id).
-const useTranscript: typeof useAgentControllerTranscript =
-  transcriptSource === 'factory'
-    ? ({ initialThreadId, viewerId } = {}) => useFactorySessionTranscript({ sessionId: initialThreadId, viewerId })
-    : useAgentControllerTranscript;
+// fork(claude-agent): a session is drawn from Factory's session event log when it runs on Claude
+// Agent, or when the Factory transcript source is selected (thread id === session id). Each source is
+// its own component, so a provider always calls the same hook.
+type TranscriptProviderProps = Parameters<typeof MastraChatTranscriptProvider>[0];
 
-export function ChatTranscriptProvider({
-  children,
-  threadId,
-  initialMessages,
-  hasMoreHistory = false,
-  isLoadingMoreHistory = false,
-  loadMoreHistory,
-}: {
-  children: ReactNode;
-  threadId?: string;
-  initialMessages?: MastraDBMessage[];
-  hasMoreHistory?: boolean;
-  isLoadingMoreHistory?: boolean;
-  loadMoreHistory?: () => void;
-}) {
-  const viewerId = useFactoryAuth().data?.user?.userId;
-  const transcriptApi = useTranscript({ initialThreadId: threadId, initialMessages, viewerId });
-  const [runtime, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
-  const onEvent = (event: AgentControllerEvent) => {
-    transcriptApi.onEvent(event);
-    dispatchRuntime({ type: 'event', event });
-  };
-  const reset = (nextThreadId?: string, state?: SessionStateSnapshot) => {
-    transcriptApi.reset(nextThreadId);
-    dispatchRuntime({ type: 'reset', threadId: nextThreadId, state });
-  };
-  const mergeWindow = useEffectEvent((messages: MastraDBMessage[]) => transcriptApi.mergeWindow(messages));
-  useEffect(() => {
-    if (initialMessages === undefined) return;
-    mergeWindow(initialMessages);
-  }, [initialMessages]);
-
-  const loadMore: LoadMoreHistory = {
-    hasMore: hasMoreHistory,
-    isLoading: isLoadingMoreHistory,
-    load: loadMoreHistory,
-  };
-
-  return (
-    <ChatConnectionProvider onEvent={onEvent}>
-      <ChatRuntimeValueProvider runtime={runtime} threadId={transcriptApi.transcript.threadId ?? threadId}>
-        <ChatTranscriptValueProvider
-          threadId={threadId}
-          viewerId={viewerId}
-          transcriptApi={transcriptApi}
-          reset={reset}
-          loadMore={loadMore}
-        >
-          {children}
-        </ChatTranscriptValueProvider>
-      </ChatRuntimeValueProvider>
-    </ChatConnectionProvider>
+export function ChatTranscriptProvider(props: TranscriptProviderProps) {
+  const runtime = useSessionRuntimeQuery(props.threadId).data;
+  return usesFactorySessionApi(runtime) ? (
+    <FactoryChatTranscriptProvider {...props} />
+  ) : (
+    <MastraChatTranscriptProvider {...props} />
   );
+}
+
+const useFactoryTranscript: typeof useAgentControllerTranscript = ({ initialThreadId, viewerId } = {}) =>
+  useFactorySessionTranscript({ sessionId: initialThreadId, viewerId });
+
+const MastraChatTranscriptProvider = transcriptProviderUsing(useAgentControllerTranscript);
+const FactoryChatTranscriptProvider = transcriptProviderUsing(useFactoryTranscript);
+
+function transcriptProviderUsing(useTranscript: typeof useAgentControllerTranscript) {
+  return function TranscriptProvider({
+    children,
+    threadId,
+    initialMessages,
+    hasMoreHistory = false,
+    isLoadingMoreHistory = false,
+    loadMoreHistory,
+  }: {
+    children: ReactNode;
+    threadId?: string;
+    initialMessages?: MastraDBMessage[];
+    hasMoreHistory?: boolean;
+    isLoadingMoreHistory?: boolean;
+    loadMoreHistory?: () => void;
+  }) {
+    const viewerId = useFactoryAuth().data?.user?.userId;
+    const transcriptApi = useTranscript({ initialThreadId: threadId, initialMessages, viewerId });
+    const [runtime, dispatchRuntime] = useReducer(runtimeReducer, initialChatRuntime);
+    const onEvent = (event: AgentControllerEvent) => {
+      transcriptApi.onEvent(event);
+      dispatchRuntime({ type: 'event', event });
+    };
+    const reset = (nextThreadId?: string, state?: SessionStateSnapshot) => {
+      transcriptApi.reset(nextThreadId);
+      dispatchRuntime({ type: 'reset', threadId: nextThreadId, state });
+    };
+    const mergeWindow = useEffectEvent((messages: MastraDBMessage[]) => transcriptApi.mergeWindow(messages));
+    useEffect(() => {
+      if (initialMessages === undefined) return;
+      mergeWindow(initialMessages);
+    }, [initialMessages]);
+
+    const loadMore: LoadMoreHistory = {
+      hasMore: hasMoreHistory,
+      isLoading: isLoadingMoreHistory,
+      load: loadMoreHistory,
+    };
+
+    return (
+      <ChatConnectionProvider onEvent={onEvent}>
+        <ChatRuntimeValueProvider runtime={runtime} threadId={transcriptApi.transcript.threadId ?? threadId}>
+          <ChatTranscriptValueProvider
+            threadId={threadId}
+            viewerId={viewerId}
+            transcriptApi={transcriptApi}
+            reset={reset}
+            loadMore={loadMore}
+          >
+            {children}
+          </ChatTranscriptValueProvider>
+        </ChatRuntimeValueProvider>
+      </ChatConnectionProvider>
+    );
+  };
 }
 
 function ChatRuntimeValueProvider({

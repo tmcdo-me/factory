@@ -14,9 +14,16 @@ import {
   respondToFactorySessionPrompt,
   sendFactorySessionMessage,
 } from '../ui/domains/chat/services/factorySessionCommands';
-import { transcriptSource } from '../ui/domains/chat/services/transcript-source';
+import { resolveSessionRuntime, usesFactorySessionApi } from '../ui/domains/chat/hooks/useSessionRuntime';
 
-const viaFactory = transcriptSource === 'factory';
+/** Whether this session's commands go to Factory's session API: resolved per session before routing. */
+function useViaFactory(args: AgentControllerRunMutationArgs) {
+  const queryClient = useQueryClient();
+  return async () =>
+    usesFactorySessionApi(
+      await resolveSessionRuntime(queryClient, args.baseUrl ?? '', args.sessionId).catch(() => undefined),
+    );
+}
 
 interface AgentControllerRunMutationArgs {
   agentControllerId: string;
@@ -44,10 +51,11 @@ export interface SendAgentControllerMessageInput {
 export function useSendAgentControllerMessageMutation(args: AgentControllerRunMutationArgs) {
   const { session } = createAgentControllerClient(args);
   const invalidateSession = useSessionInvalidation(args);
+  const viaFactory = useViaFactory(args);
   return useMutation({
-    mutationFn: (input: SendAgentControllerMessageInput | string) => {
+    mutationFn: async (input: SendAgentControllerMessageInput | string) => {
       const { text, files } = typeof input === 'string' ? { text: input, files: undefined } : input;
-      if (viaFactory) return sendFactorySessionMessage(args.baseUrl ?? '', args.sessionId, { text, files });
+      if (await viaFactory()) return sendFactorySessionMessage(args.baseUrl ?? '', args.sessionId, { text, files });
       return requireAgentControllerSession(session).sendMessage(
         files?.length ? { content: text, files } : { content: text },
       );
@@ -68,9 +76,10 @@ export function useFollowUpAgentControllerMutation(args: AgentControllerRunMutat
 export function useAbortAgentControllerMutation(args: AgentControllerRunMutationArgs) {
   const { session } = createAgentControllerClient(args);
   const invalidateSession = useSessionInvalidation(args);
+  const viaFactory = useViaFactory(args);
   return useMutation({
-    mutationFn: () =>
-      viaFactory
+    mutationFn: async () =>
+      (await viaFactory())
         ? abortFactorySession(args.baseUrl ?? '', args.sessionId)
         : requireAgentControllerSession(session).abort(),
     onSuccess: invalidateSession,
@@ -80,9 +89,10 @@ export function useAbortAgentControllerMutation(args: AgentControllerRunMutation
 export function useApproveAgentControllerToolMutation(args: AgentControllerRunMutationArgs) {
   const { session } = createAgentControllerClient(args);
   const invalidateSession = useSessionInvalidation(args);
+  const viaFactory = useViaFactory(args);
   return useMutation({
-    mutationFn: ({ toolCallId, approved }: { toolCallId: string; approved: boolean }) =>
-      (viaFactory
+    mutationFn: async ({ toolCallId, approved }: { toolCallId: string; approved: boolean }) =>
+      ((await viaFactory())
         ? approveFactorySessionTool(args.baseUrl ?? '', args.sessionId, toolCallId, approved)
         : requireAgentControllerSession(session).approveTool(toolCallId, approved)
       ).then(requireAccepted),
@@ -94,9 +104,16 @@ export function useApproveAgentControllerToolMutation(args: AgentControllerRunMu
 export function useRespondAgentControllerSuspensionMutation(args: AgentControllerRunMutationArgs) {
   const { session } = createAgentControllerClient(args);
   const invalidateSession = useSessionInvalidation(args);
+  const viaFactory = useViaFactory(args);
   return useMutation({
-    mutationFn: ({ toolCallId, resumeData }: { toolCallId: string; resumeData: string | string[] | PlanResume }) =>
-      (viaFactory
+    mutationFn: async ({
+      toolCallId,
+      resumeData,
+    }: {
+      toolCallId: string;
+      resumeData: string | string[] | PlanResume;
+    }) =>
+      ((await viaFactory())
         ? respondToFactorySessionPrompt(args.baseUrl ?? '', args.sessionId, toolCallId, resumeData)
         : requireAgentControllerSession(session).respondToToolSuspension(toolCallId, resumeData)
       ).then(requireAccepted),
