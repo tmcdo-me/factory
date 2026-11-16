@@ -6,6 +6,7 @@ import { splitLegacyWorkItem } from '../../../work-items/split-migration.js';
 import type { ExternalWorkItemSource, WorkItemDbRow } from './base.js';
 import {
   isLegacyReviewPlacement,
+  originSourceType,
   LEGACY_REVIEW_BOARD,
   normalizeLegacyReviewColumns,
   readLegacyReviewRow,
@@ -97,7 +98,10 @@ function joinCard(
   reviewInUse = false,
 ): WorkItemDbRow {
   if (!work) throw new Error(`Board item ${board.id} has no work item ${board.work_item_id}.`);
-  const source = sources.find(isOriginSource) ?? sources[0];
+  // fork(claude-agent): only the origin record is the card's own source. A card made on the board
+  // that later took a pull request its own run opened stays a card with no source of its own: the
+  // attached pull request never becomes its identity, its facts or its branch.
+  const source = sources.find(isOriginSource);
   return readLegacyReviewRow(
     {
       work_item: work,
@@ -389,7 +393,10 @@ export class Cards {
       }
       if (patch.metadata !== undefined || patch.external_source !== undefined) {
         const next = splitCardRows({ ...current, ...patch }, { workItemId: row.work_item_id }).source;
-        const previous = current.work_item_sources?.[0];
+        // fork(claude-agent): the source the card's facts live in: the one this write was addressed
+        // by, else the card's origin. A pull request attached to a card made on the board is
+        // neither, so the card's own writes never rewrite or drop it.
+        const previous = matchedSource ?? current.work_item_sources?.find(isOriginSource);
         if (next && previous) {
           const before = splitCardRows(current, { workItemId: row.work_item_id }).source;
           const changed = Object.fromEntries(
@@ -445,7 +452,7 @@ export class Cards {
       }
       // A legacy Review row read as Work stores its Work placement on its first real write.
       if (
-        isLegacyReviewPlacement(row.board, joined.work_item_sources?.[0]?.source_type) &&
+        isLegacyReviewPlacement(row.board, originSourceType(joined.work_item_sources)) &&
         joined.board !== LEGACY_REVIEW_BOARD
       ) {
         Object.assign(columns, normalizeLegacyReviewColumns(row, columns));
@@ -506,7 +513,7 @@ export class Cards {
         revision: row.revision + 1,
         updated_at: source.now,
         changed_at: nextChangedAt(row),
-        ...(isLegacyReviewPlacement(row.board, joined.work_item_sources?.[0]?.source_type) &&
+        ...(isLegacyReviewPlacement(row.board, originSourceType(joined.work_item_sources)) &&
         joined.board !== LEGACY_REVIEW_BOARD
           ? normalizeLegacyReviewColumns(row, {})
           : {}),

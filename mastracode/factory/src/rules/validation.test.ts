@@ -48,6 +48,28 @@ describe('Factory rule validation', () => {
     );
   });
 
+  // fork(claude-agent)
+  it("lets attachTo say the card's own run opened the pull request, and nothing else", () => {
+    const linked = {
+      type: 'upsertLinkedWorkItem',
+      idempotencyKey: 'pr:17',
+      board: 'work',
+      stage: 'intake',
+      source: 'github-pr',
+      sourceKey: 'github:10:pull-request:17',
+      title: 'PR 17',
+      url: 'https://github.com/acme/repo/pull/17',
+    };
+    const own = { ...linked, attachTo: { workItemId: 'card-1', ownPullRequest: true } };
+    expect(validateFactoryRuleDecision(own)).toEqual(own);
+    expect(() =>
+      validateFactoryRuleDecision({ ...linked, attachTo: { workItemId: 'card-1', ownPullRequest: 'yes' } }),
+    ).toThrow(FactoryRuleValidationError);
+    expect(() =>
+      validateFactoryRuleDecision({ ...linked, closesIssue: { workItemId: 'card-1', ownPullRequest: true } }),
+    ).toThrow(FactoryRuleValidationError);
+  });
+
   it('accepts a saved linked-item decision that still carries a claim key and drops the claim', () => {
     const unclaimed = {
       type: 'upsertLinkedWorkItem',

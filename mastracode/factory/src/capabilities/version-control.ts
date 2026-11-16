@@ -49,6 +49,11 @@ export interface PullRequest {
   baseBranch: string;
   headBranch: string;
   headSha: string;
+  /**
+   * fork(claude-agent): the repository the head branch lives in, when the provider says. A fork's
+   * differs from the base repository's; only a same-repository head can be a card's own branch.
+   */
+  headRepositoryId?: number;
   createdAt: string;
   updatedAt: string;
 }

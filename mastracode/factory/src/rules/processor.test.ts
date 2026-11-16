@@ -1964,6 +1964,152 @@ describe('FactoryPhaseStateProcessor', () => {
 });
 
 // fork(claude-agent)
+describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
+  const pullRequest17 = {
+    integrationId: 'github',
+    type: 'pull-request',
+    externalId: 'github:10:pull-request:17',
+    url: 'https://github.com/acme/repo/pull/17',
+  };
+
+  async function building(options: { attaches?: boolean; intakeRoutes?: unknown[]; firstMoveLoses?: boolean } = {}) {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const prepared = await prepare(storage, 'work', 'issue', { id: 'work', stage: 'execute' });
+    const boards = createBoardRegistry();
+    const service = new FactoryTransitionService({ configVersion: 'rules-v1', boards, storage });
+    let lost = !options.firstMoveLoses;
+    // A move that loses a race once, the way a concurrent write to the card makes it go stale.
+    const transitionService = {
+      transition: vi.fn(async (request: Parameters<FactoryTransitionService['transition']>[0]) => {
+        if (lost) return service.transition(request);
+        lost = true;
+        return { status: 'rejected' as const, code: 'stale', reason: 'The card changed.' } as never;
+      }),
+    };
+    // Stands in for GitHub's provenance recorder, which files the pull request on the card.
+    const recordPullRequestProvenance = vi.fn(async ({ item }: { item: { id: string } }) => {
+      if (options.attaches === false) return undefined;
+      const attached = await storage.attachSource({
+        orgId: 'org-1',
+        id: item.id,
+        source: pullRequest17,
+        metadata: { state: 'open', githubRepositoryId: 10, githubPullRequestNumber: 17 },
+      });
+      return { attached: true, attachedAt: attached!.item.workItem.sources.at(-1)!.createdAt };
+    });
+    const processor = new FactoryPhaseStateProcessor({
+      configVersion: 'rules-v1',
+      boards,
+      storage,
+      transitionService,
+      recordPullRequestProvenance,
+      ...(options.intakeRoutes
+        ? { intakeRoutes: { listIntakeRoutes: vi.fn(async () => options.intakeRoutes) } as never }
+        : {}),
+    });
+    const card = () => storage.get({ orgId: 'org-1', id: prepared.item.id });
+    return { storage, prepared, processor, card, recordPullRequestProvenance, service };
+  }
+
+  const created = { url: 'https://github.com/acme/repo/pull/17', number: 17 };
+  const runtimes = {
+    'Claude Agent': (processor: FactoryPhaseStateProcessor) =>
+      processor.ingestRuntimeToolResult(requestContext(), {
+        callId: 'tool-call-1',
+        toolName: 'source_control_create_change_request',
+        input: { title: 'Fix it' },
+        status: 'success',
+        value: created,
+      }),
+    'Mastra Code': (processor: FactoryPhaseStateProcessor) =>
+      processor.processInputStep(
+        inputArgs(requestContext(), [
+          toolMessage({ toolName: 'source_control_create_change_request', args: { title: 'Fix it' }, result: created }),
+        ]),
+      ),
+  };
+
+  it.each(Object.keys(runtimes) as (keyof typeof runtimes)[])(
+    'moves a %s card to PR review as soon as the pull request its run opened is filed on it',
+    async runtime => {
+      const { processor, card, recordPullRequestProvenance } = await building();
+
+      await runtimes[runtime](processor);
+
+      // By the time the agent reads the tool's result, the card holds its pull request and is in review.
+      expect(recordPullRequestProvenance).toHaveBeenCalledWith(
+        expect.objectContaining({ toolName: 'source_control_create_change_request', toolResult: created }),
+      );
+      const moved = await card();
+      expect(moved).toMatchObject({ stages: ['pr-review'] });
+      expect(moved!.workItem.sources.map(source => source.sourceType)).toEqual(['issue', 'pull-request']);
+
+      // The same result read again (the step, then the thread) moves nothing twice.
+      await runtimes[runtime](processor);
+      expect(await card()).toMatchObject({ stages: ['pr-review'], revision: moved!.revision });
+    },
+  );
+
+  it('retries a hand-off that lost a race when the same result is read again', async () => {
+    const { processor, card } = await building({ firstMoveLoses: true });
+
+    await runtimes['Claude Agent'](processor);
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+
+    // The thread's read of the same result (or Mastra Code's next step) hands it off.
+    await runtimes['Mastra Code'](processor);
+    expect(await card()).toMatchObject({ stages: ['pr-review'] });
+  });
+
+  it('never moves a card again once it has been in review since its pull request was attached', async () => {
+    const { processor, card, service, prepared } = await building();
+    await runtimes['Claude Agent'](processor);
+    const reviewing = (await card())!;
+    expect(reviewing).toMatchObject({ stages: ['pr-review'] });
+
+    // Review asks for changes: a person sends the card back to build.
+    expect(
+      await service.transition({
+        orgId: 'org-1',
+        factoryProjectId: PROJECT_ID,
+        workItemId: prepared.item.id,
+        board: 'work',
+        stage: 'execute',
+        expectedRevision: reviewing.revision,
+        actor: { type: 'human', id: 'user-1' },
+        ingress: { type: 'human', identity: 'back-to-build' },
+        cause: 'Changes requested.',
+      }),
+    ).toMatchObject({ status: 'accepted' });
+
+    // Mastra Code reads the latest tool result again on its next step: it is still the pull request's.
+    await runtimes['Mastra Code'](processor);
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+  });
+
+  it('leaves the card where it is when no pull request was filed on it', async () => {
+    const { processor, card } = await building({ attaches: false });
+
+    await runtimes['Claude Agent'](processor);
+
+    expect(await card()).toMatchObject({ stages: ['execute'] });
+  });
+
+  it('leaves the move to an intake route that takes "pull request opened" on the board', async () => {
+    const { processor, card } = await building({
+      intakeRoutes: [{ id: 'route-1', on: ['pull_request.opened'], target: { boardKey: 'work', phaseKey: 'intake' } }],
+    });
+
+    await runtimes['Claude Agent'](processor);
+
+    // Filed on the card, so the agent's own move would go through; the route moves it when the event arrives.
+    const after = await card();
+    expect(after).toMatchObject({ stages: ['execute'] });
+    expect(after!.workItem.sources.map(source => source.sourceType)).toEqual(['issue', 'pull-request']);
+  });
+});
+
+// fork(claude-agent)
 describe('FactoryPhaseStateProcessor.ingestRuntimeToolResult', () => {
   it("counts a Claude Agent session's approved plan as proof the card may leave Planning", async () => {
     const storage = (await createFactoryStorageForTests()).workItems;

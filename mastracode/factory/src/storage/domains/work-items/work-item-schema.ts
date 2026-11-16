@@ -165,14 +165,23 @@ export interface WorkItemSourceRow {
   labels: string[];
   author: string | null;
   metadata: Record<string, unknown> | null;
+  /**
+   * fork(claude-agent): set only on a record filed onto a card after it was created (a pull
+   * request on the card that opened it). Absent reads as the card's origin record.
+   */
+  role?: 'attached';
   revision: number;
   syncedAt: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
 
+/**
+ * The record a card was created from. fork(claude-agent): a card made on the board has none, even
+ * once a pull request is attached to it; the attached pull request never becomes its own source.
+ */
 export function primarySource(card: { workItem: { sources: readonly WorkItemSourceRow[] } }): WorkItemSourceRow | null {
-  return card.workItem.sources[0] ?? null;
+  return card.workItem.sources.find(source => source.role !== 'attached') ?? null;
 }
 
 export interface WorkItemRow {

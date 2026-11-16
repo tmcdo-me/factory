@@ -177,6 +177,67 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('one card for an
     expect(stored.workItem.sources[1]).toMatchObject({ sourceType: 'pull-request', state: 'merged' });
   });
 
+  // fork(claude-agent): a card made on the board can take the pull request its own run opened.
+  it('keeps a card made on the board source-less once it takes a pull request, through its own writes', async () => {
+    const { workItems, scope } = await setup();
+    const card = (
+      await workItems.upsert({
+        ...scope,
+        input: { title: 'Made on the board', board: 'work', stages: ['execute'], metadata: { note: 'mine' } },
+      })
+    ).item;
+
+    await workItems.attachSource({
+      orgId: scope.orgId,
+      id: card.id,
+      source: pullRequest34,
+      metadata: { state: 'open', githubPullRequestNumber: 34, headBranch: `factory/item-${card.id}` },
+    });
+
+    const attached = (await workItems.get({ orgId: scope.orgId, id: card.id }))!;
+    // The pull request is on the card, but it is not the card's identity, facts or branch.
+    expect(attached.externalSource).toBeNull();
+    expect(attached.workItem).toMatchObject({ provider: 'factory', externalId: card.id, url: null, state: null });
+    expect(attached.workItem.sources).toEqual([
+      expect.objectContaining({ sourceType: 'pull-request', role: 'attached', state: 'open' }),
+    ]);
+    expect(attached.metadata).toEqual({ note: 'mine' });
+    expect(
+      (
+        await workItems.getByProjectSource({
+          orgId: scope.orgId,
+          factoryProjectId: scope.factoryProjectId,
+          source: pullRequest34,
+        })
+      )?.id,
+    ).toBe(card.id);
+
+    // The card's own writes (a phase stamp, the pull request it has out) neither drop the pull
+    // request nor write the card's facts into it.
+    await workItems.update({
+      orgId: scope.orgId,
+      id: card.id,
+      userId: 'user',
+      patch: { metadata: { openPullRequestNumber: 34, note: 'still mine' } },
+    });
+    await workItems.syncCard({
+      orgId: scope.orgId,
+      id: card.id,
+      userId: 'user',
+      patch: { metadata: { labels: ['bug'] } },
+    });
+
+    const written = (await workItems.get({ orgId: scope.orgId, id: card.id }))!;
+    expect(written.externalSource).toBeNull();
+    expect(written.metadata).toMatchObject({ openPullRequestNumber: 34, note: 'still mine' });
+    expect(written.workItem.sources).toHaveLength(1);
+    expect(written.workItem.sources[0]!.metadata).toEqual({
+      state: 'open',
+      githubPullRequestNumber: 34,
+      headBranch: `factory/item-${card.id}`,
+    });
+  });
+
   describe("keeps the issue as the card's primary source whatever the timestamps say", () => {
     /** File issue `n`, attach its pull request, then set the pull request source's `created_at` relative to the issue's. */
     async function attachAt(

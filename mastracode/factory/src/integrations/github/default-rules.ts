@@ -189,7 +189,13 @@ function materializePullRequestIntake(
     ...(home
       ? home.reason === 'closes'
         ? { closesIssue: { workItemId: home.workItemId } }
-        : { attachTo: { workItemId: home.workItemId } }
+        : // fork(claude-agent): a pull request the card's own run opened is filed there on any board.
+          {
+            attachTo: {
+              workItemId: home.workItemId,
+              ...(home.ownPullRequest ? { ownPullRequest: true as const } : {}),
+            },
+          }
       : {}),
     metadata: {
       githubRepositoryId: context.repository.id,

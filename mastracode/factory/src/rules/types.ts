@@ -736,6 +736,12 @@ export interface FactorySignalActivityDecision extends FactoryCommitDecisionBase
 export interface FactoryPullRequestHome {
   workItemId: string;
   reason: 'authored' | 'closes';
+  /**
+   * fork(claude-agent): the card's own run opened it: Factory's provenance names this card from one
+   * of its run bindings, or its head is the card's own branch. Such a pull request is filed on the
+   * card whatever the card's source and whether or not its board reviews pull requests.
+   */
+  ownPullRequest?: true;
 }
 
 export interface FactoryUpsertLinkedWorkItemDecision extends FactoryCommitDecisionBase {
@@ -765,7 +771,15 @@ export interface FactoryUpsertLinkedWorkItemDecision extends FactoryCommitDecisi
    * source instead of on a card of its own. Applies only when no card holds the record yet and
    * the card is still open on Work; otherwise the record is filed as usual.
    */
-  attachTo?: { workItemId: string };
+  attachTo?: {
+    workItemId: string;
+    /**
+     * fork(claude-agent): the card's own run opened it (see `FactoryPullRequestHome.ownPullRequest`),
+     * so it is filed there even on a board that does not review pull requests. Honoured only when
+     * the decision is committed against that same card.
+     */
+    ownPullRequest?: true;
+  };
   /**
    * The card of the issue this pull or merge request closes. When no card holds the record yet,
    * the project's intake routes can test that card and join the record to it (see
