@@ -371,6 +371,15 @@ take. `FORK.md` documents this.
 
 - Package scope: `@factory/*`.
 - Sandboxes: Local + Fly.io Sprites (§3.6).
+- Runtime selection UI: a **runtime selector in the new-session composer** ("Mastra Code / Claude
+  Agent", beside the model and thinking pickers), preset from a **per-project default runtime** in
+  project settings; the model list follows the selected runtime; fixed once the session starts.
+  Board runs use the project default.
+- Claude Agent sessions get their checkout from **Factory's own workspace factory** (the same
+  instance Mastra Code uses): resolve the session's workspace with the caller's identity, start
+  the sandbox (clones the repo), read the checkout path and sandbox env, run Claude Code there.
+  A fork-only `agent-sessions` storage domain records each session's runtime and resume state,
+  and each project's default runtime.
 - Integrations: **keep GitHub, Slack** (Slack unused today, planned). **Drop Linear, GitLab, Jira,
   incident.io.**
 - Mastra-Code-era features:

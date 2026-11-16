@@ -22,6 +22,7 @@
 import { existsSync } from 'node:fs';
 
 import { SessionEventHub } from '@factory/agent-runtime';
+import { CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
 import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code';
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
@@ -106,6 +107,7 @@ import {
   startFactoryMetrics,
 } from './metrics/index.js';
 import type { FactoryMetricsOptions } from './metrics/index.js';
+import { buildAgentRuntimeRoutes } from './routes/agent-runtimes.js';
 import { buildAgentSessionRoutes } from './routes/agent-sessions.js';
 import { resolveDeploymentModelProviders } from './routes/config.js';
 import {
@@ -153,6 +155,8 @@ import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
+import { ClaudeAgentSessions, routeSessionCommands } from './session/claude-agent-sessions.js';
+import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
@@ -181,6 +185,7 @@ import { createSpaStaticMiddleware, resolveUiDistDir } from './spa-static.js';
 import { createStateSigner } from './state-signing.js';
 import { AgentEventsStorage } from './storage/domains/agent-events/base.js';
 import { AgentInteractionsStorage } from './storage/domains/agent-interactions/base.js';
+import { AgentSessionsStorage } from './storage/domains/agent-sessions/base.js';
 import { observeAgentGitAction } from './storage/domains/audit/agent-audit.js';
 import { AuditStorage } from './storage/domains/audit/base.js';
 import { AuditDomain } from './storage/domains/audit/domain.js';
@@ -608,7 +613,11 @@ export class MastraFactory {
   readonly #configVersion: string;
   #prepared: Awaited<ReturnType<typeof prepareAgentControllerMount>> | undefined;
   /** fork(claude-agent): agent runtime seam services, set in `prepare()`. */
-  #agentSeam: { events: SessionEventHub; interactions: AgentInteractionsStorage } | undefined;
+  #agentSeam:
+    | { events: SessionEventHub; interactions: AgentInteractionsStorage; sessions: AgentSessionsStorage }
+    | undefined;
+  /** fork(claude-agent): live Claude Agent sessions. */
+  #claudeAgentSessions: ClaudeAgentSessions | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -940,7 +949,12 @@ export class MastraFactory {
     // fork(claude-agent): the agent runtime seam's event log and interaction store. Mastra Code
     // sessions are mirrored into the log (shadow write) until the UI and board rules read from it.
     const agentEventHub = new SessionEventHub(storage.registerDomain(new AgentEventsStorage()));
-    this.#agentSeam = { events: agentEventHub, interactions: storage.registerDomain(new AgentInteractionsStorage()) };
+    const agentSessionsStorage = storage.registerDomain(new AgentSessionsStorage());
+    this.#agentSeam = {
+      events: agentEventHub,
+      interactions: storage.registerDomain(new AgentInteractionsStorage()),
+      sessions: agentSessionsStorage,
+    };
     // Generic integration storage (connections/subscriptions/settings) — the
     // default persistence surface for integrations without a bespoke domain.
     const integrationStorage = storage.registerDomain(new IntegrationStorage(secretEncryption));
@@ -1757,6 +1771,39 @@ export class MastraFactory {
     // providers) — the terminal app's, minus modes. Agent state lives in
     // the storage backend's Mastra store alongside the Factory app tables —
     // one shared database for all users, separated by `resourceId` scoping.
+    // fork(claude-agent): one workspace factory for every runtime, so a Claude Agent session gets
+    // the same checkout, credentials and sandbox a Mastra Code session would.
+    const workspaceFactory = createWorkspaceFactory({
+      skills: this.#skills,
+      ...(storage.isDomainReady('skill-overrides') ? { skillOverrides: skillOverridesStorage } : {}),
+      ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
+      ...(this.#config.sandboxStart ? { sandboxStart: this.#config.sandboxStart } : {}),
+      sourceControls: integrations.flatMap(integration =>
+        integration.versionControl
+          ? [
+              {
+                id: integration.id,
+                versionControl: integration.versionControl,
+                storage: sourceControlStorage.forIntegration(integration.id),
+                ...(integration.id === 'github' && githubIntegration ? { github: githubIntegration } : {}),
+              },
+            ]
+          : [],
+      ),
+      ...(factoryProjectsStorage ? { projects: factoryProjectsStorage } : {}),
+      sandboxEnvs: sandboxEnvsStorage,
+      ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
+      workspaceRegistry,
+    });
+    const claudeAgentSessions = new ClaudeAgentSessions({
+      hub: agentEventHub,
+      sessions: agentSessionsStorage,
+      workspace: createClaudeAgentWorkspaceResolver({
+        resolveWorkspace: workspaceFactory,
+        getMastra: () => this.#prepared?.base.controller.getMastra(),
+      }),
+    });
+    this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>
       prepareAgentControllerMount({
         controllerId: CONTROLLER_ID,
@@ -1769,28 +1816,7 @@ export class MastraFactory {
         // Subagents are disabled, matching the Mastra Code TUI default.
         subagents: [],
         resolveDefaultThinkingLevel: ({ requestContext }) => resolveDefaultThinkingLevel(requestContext),
-        workspace: createWorkspaceFactory({
-          skills: this.#skills,
-          ...(storage.isDomainReady('skill-overrides') ? { skillOverrides: skillOverridesStorage } : {}),
-          ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),
-          ...(this.#config.sandboxStart ? { sandboxStart: this.#config.sandboxStart } : {}),
-          sourceControls: integrations.flatMap(integration =>
-            integration.versionControl
-              ? [
-                  {
-                    id: integration.id,
-                    versionControl: integration.versionControl,
-                    storage: sourceControlStorage.forIntegration(integration.id),
-                    ...(integration.id === 'github' && githubIntegration ? { github: githubIntegration } : {}),
-                  },
-                ]
-              : [],
-          ),
-          ...(factoryProjectsStorage ? { projects: factoryProjectsStorage } : {}),
-          sandboxEnvs: sandboxEnvsStorage,
-          ...(workItemsStorage ? { workItems: workItemsStorage } : {}),
-          workspaceRegistry,
-        }),
+        workspace: workspaceFactory,
         disableGithubSignals: true,
         // Host mcp.json files never belong to a hosted session; MCP tools come through `tools`.
         disableMcp: true,
@@ -2292,13 +2318,30 @@ export class MastraFactory {
             ...(environmentBuilds ? { onEnvironmentSaved: environmentBuilds.onEnvironmentSaved } : {}),
           }).routes(),
           ...buildFeedEventsRoutes({ auth: routeAuth, projects: factoryProjectsStorage, pubsub: eventBus }),
+          // fork(claude-agent): agent runtimes: catalog, per-session choice, per-project default.
+          ...buildAgentRuntimeRoutes({
+            auth: routeAuth,
+            sessions: agentSessionsStorage,
+            events: agentEventHub.log,
+            projects: {
+              get: async args => {
+                if (!storage.isDomainReady('projects')) return null;
+                await factoryProjectsStorage.ensureReady();
+                return factoryProjectsStorage.get(args);
+              },
+            },
+          }),
           // fork(claude-agent): Factory's runtime-neutral session API.
           ...buildAgentSessionRoutes({
             auth: routeAuth,
             events: agentEventHub,
-            commands: createMastraCodeSessionCommands({
-              mastra: () => this.#prepared?.base.controller.getMastra(),
-              controllerId: CONTROLLER_ID,
+            commands: routeSessionCommands({
+              sessions: agentSessionsStorage,
+              runtimes: { [CLAUDE_AGENT_RUNTIME_ID]: claudeAgentSessions.commands() },
+              fallback: createMastraCodeSessionCommands({
+                mastra: () => this.#prepared?.base.controller.getMastra(),
+                controllerId: CONTROLLER_ID,
+              }),
             }),
           }),
           ...auditDomain.routes(),
@@ -2621,6 +2664,8 @@ export class MastraFactory {
     const channelShutdowns = this.#channelShutdowns;
     this.#channelShutdowns = [];
     const shutdownPromise = (async () => {
+      // fork(claude-agent): stop live Claude Code processes.
+      await this.#claudeAgentSessions?.shutdown().catch(() => undefined);
       const unsubscribeDispatchWakes = this.#unsubscribeDispatchWakes;
       this.#unsubscribeDispatchWakes = undefined;
       const unsubscribeSandboxEnvChanges = this.#unsubscribeSandboxEnvChanges;

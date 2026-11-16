@@ -4,3 +4,4 @@ export type { ClaudeAgentRuntimeState, ClaudeAgentSessionOptions, QueryFn } from
 export { createClaudeAgentSessionCommands } from './commands';
 export { claudeProcessEnv } from './env';
 export { FACTORY_MCP_SERVER, classifyClaudeTool, factoryToolName } from './tool-classification';
+export { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_MODELS } from './models';
