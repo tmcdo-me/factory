@@ -26,6 +26,9 @@ importers:
       '@factory/auth-oidc':
         specifier: link:../auth-oidc
         version: link:../auth-oidc
+      '@factory/runtime-claude-agent':
+        specifier: link:../runtime-claude-agent
+        version: link:../runtime-claude-agent
       '@factory/sandbox-sprites':
         specifier: link:../sandbox-sprites
         version: link:../sandbox-sprites

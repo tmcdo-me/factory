@@ -17,3 +17,22 @@ export { FACTORY_TOOLS_INSTRUCTIONS, createFactoryMcpServer, factoryMcpToolNames
 export type { ClaudeAgentFactoryTools, FactoryToolCall } from './factory-tools';
 export { FACTORY_SKILLS_PLUGIN, skillKickoffText, writeSkillsPlugin } from './skills';
 export type { ClaudeAgentSkill, ClaudeAgentSkills } from './skills';
+export { HOST_FILES } from './skills';
+export type { SkillFiles } from './skills';
+export {
+  CLAUDE_CODE_INSTALLER_URL,
+  CLAUDE_CODE_MANAGED_DIR,
+  bundledClaudeCodeChecksums,
+  bundledClaudeCodeVersion,
+  claudeCodeInstallScript,
+  ensureClaudeCode,
+  runInProcesses,
+} from './install';
+export type { InstalledClaudeCode, RunInSandbox } from './install';
+export {
+  LAUNCH_BINARY_MISMATCH,
+  LAUNCH_MANAGED_SETTINGS,
+  claudeCodeLaunchScript,
+  sandboxClaudeCodeLaunch,
+} from './launch';
+export type { ClaudeCodeLaunch } from './launch';

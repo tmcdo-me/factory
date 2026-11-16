@@ -2818,6 +2818,12 @@ importers:
         specifier: workspace:*
         version: link:../../workspaces/sprites
     devDependencies:
+      '@anthropic-ai/claude-agent-sdk':
+        specifier: 0.3.325
+        version: 0.3.325(@anthropic-ai/sdk@1.4.0(zod@4.6.7))(@modelcontextprotocol/sdk@1.32.1(@cfworker/json-schema@4.1.4)(supports-color@10.2.2)(zod@4.6.7))(zod@4.6.7)
+      '@factory/runtime-claude-agent':
+        specifier: workspace:*
+        version: link:../runtime-claude-agent
       '@internal/lint':
         specifier: workspace:*
         version: link:../../packages/_config
@@ -2839,6 +2845,9 @@ importers:
       vitest:
         specifier: 'catalog:'
         version: 5.1.0(@opentelemetry/api@1.10.0)(@types/node@22.19.15)(@vitest/coverage-v8@5.1.0)(@vitest/ui@5.1.0)(jsdom@30.1.3(@noble/hashes@2.4.0))(msw@2.15.0(@types/node@22.19.15)(typescript@7.0.2))(vite@8.3.5(@types/node@22.19.15)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.15)(yaml@2.9.1))
+      zod:
+        specifier: 4.6.7
+        version: 4.6.7
 
   mastracode/sdk:
     dependencies:

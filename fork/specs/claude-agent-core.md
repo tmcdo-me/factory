@@ -214,12 +214,12 @@ Runtimes never assume the checkout is on the Factory host: Claude Agent always l
 | Provider                     | `LocalFactorySandbox` (existing)       | `SpritesSandbox` from `@mastra/sprites` (existing, `workspaces/sprites`), wrapped as a `FactorySandbox`                                                   |
 | Isolation                    | none (host user)                       | Firecracker VM per session, persistent disk, auto-hibernate when idle                                                                                     |
 | `spawn`                      | `child_process.spawn`                  | `sprite.spawn()` from `@fly/sprites` — WebSocket exec with stdin/stdout/stderr, `kill`, `wait`                                                            |
-| Repo checkout                | `<root>/<sessionId>/<repo>`            | `/home/sprite/<repo>` (path TBD in slice), cloned by Factory's existing `materializeRepo` via `executeCommand`                                            |
-| Claude Code binary           | SDK-bundled                            | official installer in the sprite, **pinned to the SDK's bundled CLI version**, unmodified; installed once per sprite in the sandbox start hook            |
-| Credentials into sandbox     | process env                            | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`); never written to the sprite's disk by Factory                                               |
+| Repo checkout                | `<root>/<sessionId>/<repo>`            | `/home/sprite/<repo>` (the Sprite user's home, probed with `pwd`), cloned by Factory's existing materialization via `executeCommand`                      |
+| Claude Code binary           | SDK-bundled                            | official installer, **pinned to the SDK's CLI version** and its release SHA-256 (checked at every launch); installed before setup, no auto-update         |
+| Credentials into sandbox     | process env                            | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`), over the exec's stdin; never in the exec URL, argv or the sprite's disk                     |
 | Lifecycle                    | dir per session                        | one sprite per session, named from the session id; created lazily; destroyed when the session closes or its work item reaches Done; hibernates in between |
-| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk → `resume: sessionId` works                                                                                 |
-| Server config                | —                                      | `SPRITES_TOKEN` (Fly token), optional `FACTORY_SPRITES_ORG`/region; Node ≥ 24 (required by `@fly/sprites`)                                                |
+| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk (`~/.factory/claude-agent/.claude`) → `resume: sessionId` works                                             |
+| Server config                | —                                      | `SPRITES_TOKEN` (the Fly org's Sprites token), optional `FACTORY_SPRITES_REGION`; Node ≥ 24 (required by `@fly/sprites`)                                  |
 
 Selection: `FACTORY_SANDBOX_PROVIDER=local|sprites` as the deployment default, overridable per
 project. Platform and E2B sandbox paths are left in place but unsupported by this fork.
@@ -395,6 +395,29 @@ Each slice: implement → focused tests → manual check where noted → commit.
      and Sprites errors are rebuilt without the URL the SDK writes into them. `FACTORY_SPRITES_PREFIX`
      keeps deployments sharing a token apart; `scripts/list-orphan-sprites.mjs` lists Sprites no
      session owns; `stop()` kills the long-lived processes. Not yet checked against a live Sprite.
+   - **9b** ✅ Claude Agent on Sprites: `claude-agent-workspace.ts` runs Claude Code wherever the
+     session's sandbox can launch processes (`sessionSandboxProcesses`: the sandbox's own, or this
+     host's for a local one). In a Sprite, the web host's `prepare` installs Claude Code before the
+     clone and setup command run, with the official installer, pinned to the SDK's
+     `claudeCodeVersion` and verified against that release's SHA-256 from the SDK's `manifest.json`
+     (the same digests as downloads.claude.ai's), in `~/.factory/claude-agent`; every open verifies
+     it again (reinstalling a missing or changed binary, never running an unverified one), and every
+     launch checks the checksum and the absence of managed settings (`/etc/claude-code`) before
+     `exec`ing it. The install runs through the Sprite's processes with no environment. The
+     workspace's `launch` gives the SDK that binary and a `spawnClaudeCodeProcess` through the
+     Sprite. The environment is `claudeProcessEnv(…, { remote: true })`: Claude's credential, the
+     sandbox's git credentials and the locale, nothing of the host; it is read again at every
+     (re)start, after Factory's token refresh. An idle Claude Code stops after
+     `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS` (default 10 minutes), and one that ran 20 minutes restarts
+     after its run, so a stale `GH_TOKEN` never outlives it; the next turn resumes from the
+     transcript. Factory's skills plugin is written on the Sprite's filesystem; the in-process MCP
+     server needs nothing, as its traffic rides Claude Code's stdio (checked with the real binary
+     through a fake Sprite exec). Isolation is unchanged (`settingSources`, `CLAUDE_AGENT_ISOLATION`,
+     `strictMcpConfig`). Transcripts stay on the Sprite's disk, so `resume` works after a restart.
+     Not done: keeping `CLAUDE_CODE_OAUTH_TOKEN` from Claude's own tool processes (locally too);
+     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` forces the default permission mode and scrubs `GH_TOKEN` in
+     2.1.325. Not yet checked against a live Sprite (`mastracode/sandbox-sprites/README.md`, "Live
+     check").
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
@@ -423,6 +446,11 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT` | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
 | `FACTORY_CLAUDE_AGENT_EXECUTABLE`     | bundled        | Path to an installed `claude`                                                 |
 | `CLAUDE_CODE_OAUTH_TOKEN`             | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
+| `FACTORY_SANDBOX_PROVIDER`            | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |
+| `SPRITES_TOKEN`                       | unset          | Sprites API token of the Fly.io organization, for `sprites`                   |
+| `FACTORY_SPRITES_REGION`              | unset          | Region new session Sprites are created in (Sprites default when unset)        |
+| `FACTORY_SPRITES_PREFIX`              | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)    |
+| `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`  | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
 
 ## 9. Upstream
 
