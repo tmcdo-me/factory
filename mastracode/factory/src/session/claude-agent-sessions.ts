@@ -35,6 +35,9 @@ import {
 import type { MastraTools } from './claude-agent-tools.js';
 import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
 
+/** A session id usable as one folder name: no separators, no `.`/`..`. */
+const SAFE_SEGMENT = /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/;
+
 export interface ClaudeAgentSessionsDeps {
   hub: SessionEventHub;
   sessions: {
@@ -227,7 +230,10 @@ export class ClaudeAgentSessions {
     if (!home || !workspace.skills) return undefined;
     const skills = await factorySkillsOf(workspace.skills);
     if (!skills.length) return undefined;
-    return writeSkillsPlugin(join(home, 'factory-skills', encodeURIComponent(sessionId)), skills);
+    // The folder is deleted and rewritten on every start, so its name must be one plain segment.
+    if (!SAFE_SEGMENT.test(sessionId))
+      throw new Error(`Session id ${JSON.stringify(sessionId)} is not a safe folder name`);
+    return writeSkillsPlugin(join(home, 'factory-skills', sessionId), skills);
   }
 
   /** Start a turn, remembering the request it came with so its tool calls act as that caller. */

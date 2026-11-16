@@ -1,5 +1,5 @@
 // fork(claude-agent)
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -441,6 +441,28 @@ describe('ClaudeAgentSessions with Factory tools', () => {
       ]);
       expect(fake.options[0]!.tools).toContain('Skill');
       expect(await readFile(join(plugin, 'skills', 'factory-plan', 'SKILL.md'), 'utf8')).toContain('# Factory Plan');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('never uses an unsafe session id as the skills folder it deletes and rewrites', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-home-'));
+    try {
+      await writeFile(join(home, 'keep.txt'), 'operator data');
+      const source = new FactorySkillSource(new LocalSkillSource({ basePath: '/' }), [], undefined, async () => false);
+      const skills = new Workspace({ skillSource: source, skills: [FACTORY_SKILLS_MOUNT] }).skills;
+      const fake = toolCallingQuery(async () => {});
+      const { sessions } = toolSetup(fake.fn, {
+        home,
+        sessions: memoryStore([claude('..')]),
+        workspace: async () => ({ cwd: '/sandboxes/x/repo', env: {}, ...(skills ? { skills } : {}) }),
+      });
+      await expect(
+        sessions.commands().send('..', { text: 'plan' }, { context: hostContext('user-a') }),
+      ).rejects.toThrow(/not a safe folder name/);
+      expect(fake.options).toHaveLength(0); // Claude Code never started
+      expect(await readFile(join(home, 'keep.txt'), 'utf8')).toBe('operator data'); // `<home>/factory-skills/..` was not wiped
     } finally {
       await rm(home, { recursive: true, force: true });
     }
