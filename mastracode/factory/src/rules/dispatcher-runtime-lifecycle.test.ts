@@ -443,6 +443,25 @@ describe('run records on another agent runtime', () => {
     });
   });
 
+  it('ends the record of a parked run whose runtime cannot say how it goes on', async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService } = await building(storage);
+    const state = threadState();
+    const { audit, records } = auditLog();
+    const { runtime } = scriptedRuntime([() => ({ reason: 'awaiting_interaction' })]);
+    const { dispatcher } = dispatcherFor(storage, transitionService, runtime, { state: state.store, audit });
+
+    await dispatcher.runOnce(new Date());
+
+    expect(await decisionOf(storage)).toMatchObject({ status: 'succeeded' });
+    // Nothing would end it: its entry, renewal and record end now rather than linger.
+    await vi.waitFor(async () => expect(await state.ledger()).toEqual([]));
+    expect(records.map(record => [record.action, record.metadata.reason])).toEqual([
+      ['factory.run.started', undefined],
+      ['factory.run.ended', 'aborted'],
+    ]);
+  });
+
   it('keeps renewing a parked run on the ledger, so another dispatcher sees it live', async () => {
     const { workItems: storage } = await createFactoryStorageForTests();
     const { transitionService } = await building(storage);

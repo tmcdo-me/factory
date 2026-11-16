@@ -3383,7 +3383,7 @@ export class FactoryDecisionDispatcher {
               // Parked on a person (a plan to approve, a question), like a suspended Mastra Code run: its
               // turn goes on once they answer, and the card moves then.
               if (end.reason === 'awaiting_interaction') {
-                following = end.resumed;
+                following = end.resumed ?? Promise.resolve(end);
                 return;
               }
               ended = 'complete';
@@ -3447,8 +3447,11 @@ export class FactoryDecisionDispatcher {
         current = undefined;
         ctx.steps.push(...runtimeUsageSteps(end.usage));
         if (end.reason === 'awaiting_interaction') {
-          // Lost with its process if it never resumes: the ledger entry is then an orphan.
-          if (!end.resumed) return;
+          // A runtime that can't say how a parked run goes on: nothing will end it, so it ends here.
+          if (!end.resumed) {
+            ended = 'aborted';
+            break;
+          }
           current = end.resumed;
           continue;
         }

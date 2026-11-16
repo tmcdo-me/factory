@@ -759,7 +759,7 @@ describe('ClaudeAgentSessions board runs', () => {
       hub: new SessionEventHub(new InMemoryEventLog()),
       sessions: memoryStore([claude('s1')]),
       workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
-      host: { held: async () => false },
+      host: { held: async () => false, onLost: () => {} },
       query: fake.fn,
     });
     await expect(sessions.commands().send('s1', { text: 'hi' }, { context: undefined })).rejects.toMatchObject({
@@ -769,6 +769,52 @@ describe('ClaudeAgentSessions board runs', () => {
       sessions.runtimeSessions().kickoff('s1', { runId: 'd1', prompt: 'Build it.' }, owner()),
     ).rejects.toMatchObject({ code: 'session_unavailable' });
     expect(fake.options).toHaveLength(0);
+  });
+
+  it('stops its runs and opens no more once another Factory process takes Claude Agent over', async () => {
+    // A turn that runs until Claude Code is closed; closing ends its process (a signal exit).
+    const query: QueryFn = ({ prompt }) => {
+      let kill!: () => void;
+      const killed = new Promise<void>(resolve => (kill = resolve));
+      return Object.assign(
+        (async function* () {
+          for await (const _message of prompt) {
+            await killed;
+            throw new Error('Claude Code process exited with code 143');
+          }
+        })(),
+        { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(() => kill()) },
+      ) as never;
+    };
+    let holding = true;
+    let lose!: () => void;
+    const log = new InMemoryEventLog();
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      host: { held: async () => holding, onLost: listener => (lose = listener) },
+      query,
+    });
+    await sessions.commands().send('s1', { text: 'one' }, { context: undefined });
+
+    holding = false;
+    lose();
+
+    await vi.waitFor(async () => {
+      const events = (await log.list('s1')).map(e => e.event);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.ended', reason: 'aborted' }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'notice',
+          tag: 'run-stopped',
+          text: expect.stringContaining('another Factory process'),
+        }),
+      );
+    });
+    await expect(sessions.commands().send('s1', { text: 'two' }, { context: undefined })).rejects.toMatchObject({
+      code: 'session_unavailable',
+    });
   });
 
   it("says so when a session's runtime cannot be looked up, rather than guessing", async () => {

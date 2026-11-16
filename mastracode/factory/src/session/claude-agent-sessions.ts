@@ -107,7 +107,7 @@ export interface ClaudeAgentSessionsDeps {
    * Whether this process may run Claude Agent sessions: one process sharing the database does (see
    * `claudeAgentHostLease`). Without it every process may.
    */
-  host?: Pick<ClaudeAgentHost, 'held'>;
+  host?: Pick<ClaudeAgentHost, 'held' | 'onLost'>;
   hostEnv?: Record<string, string | undefined>;
   query?: QueryFn;
 }
@@ -165,6 +165,8 @@ export class ClaudeAgentSessions {
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
+    // Another process runs Claude Agent sessions now: stop this one's, and open no more (`#openSession`).
+    deps.host?.onLost(() => void this.#stopAll(HOST_LOST_NOTICE));
   }
 
   /** The live session, opening it if this session runs on Claude Agent. */
@@ -784,19 +786,26 @@ export class ClaudeAgentSessions {
    * down; a Claude Code the shutdown's signal reached first ends the same way (see `signalGraceMs`).
    */
   async shutdown(): Promise<void> {
+    await this.#stopAll(SHUTDOWN_NOTICE);
+  }
+
+  /** Close every Claude Code this process runs; a run in flight ends as stopped, saying `notice`. */
+  async #stopAll(notice: string): Promise<void> {
     const sessions = await Promise.allSettled(this.#live.values());
     this.#live.clear();
     this.#opened.clear();
     await Promise.allSettled(
-      sessions.flatMap(result =>
-        result.status === 'fulfilled' && result.value ? [result.value.close(SHUTDOWN_NOTICE)] : [],
-      ),
+      sessions.flatMap(result => (result.status === 'fulfilled' && result.value ? [result.value.close(notice)] : [])),
     );
   }
 }
 
 /** Why a run in flight stopped when the server shut down. */
 const SHUTDOWN_NOTICE = 'This run was stopped because the Factory server shut down or restarted.';
+
+/** Why a run in flight stopped when this process lost the right to run Claude Agent sessions. */
+const HOST_LOST_NOTICE =
+  'This run was stopped because another Factory process sharing this database now runs Claude Agent sessions.';
 
 /** How many started runs this process remembers for the replay guard. */
 const MAX_STARTED_RUNS = 1000;
