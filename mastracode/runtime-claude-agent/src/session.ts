@@ -6,6 +6,23 @@ import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runti
 
 import { ClaudeAgentEventMapper } from './event-mapper';
 
+/**
+ * Instruction files Claude Code would pick up from the folders above the session's checkout. It
+ * reads CLAUDE.md (and .claude/) from every parent of its working directory, so a checkout under
+ * the operator's home would load their personal `~/.claude/CLAUDE.md`. Only the repository's own
+ * instructions should apply.
+ */
+export function instructionFilesAbove(cwd: string): string[] {
+  const patterns: string[] = [];
+  let dir = cwd.replace(/\/+$/, '');
+  while (dir.includes('/') && dir !== '') {
+    dir = dir.slice(0, dir.lastIndexOf('/'));
+    const base = dir === '' ? '' : dir;
+    patterns.push(`${base}/CLAUDE.md`, `${base}/CLAUDE.local.md`, `${base}/AGENTS.md`, `${base}/.claude/**`);
+  }
+  return patterns;
+}
+
 /** Claude Code settings that keep a Factory session apart from the operator's own Claude setup. */
 export const CLAUDE_AGENT_ISOLATION = {
   disableClaudeAiConnectors: true,
@@ -168,7 +185,7 @@ export class ClaudeAgentSession {
         // Isolation: nothing of the operator's Claude account or install reaches the session beyond
         // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but the ones
         // Factory passes, no skills (bundled or the repository's), no auto-memory across sessions.
-        settings: { ...CLAUDE_AGENT_ISOLATION },
+        settings: { ...CLAUDE_AGENT_ISOLATION, claudeMdExcludes: instructionFilesAbove(options.cwd) },
         strictMcpConfig: true,
         skills: [],
         systemPrompt: {

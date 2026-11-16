@@ -4,7 +4,7 @@ import type { EventEnvelope, FactoryEvent } from '@factory/agent-runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { claudeProcessEnv } from './env';
-import { ClaudeAgentSession } from './session';
+import { ClaudeAgentSession, instructionFilesAbove } from './session';
 import type { QueryFn } from './session';
 
 const base = { session_id: 'claude-1', uuid: '00000000-0000-0000-0000-000000000000' } as const;
@@ -227,7 +227,12 @@ describe('ClaudeAgentSession', () => {
     await session.send({ text: 'hi' });
     await settled(events);
     expect(fake.calls[0]!.options).toMatchObject({
-      settings: { disableClaudeAiConnectors: true, disableBundledSkills: true, autoMemoryEnabled: false },
+      settings: {
+        disableClaudeAiConnectors: true,
+        disableBundledSkills: true,
+        autoMemoryEnabled: false,
+        claudeMdExcludes: expect.arrayContaining(['/work/CLAUDE.md', '/.claude/**']),
+      },
       strictMcpConfig: true,
       skills: [],
     });
@@ -326,6 +331,21 @@ describe('ClaudeAgentSession', () => {
       { type: 'text', text: 'look' },
       { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'aGk=' } },
     ]);
+  });
+});
+
+describe('instructionFilesAbove', () => {
+  it("excludes every parent folder's instructions, never the checkout's own", () => {
+    const patterns = instructionFilesAbove('/Users/tim/sandboxes/s1/repo/');
+    expect(patterns).toEqual(
+      expect.arrayContaining([
+        '/Users/tim/.claude/**', // the operator's personal ~/.claude/CLAUDE.md
+        '/Users/tim/CLAUDE.md',
+        '/Users/tim/sandboxes/s1/AGENTS.md',
+        '/CLAUDE.md',
+      ]),
+    );
+    expect(patterns.some(p => p.startsWith('/Users/tim/sandboxes/s1/repo/'))).toBe(false);
   });
 });
 
