@@ -91,30 +91,50 @@ class StdinEnvCommand extends EventEmitter implements SpriteCommandLike {
   }
 }
 
-/** The exec methods that bypass `spawn` and would put `env` in a URL. */
-const BLOCKED = new Set(['exec', 'execFile', 'execFileHTTP']);
+/**
+ * The Sprite methods Factory may call besides `spawn`: none of them starts a process or takes an
+ * environment. Every other method is refused: `exec`/`execFile`/`execFileHTTP`, `createSession`,
+ * `attachSession` and `createService` take `env` and reach the module-level `spawn` (or an HTTP
+ * exec) without this wrapper, so their environment would go in a URL.
+ */
+const ALLOWED = new Set([
+  'filesystem',
+  'createCheckpoint',
+  'listCheckpoints',
+  'getCheckpoint',
+  'restoreCheckpoint',
+  'delete',
+  'destroy',
+  'check',
+  'closeControlConnection',
+  'hasControlConnection',
+  'useControlMode',
+]);
 
 /**
  * The Sprite, with every exec's environment sent over stdin. `spawn(command, args, { env, cwd })`
- * runs `sh -c <stdinEnv script> command args…` with no `env` in the request; `exec`/`execFile`
- * (which would) are refused. Everything else (filesystem, checkpoints, delete) is the Sprite's own.
+ * runs `/bin/sh -c <stdinEnv script> command args…` with no `env` in the request. Only the methods
+ * in `ALLOWED` (filesystem, checkpoints, delete) pass through; any other is refused.
  */
 export function envOverStdin<T extends { spawn: SpriteSpawn }>(sprite: T): T {
   const spawn: SpriteSpawn = (command, args = [], options = {}) => {
     const { env, ...rest } = options;
     const { script, preamble } = stdinEnv(env ?? {});
-    return new StdinEnvCommand(sprite.spawn('sh', ['-c', script, command, ...args], rest), preamble);
+    // `sh` by absolute path, so neither the exec nor the preamble's `exec` finds another one on PATH.
+    const target = command === 'sh' ? '/bin/sh' : command;
+    return new StdinEnvCommand(sprite.spawn('/bin/sh', ['-c', script, target, ...args], rest), preamble);
   };
   return new Proxy(sprite, {
     get(target, property, receiver) {
       if (property === 'spawn') return spawn;
-      if (typeof property === 'string' && BLOCKED.has(property)) {
+      const value: unknown = Reflect.get(target, property, receiver);
+      if (typeof value !== 'function') return value;
+      if (typeof property !== 'string' || !ALLOWED.has(property)) {
         return () => {
-          throw new Error(`Sprite.${property} is not used by Factory: commands run through spawn`);
+          throw new Error(`Sprite.${String(property)} is not used by Factory: processes start through spawn`);
         };
       }
-      const value: unknown = Reflect.get(target, property, receiver);
-      return typeof value === 'function' ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+      return (value as (...args: unknown[]) => unknown).bind(target);
     },
   });
 }

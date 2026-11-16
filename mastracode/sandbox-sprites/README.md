@@ -42,8 +42,13 @@ Sprite handle is wrapped (`envOverStdin`), and every `spawn` (Factory's commands
 tools, the clone, a runtime's agent process) runs a short `sh` script instead. It reads one
 base64-encoded value per line from stdin, decodes and exports it under a name fixed in the script,
 and `exec`s the command, which inherits the rest of stdin. Values never appear in the URL, the
-process's argv, or on the Sprite's disk, and any value (newlines included) survives. The SDK's
-`exec`/`execFile`, which would put them in the URL, are refused.
+process's argv, or on the Sprite's disk, and any value (newlines included) survives. Only the
+system's own `base64` (`/usr/bin`, else `/bin`) decodes them, with PATH pinned to those directories
+while the preamble runs, so a `base64` planted on PATH never reads them; the command gets the PATH
+the exec had. `sh` itself is `/bin/sh`. Of the Sprite's other methods only those that start no
+process and take no environment pass through (filesystem, checkpoints, delete); `exec`,
+`execFile`, `execFileHTTP`, `createSession`, `attachSession`, `createService` and the rest are
+refused.
 
 Every error from an exec is rebuilt without the exec URL (`(url: …)`: the command line, `--settings`
 JSON, paths), so nothing of the request reaches tool output, Factory's events or the UI.

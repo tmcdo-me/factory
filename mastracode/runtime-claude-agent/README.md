@@ -67,7 +67,12 @@ inside it, with the same isolation as on the host:
 - **Lifetime:** `idleCloseMs` stops an idle Claude Code (Factory: `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`,
   default 10 minutes), so it no longer keeps its Sprite awake; `recycleAfterMs` (Factory: 20
   minutes) restarts one that ran long once its run ends, so a re-minted `GH_TOKEN` reaches it. The
-  next turn resumes the conversation in a new process.
+  next turn resumes the conversation in a new process, which starts only once the stopped one has
+  exited (two processes never share a transcript). Neither stop happens while Claude Code reports
+  background work (its `background_tasks_changed` level signal: background shells, subagents,
+  monitors; ambient watchers don't count), since stopping would kill it; the stop is armed again
+  when the work ends. The install and launch scripts run their checks with PATH pinned to the
+  system's own directories.
 - **Known gap:** Claude Code's tool processes (Bash, a repository's tests) inherit
   `CLAUDE_CODE_OAUTH_TOKEN`, here as on the host. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` exists in
   2.1.325 but is its CI hardening mode: it forces the permission mode to `default` and scrubs

@@ -1,4 +1,9 @@
-import { describe, expect, it } from 'vitest';
+import { existsSync } from 'node:fs';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { describe, expect, it, vi } from 'vitest';
 
 import { envOverStdin, redactSpriteError } from './sprite-exec';
 import { spawnInSprite } from './sprite-process';
@@ -73,7 +78,7 @@ describe('envOverStdin (over a fake Sprite exec that speaks stdio)', () => {
 
     expect(JSON.parse((await text).split('\n')[0]!)).toEqual(env);
     const [request] = raw.requests;
-    expect(request).toMatchObject({ command: 'sh', options: { cwd: '/' } });
+    expect(request).toMatchObject({ command: '/bin/sh', options: { cwd: '/' } });
     expect(request!.options).not.toHaveProperty('env');
     for (const value of ['sk-ant-oat-secret', SECRET, 'line two']) {
       expect(JSON.stringify(request)).not.toContain(value);
@@ -125,9 +130,71 @@ describe('envOverStdin (over a fake Sprite exec that speaks stdio)', () => {
     }
   });
 
-  it('refuses the exec calls that would put the environment in a URL', () => {
-    const { sprite } = sprites();
-    expect(() => (sprite.exec as () => void)()).toThrow(/not used by Factory/);
+  it('refuses every Sprite method that starts a process (or takes an env) outside spawn', () => {
+    const raw = fakeSpriteExec();
+    const real = {
+      spawn: raw.spawn,
+      name: 'factory-row-1',
+      exec: vi.fn(),
+      execFile: vi.fn(),
+      execFileHTTP: vi.fn(),
+      createSession: vi.fn(),
+      attachSession: vi.fn(),
+      createService: vi.fn(),
+      startService: vi.fn(),
+      filesystem: vi.fn(() => 'fs'),
+      createCheckpoint: vi.fn(async () => 'checkpoint'),
+    };
+    const sprite = envOverStdin(real);
+    for (const method of [
+      'exec',
+      'execFile',
+      'execFileHTTP',
+      'createSession',
+      'attachSession',
+      'createService',
+      'startService',
+    ] as const) {
+      expect(() => (sprite[method] as (...args: unknown[]) => void)('sh', [], { env: { GH_TOKEN: SECRET } })).toThrow(
+        /not used by Factory/,
+      );
+      expect(real[method]).not.toHaveBeenCalled();
+    }
+    expect(sprite.filesystem()).toBe('fs');
+    expect(sprite.name).toBe('factory-row-1');
+  });
+
+  it("decodes with the system's base64, never one planted on the Sprite's PATH, and keeps the command's PATH", async () => {
+    const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'planted-'));
+    try {
+      const caught = join(root, 'caught');
+      await writeFile(join(root, 'base64'), `#!/bin/sh\ncat >> '${caught}'\n`);
+      await chmod(join(root, 'base64'), 0o755);
+      const path = `${root}:/usr/bin:/bin`;
+      const raw = fakeSpriteExec({ path });
+      const sprite = envOverStdin({ spawn: raw.spawn });
+      // Node by absolute path: the Sprite's PATH here is only the planted directory and the system's.
+      const process = spawnInSprite(sprite.spawn, globalThis.process.execPath, [...ECHO, 'GH_TOKEN', 'PATH'], {
+        cwd: '/',
+        env: { GH_TOKEN: SECRET },
+      });
+      const text = output(process);
+      process.stdin.end();
+      expect(JSON.parse((await text).split('\n')[0]!)).toEqual({ GH_TOKEN: SECRET, PATH: path });
+      expect(existsSync(caught)).toBe(false);
+
+      // A PATH the caller gives is the command's, applied after the values are decoded.
+      const withPath = spawnInSprite(sprite.spawn, '/bin/sh', ['-c', 'printf %s "$PATH"'], {
+        cwd: '/',
+        env: { PATH: '/opt/tools/bin:/usr/bin:/bin', GH_TOKEN: SECRET },
+      });
+      const pathText = output(withPath);
+      withPath.stdin.end();
+      expect(await pathText).toBe('/opt/tools/bin:/usr/bin:/bin');
+      expect(existsSync(caught)).toBe(false);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
 

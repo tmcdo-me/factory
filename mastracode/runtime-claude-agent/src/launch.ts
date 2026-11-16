@@ -1,7 +1,7 @@
 import type { Options } from '@anthropic-ai/claude-agent-sdk';
 import type { SandboxProcesses } from '@factory/agent-runtime';
 
-import { CLAUDE_CODE_MANAGED_DIR, SHA256_SHELL, managedSettingsCheck } from './install';
+import { CLAUDE_CODE_MANAGED_DIR, SHA256_SHELL, SYSTEM_PATH, managedSettingsCheck } from './install';
 import type { InstalledClaudeCode } from './install';
 import type { SkillFiles } from './skills';
 
@@ -41,10 +41,16 @@ export function claudeCodeLaunchScript(
   if (!/^[a-f0-9]{64}$/.test(installed.checksum)) throw new Error('Not a SHA-256 digest');
   return [
     `bin='${installed.executable}'`,
+    // The checks use the system's own tools; Claude Code then gets the PATH the exec had.
+    '__factory_path=${PATH:-/usr/local/bin:/usr/bin:/bin}',
+    `PATH='${SYSTEM_PATH}'`,
     SHA256_SHELL,
     `[ -f "$bin" ] && [ "$(sha256 "$bin")" = '${installed.checksum}' ] || { echo "factory: the Claude Agent binary in this sandbox no longer matches its release checksum; refusing to start it" >&2; exit ${LAUNCH_BINARY_MISMATCH}; }`,
     managedSettingsCheck(options.managedDir ?? CLAUDE_CODE_MANAGED_DIR, LAUNCH_MANAGED_SETTINGS),
     'unset CLAUDE_CODE_MANAGED_SETTINGS_PATH',
+    'PATH=$__factory_path',
+    'export PATH',
+    'unset __factory_path',
     'exec "$bin" "$@"',
   ].join('\n');
 }

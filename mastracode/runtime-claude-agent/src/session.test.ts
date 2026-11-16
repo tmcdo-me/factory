@@ -770,3 +770,124 @@ describe('ClaudeAgentSession process lifetime', () => {
     expect(session.status()).toBe('idle');
   });
 });
+
+/**
+ * A fake Claude Code whose stream the test drives: each user message gets an init and the turn's
+ * scripted messages, and `emit` pushes a message between turns (as a background task's change does).
+ * `exitDelayMs` is how long the process takes to exit once closed.
+ */
+function drivenQuery(turns: SDKMessage[][], options: { exitDelayMs?: number } = {}) {
+  const calls: { startedAt: number }[] = [];
+  const exits: number[] = [];
+  let push: ((message: SDKMessage) => void) | undefined;
+  const fn: QueryFn = ({ prompt }) => {
+    calls.push({ startedAt: Date.now() });
+    const queue: SDKMessage[] = [];
+    let wake: (() => void) | undefined;
+    let ended = false;
+    push = message => {
+      queue.push(message);
+      wake?.();
+    };
+    void (async () => {
+      let turn = 0;
+      for await (const _message of prompt) for (const out of turns[turn++] ?? [init, result()]) push!(out);
+      await new Promise(resolve => setTimeout(resolve, options.exitDelayMs ?? 0));
+      ended = true;
+      exits.push(Date.now());
+      wake?.();
+    })();
+    const iterator = (async function* () {
+      for (;;) {
+        const next = queue.shift();
+        if (next) {
+          yield next;
+          continue;
+        }
+        if (ended) return;
+        await new Promise<void>(resolve => (wake = resolve));
+        wake = undefined;
+      }
+    })();
+    return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as unknown as Query;
+  };
+  return { fn, calls, exits, emit: (message: SDKMessage) => push?.(message) };
+}
+
+const backgroundTasks = (tasks: { task_id: string; ambient?: boolean }[]) =>
+  ({
+    ...base,
+    type: 'system',
+    subtype: 'background_tasks_changed',
+    tasks: tasks.map(task => ({ task_type: 'local_bash', description: 'npm test', ...task })),
+  }) as unknown as SDKMessage;
+
+describe('ClaudeAgentSession background work', () => {
+  function backgroundSetup(options: { idleCloseMs?: number; recycleAfterMs?: number; exitDelayMs?: number }) {
+    const events: FactoryEvent[] = [];
+    const fake = drivenQuery(
+      [
+        [init, backgroundTasks([{ task_id: 'bash-1' }]), result()],
+        [init, result()],
+      ],
+      { exitDelayMs: options.exitDelayMs ?? 0 },
+    );
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/work/s1',
+      env: { HOME: '/home/u' },
+      emit: event => events.push(event),
+      query: fake.fn,
+      ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
+      ...(options.recycleAfterMs !== undefined ? { recycleAfterMs: options.recycleAfterMs } : {}),
+    });
+    return { session, events, fake };
+  }
+
+  it('keeps an idle Claude Code running while its background task runs, and stops it after', async () => {
+    const { session, events, fake } = backgroundSetup({ idleCloseMs: 20 });
+    await session.send({ text: 'run the tests in the background' });
+    await settled(events);
+    await new Promise(resolve => setTimeout(resolve, 80));
+    expect(fake.exits).toHaveLength(0); // the task would have died with the process
+
+    fake.emit(backgroundTasks([]));
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    await session.close();
+  });
+
+  it('does not recycle while a background task runs, and recycles once it ends', async () => {
+    const { session, events, fake } = backgroundSetup({ recycleAfterMs: 0 });
+    await session.send({ text: 'run the tests in the background' });
+    await settled(events);
+    await new Promise(resolve => setTimeout(resolve, 50));
+    expect(fake.exits).toHaveLength(0);
+
+    fake.emit(backgroundTasks([]));
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    await session.close();
+  });
+
+  it('does not count ambient tasks (watchers, housekeeping) as work', async () => {
+    const { session, events, fake } = backgroundSetup({ idleCloseMs: 20 });
+    await session.send({ text: 'first' });
+    await settled(events);
+    fake.emit(backgroundTasks([{ task_id: 'watch', ambient: true }]));
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    await session.close();
+  });
+
+  it('starts the next Claude Code only once the stopped one has exited', async () => {
+    const { session, events, fake } = backgroundSetup({ recycleAfterMs: 0, exitDelayMs: 150 });
+    await session.send({ text: 'first' });
+    await settled(events);
+    fake.emit(backgroundTasks([])); // the task ends: the process is recycled, and takes 150 ms to exit
+    await new Promise(resolve => setTimeout(resolve, 10));
+    await session.send({ text: 'right away' });
+    await settled(events, 2);
+    expect(fake.calls).toHaveLength(2);
+    expect(fake.exits).toHaveLength(1);
+    expect(fake.calls[1]!.startedAt).toBeGreaterThanOrEqual(fake.exits[0]!);
+    await session.close();
+  });
+});

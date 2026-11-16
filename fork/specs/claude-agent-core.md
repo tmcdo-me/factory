@@ -409,8 +409,10 @@ Each slice: implement → focused tests → manual check where noted → commit.
      sandbox's git credentials and the locale, nothing of the host; it is read again at every
      (re)start, after Factory's token refresh. An idle Claude Code stops after
      `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS` (default 10 minutes), and one that ran 20 minutes restarts
-     after its run, so a stale `GH_TOKEN` never outlives it; the next turn resumes from the
-     transcript. Factory's skills plugin is written on the Sprite's filesystem; the in-process MCP
+     after its run, so a stale `GH_TOKEN` never outlives it (Factory re-mints tokens older than 10
+     minutes before a command); neither stop happens while Claude Code reports background shells or
+     subagents running (`background_tasks_changed`), and a new process starts only once the stopped
+     one exited; the next turn resumes from the transcript. Factory's skills plugin is written on the Sprite's filesystem; the in-process MCP
      server needs nothing, as its traffic rides Claude Code's stdio (checked with the real binary
      through a fake Sprite exec). Isolation is unchanged (`settingSources`, `CLAUDE_AGENT_ISOLATION`,
      `strictMcpConfig`). Transcripts stay on the Sprite's disk, so `resume` works after a restart.

@@ -62,7 +62,7 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
       root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'factory-sprite-e2e-'));
     });
     afterEach(async () => {
-      await rm(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 5 });
     });
 
     it('starts, serves Factory tools over its stdio, and loads the skills plugin', { timeout: 120_000 }, async () => {
@@ -145,8 +145,8 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
         // (verified against its release checksum); no environment in the exec request.
         expect(raw.requests).toHaveLength(1);
         const [request] = raw.requests;
-        expect(request).toMatchObject({ command: 'sh', options: { cwd } });
-        expect(request!.args.slice(2, 4)).toEqual(['sh', '-c']);
+        expect(request).toMatchObject({ command: '/bin/sh', options: { cwd } });
+        expect(request!.args.slice(2, 4)).toEqual(['/bin/sh', '-c']);
         expect(request!.args[4]).toContain(launch.pathToClaudeCodeExecutable);
         expect(request!.options).not.toHaveProperty('env');
         expect(execUrl(request!)).not.toContain(MARKER);

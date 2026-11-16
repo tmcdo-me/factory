@@ -39,6 +39,9 @@ export const CLAUDE_AGENT_ISOLATION = {
 export const SKILLS_INSTRUCTIONS =
   "Factory's skills are the `factory:*` skills (`factory-plan` is `factory:factory-plan`). When a skill says to read one of its files with `skill_read`, read that file from the skill's folder with Read.";
 
+/** How long a stopped Claude Code may take to exit before a new one starts anyway. */
+const STOP_EXIT_TIMEOUT_MS = 10_000;
+
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?: Options }) => Query;
 
 export interface ClaudeAgentSessionOptions {
@@ -168,8 +171,15 @@ export class ClaudeAgentSession {
   /** When the running Claude Code started. */
   #startedAt = 0;
   #idleTimer: ReturnType<typeof setTimeout> | undefined;
-  /** A start waiting on the environment (`env` as a function). */
+  /** A start waiting on the environment (`env` as a function), or on the previous process's exit. */
   #starting: Promise<void> | undefined;
+  /** A Claude Code stopped on purpose that is still exiting: a new one waits for it. */
+  #stopping: Promise<void> | undefined;
+  /**
+   * Background work Claude Code reports running (shells, subagents, monitors), from its
+   * `background_tasks_changed` level signal; the process is not stopped while there is any.
+   */
+  #background = new Set<string>();
 
   constructor(options: ClaudeAgentSessionOptions) {
     this.id = options.sessionId;
@@ -217,7 +227,7 @@ export class ClaudeAgentSession {
     }
     this.#clearIdle();
     const env = this.#options.env;
-    if (!this.#query && typeof env !== 'function') this.#start(env);
+    if (!this.#query && !this.#stopping && typeof env !== 'function') this.#start(env);
     else if (!this.#query || this.#starting) {
       // Turns sent while the environment is fetched queue behind the first, in order.
       try {
@@ -269,10 +279,10 @@ export class ClaudeAgentSession {
   /** Start Claude Code if it isn't running, asking `env` for the environment when it is a function. */
   async #ensureStarted(): Promise<void> {
     const env = this.#options.env;
-    if (typeof env !== 'function') return this.#start(env);
     if (this.#query && !this.#starting) return;
-    this.#starting ??= env()
-      .then(resolved => {
+    // Never two Claude Codes on one transcript: a stopped one finishes exiting first.
+    this.#starting ??= Promise.all([this.#stopping, typeof env === 'function' ? env() : env])
+      .then(([, resolved]) => {
         if (this.#closed) throw new Error(`Session ${this.id} is closed`);
         this.#start(resolved);
       })
@@ -287,10 +297,14 @@ export class ClaudeAgentSession {
     this.#idleTimer = undefined;
   }
 
-  /** After the last open run ended: recycle Claude Code now, or stop it once it stayed idle. */
+  /**
+   * After the last open run ended (or the last background task did): recycle Claude Code now, or
+   * stop it once it stayed idle. Never while it reports background work running: stopping it would
+   * kill that work; the stop is armed again when the work ends.
+   */
   #whenIdle(): void {
     this.#clearIdle();
-    if (this.#closed || this.#runs.length || !this.#query) return;
+    if (this.#closed || this.#runs.length || !this.#query || this.#background.size) return;
     const { recycleAfterMs, idleCloseMs } = this.#options;
     if (recycleAfterMs !== undefined && Date.now() - this.#startedAt >= recycleAfterMs) {
       this.#stopProcess();
@@ -299,7 +313,7 @@ export class ClaudeAgentSession {
     if (idleCloseMs === undefined || idleCloseMs <= 0) return;
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = undefined;
-      if (!this.#runs.length) this.#stopProcess();
+      if (!this.#runs.length && !this.#background.size) this.#stopProcess();
     }, idleCloseMs);
     this.#idleTimer.unref?.();
   }
@@ -311,11 +325,20 @@ export class ClaudeAgentSession {
   #stopProcess(): void {
     const query = this.#query;
     const input = this.#input;
+    const pump = this.#pump;
     if (!query) return;
     this.#query = undefined;
     this.#input = undefined;
     input?.close();
     query.close();
+    // Its messages end once the process exited; bounded, so a wedged exit can't hold the session.
+    const exited = Promise.race([
+      pump?.catch(() => undefined),
+      new Promise<void>(resolve => setTimeout(resolve, STOP_EXIT_TIMEOUT_MS).unref?.()),
+    ]).then(() => {
+      if (this.#stopping === exited) this.#stopping = undefined;
+    });
+    this.#stopping = exited;
   }
 
   #start(env: Record<string, string>): void {
@@ -381,6 +404,8 @@ export class ClaudeAgentSession {
     });
     this.#query = query;
     this.#startedAt = Date.now();
+    // The background-task level is per process: a new one starts with none.
+    this.#background.clear();
     this.#pump = this.#drain(query);
   }
 
@@ -421,6 +446,13 @@ export class ClaudeAgentSession {
 
   #handle(message: SDKMessage): void {
     if (message.type === 'system' && message.subtype === 'init') this.#claudeSessionId = message.session_id;
+    if (message.type === 'system' && message.subtype === 'background_tasks_changed') {
+      // REPLACE semantics; ambient tasks (watchers, housekeeping) are not work.
+      const had = this.#background.size;
+      this.#background = new Set(message.tasks.filter(task => !task.ambient).map(task => task.task_id));
+      if (had && !this.#background.size && !this.#runs.length) this.#whenIdle();
+      else if (this.#background.size) this.#clearIdle();
+    }
     const runId = this.#runs[0];
     const stopping = this.#aborting;
     for (const event of this.#mapper.map(message, { ...(runId ? { runId } : {}), stopping })) this.#options.emit(event);
