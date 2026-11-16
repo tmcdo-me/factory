@@ -115,6 +115,8 @@ function buildApp(user?: { workosId: string; organizationId: string }, options: 
   );
   app.get('/web/config/om', c => c.json({ reached: true }));
   app.post('/web/config/om/:role/model', async c => c.json({ reached: true, body: await adapterBody(c) }));
+  // fork(claude-agent): Factory's own session API.
+  app.all('/web/factory/sessions/:sessionId/*', c => c.json({ reached: true }));
   return app;
 }
 
@@ -197,6 +199,17 @@ describe('createSessionAccessGuard', () => {
     expect((await post(owner, sessionPath(SHARED_ID, 'model'), switchModel)).status).toBe(200);
     expect((await put(owner, sessionPath(SHARED_ID, 'state'), { state: { thinkingLevel: 'high' } })).status).toBe(200);
     expect((await post(teammate, sessionPath('teammate-scratch', 'model'), switchModel)).status).toBe(200);
+  });
+
+  // fork(claude-agent)
+  it.each(['events', 'transcript'])('guards Factory session /%s like the agent-controller routes', async suffix => {
+    const path = (id: string) => `/web/factory/sessions/${id}/${suffix}`;
+    expect((await teammate.request(path(PRIVATE_ID))).status).toBe(404);
+    expect((await owner.request(path(PRIVATE_ID))).status).toBe(200);
+    expect((await teammate.request(path(SHARED_ID))).status).toBe(200);
+    expect((await outsider.request(path(SHARED_ID))).status).toBe(404);
+    expect((await teammate.request(path(UNMOVED_SHARED_ID))).status).toBe(404);
+    expect((await buildApp().request(path(PRIVATE_ID))).status).toBe(404); // signed out
   });
 
   it('passes through a session on its own id that no Factory session row claims', async () => {
