@@ -40,6 +40,8 @@ describe('claudeProcessEnv for Claude Code in a sandbox', () => {
   it("passes Claude's credential and the sandbox's git credentials, and nothing of this host", () => {
     const env = claudeProcessEnv(host, { GH_TOKEN: 'ghs_sandbox' }, { home: installed.home, remote: true });
     expect(env).toEqual({
+      GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_NOSYSTEM: '1',
       LANG: 'en_US.UTF-8',
       CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
       GH_TOKEN: 'ghs_sandbox',
@@ -48,6 +50,14 @@ describe('claudeProcessEnv for Claude Code in a sandbox', () => {
       DISABLE_AUTOUPDATER: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
     });
+  });
+
+  // fork(claude-agent): live, `git ls-remote` in Claude's shell hung on Homebrew's system
+  // `credential.helper=osxkeychain` once HOME was Claude's own home.
+  it("keeps git in Claude's shell from prompting or using the host's system config", () => {
+    expect(claudeProcessEnv(host, {})).toMatchObject({ GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' });
+    // A sandbox that needs its system config can still say so.
+    expect(claudeProcessEnv(host, { GIT_CONFIG_NOSYSTEM: '0' })).toMatchObject({ GIT_CONFIG_NOSYSTEM: '0' });
   });
 
   it('still passes the host basics when Claude Code runs on this host', () => {

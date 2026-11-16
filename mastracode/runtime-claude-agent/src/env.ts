@@ -73,7 +73,15 @@ export function claudeProcessEnv(
   sandboxEnv: Record<string, string> = {},
   options: ClaudeProcessEnvOptions = {},
 ): Record<string, string> {
-  const env: Record<string, string> = {};
+  const env: Record<string, string> = {
+    // git in Claude's shell must never wait on a person. Nobody can answer a terminal prompt, and the
+    // host's system git config can name a credential helper that blocks: Homebrew's names
+    // `osxkeychain`, which hangs without a keychain session. The checkout's own config supplies
+    // credentials (`gh auth git-credential` with the sandbox's GH_TOKEN), so skip the system config
+    // and fail fast instead of prompting. Sandbox values below may still override these.
+    GIT_TERMINAL_PROMPT: '0',
+    GIT_CONFIG_NOSYSTEM: '1',
+  };
   for (const name of options.remote ? PASSTHROUGH : [...HOST_ONLY, ...PASSTHROUGH]) {
     const value = hostEnv[name];
     if (value) env[name] = value;
