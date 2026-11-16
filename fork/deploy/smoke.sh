@@ -86,10 +86,9 @@ code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$asset")
 docker exec "$name" factory-healthcheck && say "health check: ok" || fail "factory-healthcheck failed"
 users=$(docker top "$name" -o pid,uid,args | tail -n +2)
 echo "$users" | sed 's/^/  /'
-# tini (PID 1) stays root to forward signals; everything it starts runs as node.
-[ "$(echo "$users" | grep -v '/usr/bin/tini' | awk '$2 != 1000' | wc -l)" = 0 ] &&
-  [ "$(echo "$users" | grep -vc '/usr/bin/tini')" -ge 2 ] && say "the server's processes run as uid 1000" ||
-  fail "a server process runs as another user"
+# tini (PID 1), varlock and the server: all node's.
+[ "$(echo "$users" | awk '$2 != 1000' | wc -l)" = 0 ] && [ "$(echo "$users" | wc -l)" -ge 3 ] &&
+  say "every process runs as uid 1000, tini included" || fail "a process runs as another user"
 [ "$(docker exec "$name" stat -c %U /data/app/mastra.db)" = node ] && say "database owned by node" ||
   fail "the database is not node's"
 

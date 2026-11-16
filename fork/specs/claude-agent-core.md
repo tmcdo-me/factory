@@ -728,7 +728,7 @@ Each slice: implement → focused tests → manual check where noted → commit.
     hard-links what the bundle loads (dependencies, optional and peer dependencies from its imports,
     never dev dependencies; a missing one fails the build) into `/app`. The runtime stage is pinned
     Node 24 slim with tini, sqlite3 and tzdata; an entrypoint gives a fresh volume to `node` and
-    drops to it (setpriv), tini stays PID 1, and tini, varlock and node pass SIGTERM on to Factory's
+    drops to it (setpriv) before tini takes PID 1, and tini, varlock and node pass SIGTERM on to Factory's
     shutdown. One volume, `/data` (database and snapshots; no Claude Agent home, which a Sprite keeps
     on its own disk), and configuration from the environment only. `FACTORY_DEPLOYMENT=container`
     (set by the image) refuses to start unless sessions run on Sprites, and refuses the local

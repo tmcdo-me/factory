@@ -10,7 +10,7 @@ UI, the API and one libSQL file. `fork/ops/` is the same server as a LaunchAgent
 | `Dockerfile`               | The image. Build context: the repository root                                             |
 | `Dockerfile.dockerignore`  | Keeps the context to sources (no `node_modules`, build output, `.git`, `.env`, databases) |
 | `stage-runtime.mjs`        | Build step: hard-links what the server loads into `/app`, so the image has no build tools |
-| `factory-entrypoint.sh`    | After tini: gives a fresh `/data` to `node`, then runs the command as node                |
+| `factory-entrypoint.sh`    | Gives a fresh `/data` to `node`, then runs tini and the command as node                   |
 | `factory-snapshot.sh`      | Online, checked copy of the database onto the volume (`/usr/local/bin/factory-snapshot`)  |
 | `factory-sqlite-check.mjs` | `integrity_check` through libSQL, for a schema stock SQLite cannot parse (vector indexes) |
 | `factory-healthcheck.mjs`  | The image's health check, `GET /auth/me` (`/usr/local/bin/factory-healthcheck`)           |
@@ -51,9 +51,10 @@ The runtime stage is `node:24.22.2-trixie-slim`, pinned by version and index dig
 `factory-entrypoint`: a fresh volume is root's (a Fly volume, or a directory Docker created for a bind
 mount, hides the image's `/data`), so when `/data`, `/data/app` or `/data/backups` is not `node`'s it
 gives `/data` to node (`chown -R`, only then), and it replaces itself, through `setpriv`, with the
-command as `node` (uid 1000). The server is `tini -> varlock run -> node index.mjs` in the bundle's
-directory, as `mastra start` does; tini stays PID 1 (root, holding nothing) and forwards SIGTERM; varlock checks the environment against `.env.schema` and redacts the values it
-marks sensitive from the server's output; Factory's shutdown (`[factory] the server is shutting down;
+rest as `node` (uid 1000): `tini -> varlock run -> node index.mjs` in the bundle's directory, as `mastra
+start` does. tini is PID 1, as node like everything else (a root tini could not signal node's
+processes: the container has no `CAP_KILL`), and forwards SIGTERM; varlock checks the environment
+against `.env.schema` and redacts the values it marks sensitive from the server's output; Factory's shutdown (`[factory] the server is shutting down;
 stopping Factory first`) runs on the signal. Telemetry is off (`MASTRA_TELEMETRY_DISABLED`,
 `VARLOCK_TELEMETRY_DISABLED`, `DO_NOT_TRACK`).
 

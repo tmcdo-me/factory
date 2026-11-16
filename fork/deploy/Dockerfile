@@ -142,9 +142,10 @@ EXPOSE 5873
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 CMD ["factory-healthcheck"]
 
-# The chain is tini -> factory-entrypoint (exec'd away as setpriv, then the command, as node) -> varlock
-# -> node. varlock checks the environment against .env.schema and redacts the values it marks sensitive
+# The chain is factory-entrypoint (PID 1 as root for a moment: the volume's ownership, then exec'd away
+# through setpriv) -> tini (PID 1, as node) -> varlock -> node, every one of them node's: a root PID 1
+# could not signal them, since the container has no CAP_KILL. varlock checks the environment against .env.schema and redacts the values it marks sensitive
 # from the server's output; each step forwards SIGTERM and waits. The working directory is the
 # bundle's, as `mastra start` runs it.
-ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/factory-entrypoint"]
+ENTRYPOINT ["/usr/local/bin/factory-entrypoint", "/usr/bin/tini", "--"]
 CMD ["node", "/app/mastracode/web/node_modules/varlock/bin/cli.js", "run", "--path", "/app/mastracode/web/", "--", "node", "index.mjs"]

@@ -1,13 +1,14 @@
 #!/bin/sh
-# The image's entrypoint after tini (installed as /usr/local/bin/factory-entrypoint): makes sure the
-# data volume belongs to the server's user, then runs the command as that user. See
-# fork/deploy/README.md.
+# The image's entrypoint (installed as /usr/local/bin/factory-entrypoint), PID 1 for a moment: makes sure
+# the data volume belongs to the server's user, then replaces itself with tini and the command, as that
+# user. See fork/deploy/README.md.
 #
 # A fresh volume is root's: a Fly volume, or a bind mount Docker created, hides the image's own /data.
 # Started as root, this gives /data to `node` only when it, /data/app or /data/backups is not node's
 # already (so a restart does not walk the whole volume), then replaces itself, under setpriv as node,
-# with a shell that creates the two subdirectories if missing and execs the command. tini stays PID 1
-# and forwards SIGTERM to that command, so Factory's shutdown runs. Started as any other user (`user:` in compose), it only runs the command.
+# with a shell that creates the two subdirectories if missing and execs the rest (tini, then the
+# command). tini is then PID 1 as node and forwards SIGTERM to the command, so Factory's shutdown runs;
+# a root tini could not signal node's processes, the container having no CAP_KILL. Started as any other user (`user:` in compose), it only runs the command.
 # As root it needs CAP_CHOWN (only to fix ownership) and CAP_SETUID and CAP_SETGID.
 set -eu
 
