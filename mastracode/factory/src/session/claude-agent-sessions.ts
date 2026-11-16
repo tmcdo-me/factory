@@ -281,6 +281,8 @@ export class ClaudeAgentSessions {
           requestContext: current.requestContext,
           cwd: workspace.cwd,
           sessionId,
+          // fork(claude-agent): workspace-backed tools (git push, PRs) run in the session's sandbox.
+          ...(workspace.workspace ? { workspace: workspace.workspace } : {}),
         });
       } catch (error) {
         await this.#observe({ ...observed, status: 'error', error });

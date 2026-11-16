@@ -92,6 +92,30 @@ describe('runMastraTool', () => {
     expect(toolIdentity(turnContext())).toEqual({ orgId: 'local', userId: 'local' });
   });
 
+  // fork(claude-agent): live board run, source_control_push_branch failed with "The active Factory
+  // workspace has no executable sandbox." because the call carried no workspace.
+  it("gives a workspace-backed tool the session's workspace, as Mastra gives an agent's", async () => {
+    const sandbox = { executeCommand: vi.fn() };
+    const sessionWorkspace = { id: 'mfw-1', sandbox };
+    let seen: unknown;
+    const push = createTool({
+      id: 'source_control_push_branch',
+      description: 'd',
+      inputSchema: z.object({}),
+      execute: async (_input, execution) => {
+        seen = (execution as { workspace?: unknown }).workspace;
+        return { ok: true };
+      },
+    });
+    await runMastraTool('source_control_push_branch', push, {}, ctx().context, {
+      requestContext: turnContext(),
+      cwd,
+      sessionId: 'session-1',
+      workspace: sessionWorkspace,
+    });
+    expect(seen).toBe(sessionWorkspace);
+  });
+
   it('turns a rejected input into an error Claude sees', async () => {
     const strict = createTool({
       id: 'factory_strict',
