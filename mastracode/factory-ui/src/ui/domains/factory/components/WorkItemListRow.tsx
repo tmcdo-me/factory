@@ -19,7 +19,8 @@ import { BoardListRow } from './BoardListRow';
 import { SourceStateBadge } from './SourceStateBadge';
 import { WorkItemActivity } from './WorkItemActivity';
 import type { ReworkReason } from '../reworkReason';
-import { columnReviewVerdict, ReviewVerdictBadge, ReworkLine } from './WorkItemCardRows';
+import { pullRequestCiBadge } from '../pullRequestCi';
+import { columnReviewVerdict, PullRequestCiStatusBadge, ReviewVerdictBadge, ReworkLine } from './WorkItemCardRows';
 
 export function WorkItemListRow({
   item,
@@ -59,6 +60,8 @@ export function WorkItemListRow({
   const board = boardOf(useBoardCatalog(item.githubProjectId).data, item);
   const repository = useBoardRepository(item.githubProjectId);
   const verdict = columnReviewVerdict(item, columnStage, board);
+  // fork(claude-agent)
+  const ci = pullRequestCiBadge({ ...item.metadata, ...item.workItem?.metadata });
   return (
     <BoardListRow
       testId="work-item-card"
@@ -94,10 +97,11 @@ export function WorkItemListRow({
             <MetadataLabels metadata={sourceMetadata(item)} />
           </span>
         ),
-        status: (status.kind !== 'idle' || verdict || rework) && (
+        status: (status.kind !== 'idle' || verdict || rework || ci) && (
           <span className="flex min-w-0 items-center gap-2">
             <CardStatus status={status} compact />
             {verdict && <ReviewVerdictBadge verdict={verdict} />}
+            {ci && <PullRequestCiStatusBadge badge={ci} />}
             {rework && <ReworkLine rework={rework} />}
           </span>
         ),

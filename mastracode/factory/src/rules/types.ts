@@ -157,6 +157,8 @@ export const FACTORY_GITHUB_EVENTS = [
   'pullRequestReviewSubmitted',
   'pullRequestMerged',
   'pullRequestClosed',
+  // fork(claude-agent): the repository's own CI failed on the pull request's head (from the active poll).
+  'pullRequestChecksFailed',
 ] as const;
 export type FactoryGithubEventName = (typeof FACTORY_GITHUB_EVENTS)[number];
 
@@ -362,6 +364,27 @@ export interface FactoryGithubRuleContext extends FactoryRuleContextBase {
    * request-changes review whose body was edited to a new Factory verdict.
    */
   review?: { id: number; state: string; url: string; author?: string; body?: string };
+  /**
+   * fork(claude-agent): the repository's own checks that failed on the pull request's head
+   * (`pullRequestChecksFailed`). Names, conclusions and excerpts are the CI's, not Factory's: data.
+   */
+  checks?: {
+    headSha: string;
+    /** The failure, named so the same failure on a later push reads the same. */
+    signature: string;
+    failing: Array<{ name: string; conclusion: string; url?: string; excerpt?: string }>;
+  };
+  /**
+   * fork(claude-agent): how the project follows its pull requests' CI and reviews (Settings), and the
+   * fix attempts the card's run already made on this pull request.
+   */
+  ciFollow?: {
+    mode: 'off' | 'status' | 'autofix';
+    maxAttempts: number;
+    attempts: number;
+    /** Failures already sent back to the run (their signatures), oldest first. */
+    signatures: string[];
+  };
 }
 
 /**
@@ -688,6 +711,11 @@ export interface FactoryTransitionDecision extends FactoryCommitDecisionBase {
    * it has to start over.
    */
   reenter?: boolean;
+  /**
+   * fork(claude-agent): `required` holds the move for a person's approval (it waits in the inbox as a
+   * proposal), as an auto-fix past its attempts does.
+   */
+  consent?: 'required';
   /**
    * The status event this move answers. The project's intake routes on the card's board then
    * decide where the card goes instead, and this move applies only when no route on the board

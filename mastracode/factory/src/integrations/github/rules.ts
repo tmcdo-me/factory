@@ -183,6 +183,10 @@ export function boardEventFor(context: Pick<FactoryGithubRuleContext, 'event' | 
 
 function eventName(parsed: ParsedGithubWebhook): FactoryGithubEventName | undefined {
   const action = string(parsed.payload.action);
+  // fork(claude-agent): only the active pull request poll names failing checks (`factory_checks`).
+  if (parsed.event === 'check_suite' && action === 'completed' && object(parsed.payload.factory_checks)) {
+    return 'pullRequestChecksFailed';
+  }
   if (parsed.event === 'issues' && action === 'opened') return 'issueOpened';
   if (parsed.event === 'issues' && action === 'edited') {
     const changes = object(parsed.payload.changes);
@@ -443,6 +447,8 @@ function pullRequestProvenance(
 export interface GithubRulesIntegration {
   readonly rules: GithubEventRules;
   readonly slug?: string;
+  /** fork(claude-agent): each project's CI follow-up setting and fix attempts (set by the host). */
+  readonly ciFollow?: CiFollowSettings;
   /**
    * Factory's own GitHub login, used to ignore its own writes. Optional because
    * not every integration can name itself; when absent, self-recognition falls
@@ -469,6 +475,28 @@ export interface GithubRulesOptions {
   boards: BoardRegistry | ProjectBoardSource;
   /** Hands a push to a linked repository off for an environment build. */
   onRepositoryPush?: IntegrationHooks['onRepositoryPush'];
+  /** fork(claude-agent): how each project follows its pull requests' CI and reviews, and fix attempts. */
+  ciFollow?: CiFollowSettings;
+}
+
+/**
+ * fork(claude-agent): a project's setting for its pull requests' CI and reviews (`off`, `status`:
+ * the card shows CI, `autofix`: failures and review feedback go back to Build too), and the fix
+ * attempts its cards' runs made per pull request.
+ */
+export interface CiFollowSettings {
+  mode(project: { orgId: string; factoryProjectId: string }): Promise<'off' | 'status' | 'autofix'>;
+  /** Fix attempts most for one pull request before a person decides. */
+  maxAttempts: number;
+  attempts(key: CiFollowAttemptKey): Promise<{ attempts: number; signatures: string[] }>;
+  recordAttempt(key: CiFollowAttemptKey, signature: string | undefined): Promise<void>;
+}
+
+export interface CiFollowAttemptKey {
+  orgId: string;
+  factoryProjectId: string;
+  repositoryId: number;
+  pullRequestNumber: number;
 }
 
 /** Identity under which label and assignee syncs are recorded. */
@@ -883,6 +911,19 @@ export class GithubRules {
         ? undefined
         : resolvedItem;
     const intake = intakeTarget(this.#boards(project));
+    // fork(claude-agent): failing checks the poll named, and the project's CI follow-up setting.
+    const checks = checksOf(parsed.payload.factory_checks);
+    const attemptKey = pullRequestNumber
+      ? { orgId: project.orgId, factoryProjectId: project.factoryProjectId, repositoryId, pullRequestNumber }
+      : undefined;
+    const ciFollow =
+      this.options.ciFollow && attemptKey
+        ? {
+            mode: await this.options.ciFollow.mode(project),
+            maxAttempts: this.options.ciFollow.maxAttempts,
+            ...(await this.options.ciFollow.attempts(attemptKey)),
+          }
+        : undefined;
     const actor = await githubActor(this.options.github, {
       installationId,
       repository: repositoryName,
@@ -1060,6 +1101,9 @@ export class GithubRules {
               },
             }
           : {}),
+        // fork(claude-agent)
+        ...(checks ? { checks } : {}),
+        ...(ciFollow ? { ciFollow } : {}),
       };
       const boardEvent = boardEventFor(context);
       if (boardEvent) context.boardEvent = boardEvent;
@@ -1131,6 +1175,13 @@ export class GithubRules {
         const fresh = item ? await this.options.storage.get({ orgId: project.orgId, id: item.id }) : null;
         if (item && !fresh) return { status: 'missing' };
         return evaluate(fresh ?? undefined, ingressIdentity, pullRequestIntake, attempt + 1);
+      }
+      // fork(claude-agent): an auto-fix sent back to the run counts toward the pull request's attempts.
+      const autoFix = decisions.find(entry => String(entry.idempotencyKey ?? '').endsWith(':auto-fix'));
+      if (committed.status === 'committed' && autoFix && attemptKey && this.options.ciFollow) {
+        await this.options.ciFollow
+          .recordAttempt(attemptKey, checks?.signature)
+          .catch(error => console.warn('[factory] recording an auto-fix attempt failed', error));
       }
       return { status: committed.status };
     };
@@ -2514,6 +2565,8 @@ export function githubRulesOptions(
     configVersion: context.runtime.configVersion,
     boards: context.runtime.boards,
     ...(context.hooks?.onRepositoryPush ? { onRepositoryPush: context.hooks.onRepositoryPush } : {}),
+    // fork(claude-agent)
+    ...(github.ciFollow ? { ciFollow: github.ciFollow } : {}),
   };
 }
 
@@ -2535,4 +2588,27 @@ export function attachGithubReconciler(
   const options = githubRulesOptions(github, context);
   if (!options) return undefined;
   return createGithubPullRequestReconciler(options, fetchPullRequest);
+}
+
+/** fork(claude-agent): the failing checks a synthesized `check_suite` names, read as data. */
+function checksOf(value: unknown): FactoryGithubRuleContext['checks'] {
+  const checks = object(value);
+  const headSha = string(checks?.headSha);
+  const signature = string(checks?.signature);
+  if (!checks || !headSha || !signature || !Array.isArray(checks.failing)) return undefined;
+  const failing = checks.failing.flatMap(entry => {
+    const check = object(entry);
+    const name = string(check?.name);
+    const conclusion = string(check?.conclusion);
+    if (!name || !conclusion) return [];
+    return [
+      {
+        name: name.slice(0, 200),
+        conclusion: conclusion.slice(0, 40),
+        ...(string(check?.url) ? { url: string(check?.url)! } : {}),
+        ...(string(check?.excerpt) ? { excerpt: string(check?.excerpt)!.slice(0, 2_000) } : {}),
+      },
+    ];
+  });
+  return failing.length ? { headSha: headSha.toLowerCase(), signature, failing: failing.slice(0, 10) } : undefined;
 }

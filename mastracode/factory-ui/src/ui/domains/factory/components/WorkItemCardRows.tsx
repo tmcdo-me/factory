@@ -10,6 +10,8 @@ import type { BoardInfo } from '../boardFlow';
 import type { CardAction } from '../cardPrimaryAction';
 import { sourceMetadata } from '../boardItems';
 import { phaseLabel } from '../boardStages';
+import { pullRequestCiBadge } from '../pullRequestCi';
+import type { PullRequestCiBadge } from '../pullRequestCi';
 import { reviewVerdict, selfReviewVerdict } from '../reviewVerdict';
 import { reasonSummary } from '../reworkReason';
 import type { ReworkReason } from '../reworkReason';
@@ -60,6 +62,8 @@ export function WorkItemCardRows({
   const repository = useBoardRepository(item.githubProjectId);
   const otherStages = item.stages.filter(stage => stage !== columnStage);
   const verdict = columnReviewVerdict(item, columnStage, board);
+  // fork(claude-agent): the card's pull request's CI and reviews, as the active poll reads them.
+  const ci = pullRequestCiBadge({ ...item.metadata, ...item.workItem?.metadata });
 
   return (
     <>
@@ -104,10 +108,11 @@ export function WorkItemCardRows({
           ))}
         </div>
       )}
-      {(status.kind !== 'idle' || verdict || rework) && (
+      {(status.kind !== 'idle' || verdict || rework || ci) && (
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
           <CardStatus status={status} />
           {verdict && <ReviewVerdictBadge verdict={verdict} />}
+          {ci && <PullRequestCiStatusBadge badge={ci} />}
           {rework && <ReworkLine rework={rework} />}
         </div>
       )}
@@ -154,6 +159,15 @@ export function ReviewVerdictBadge({ verdict }: { verdict: ReviewVerdict }) {
       title={verdict.label}
     >
       <span className="truncate">{verdict.label}</span>
+    </Badge>
+  );
+}
+
+/** fork(claude-agent): the card's pull request's CI and reviews (`pullRequestCi`), as the active poll read them. */
+export function PullRequestCiStatusBadge({ badge }: { badge: PullRequestCiBadge }) {
+  return (
+    <Badge size="xs" variant={badge.tone} className="min-w-0" title={badge.detail ?? badge.label}>
+      <span className="truncate">{badge.label}</span>
     </Badge>
   );
 }

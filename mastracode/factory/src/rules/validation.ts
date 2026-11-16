@@ -267,11 +267,15 @@ export function validateFactoryRuleDecision(value: unknown, causalDepth = 0): Fa
     case 'transition': {
       assertExactKeys(
         value,
-        ['type', 'idempotencyKey', 'board', 'stage', 'message', 'reenter', 'event'],
+        ['type', 'idempotencyKey', 'board', 'stage', 'message', 'reenter', 'event', 'consent'],
         'Factory transition decision',
       );
       if (value.reenter !== undefined && typeof value.reenter !== 'boolean') {
         throw new FactoryRuleValidationError('Factory transition reenter must be a boolean.');
+      }
+      // fork(claude-agent)
+      if (value.consent !== undefined && value.consent !== 'required') {
+        throw new FactoryRuleValidationError("Factory transition consent must be 'required'.");
       }
       let message: { text: string; role?: string } | undefined;
       if (value.message !== undefined) {
@@ -295,6 +299,7 @@ export function validateFactoryRuleDecision(value: unknown, causalDepth = 0): Fa
         stage: boardIdentifier(value.stage, 'Factory transition stage'),
         ...(message ? { message } : {}),
         ...(value.reenter === true ? { reenter: true } : {}),
+        ...(value.consent === 'required' ? { consent: 'required' as const } : {}),
         ...(value.event !== undefined ? { event: boardEvent(value.event, 'Factory transition') } : {}),
       };
     }

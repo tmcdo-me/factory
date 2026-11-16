@@ -532,6 +532,7 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
           github,
           ingestFactoryEvent: options.ingestFactoryEvent,
           ...(github.eventClaims ? { eventClaims: github.eventClaims } : {}), // fork(claude-agent)
+          onChecksChanged: () => github.nudgeActivePoll?.(), // fork(claude-agent)
           ...(options.controller
             ? {
                 controller: options.controller,

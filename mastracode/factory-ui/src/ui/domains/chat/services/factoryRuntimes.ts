@@ -116,7 +116,30 @@ export const setClaudeAgentConcurrency = async (baseUrl: string, maxConcurrent: 
     'Setting the Claude Agent limit',
   );
 
+/** How a project follows its pull requests' CI and reviews. */
+export type CiFollowMode = 'off' | 'status' | 'autofix';
+
+export const fetchCiFollow = async (baseUrl: string, projectId: string) =>
+  json<{ mode: CiFollowMode; maxAttempts: number }>(
+    await fetch(`${baseUrl}/web/factory/projects/${encodeURIComponent(projectId)}/ci-follow`, {
+      credentials: 'include',
+    }),
+    'Loading how pull requests are followed',
+  );
+
+export const setCiFollow = async (baseUrl: string, projectId: string, mode: CiFollowMode) =>
+  json<{ mode: CiFollowMode; maxAttempts: number }>(
+    await fetch(`${baseUrl}/web/factory/projects/${encodeURIComponent(projectId)}/ci-follow`, {
+      method: 'PUT',
+      credentials: 'include',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ mode }),
+    }),
+    'Changing how pull requests are followed',
+  );
+
 export const runtimeKeys = {
+  ciFollow: (projectId: string) => ['factory-ci-follow', projectId] as const,
   catalog: ['factory-runtimes'] as const,
   claudeAgentConcurrency: ['factory-claude-agent-concurrency'] as const,
   session: (sessionId: string) => ['factory-session-runtime', sessionId] as const,

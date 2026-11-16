@@ -1,5 +1,7 @@
 // fork(claude-agent): a fast poll of the pull requests on cards in an active column, for a Factory
 // GitHub cannot reach (no webhooks). Spec §6, "Pull requests on active cards without webhooks".
+import { createHash } from 'node:crypto';
+
 import { NoopLeaseProvider } from '@mastra/core/events';
 import type { LeaseProvider } from '@mastra/core/events';
 import { MastraWorker } from '@mastra/core/worker';
@@ -8,6 +10,8 @@ import type { WorkerDeps } from '@mastra/core/worker';
 import { toBoardSource } from '../../boards/project-boards.js';
 import { pullRequestSources, workItemPhaseSemantics } from '../../boards/semantics.js';
 import type { Card } from '../../storage/domains/work-items/base.js';
+import { PULL_REQUEST_CI_METADATA_KEY, failureSignature, latestReviewStates, pullRequestCiStatus } from './pull-request-ci.js';
+import type { PullRequestCiMetadata } from './pull-request-ci.js';
 import { getLeaseProvider, reconcileTargets } from './reconcile-worker.js';
 import type { GithubReconcileRepositorySource } from './reconcile-worker.js';
 import { GithubRules, attachedPullRequestNumber, reconcilablePullRequestNumber } from './rules.js';
@@ -111,6 +115,26 @@ interface Seen {
   delivered: Set<string>;
   /** Only reviews and comments from then on are delivered. */
   since: number;
+  /** fork(claude-agent): each reviewer's latest standing review, from the last full listing. */
+  reviewStates?: Record<string, string>;
+  /** The head's check runs and commit statuses, as last read (per head: a push starts over). */
+  checks?: { sha: string; runsEtag?: string; statusEtag?: string; runs: Record<string, unknown>[]; statuses: Record<string, unknown>[] };
+  /** Failures already sent back to the card's run, by `<head> <signature>`. */
+  sentFailures?: Set<string>;
+}
+
+/** fork(claude-agent): how the poll follows a pull request's CI for its cards (Settings → Manage Factory). */
+export interface ActivePollCiFollow {
+  mode(project: { orgId: string; factoryProjectId: string }): Promise<'off' | 'status' | 'autofix'>;
+  /** Factory's own app: its check runs (review checks) aren't the repository's CI. */
+  ownApp?: string;
+}
+
+/** An active pull request: when its first card entered its column, its cards, and how its CI is followed. */
+interface ActivePullRequest {
+  enteredAt: number;
+  cards: Card[];
+  mode: 'off' | 'status' | 'autofix';
 }
 
 /**
@@ -135,6 +159,8 @@ export function createActivePullRequestPoll(
     get: ConditionalGithubGet;
     deliver(event: ParsedGithubWebhook): Promise<void>;
     now?: () => number;
+    /** fork(claude-agent): follow the head's CI for the card (status, and failures sent back to Build). */
+    ci?: ActivePollCiFollow;
   },
 ): GithubActivePullRequestPoll {
   const rules = new GithubRules(options);
@@ -168,15 +194,15 @@ export function createActivePullRequestPoll(
     const unread = new Set<number>();
     try {
       for (const repository of repositories) {
-        let active: Map<number, number>;
+        let active: Map<number, ActivePullRequest>;
         try {
-          active = await activePullRequests(options, rules, boards, repository);
+          active = await activePullRequests(options, rules, boards, repository, deps.ci);
         } catch (error) {
           unread.add(repository.id);
           fail(repository, error);
           continue;
         }
-        for (const [number, enteredAt] of active) {
+        for (const [number, { enteredAt, cards, mode }] of active) {
           const key = `${repository.id}:${number}`;
           kept.add(key);
           summary.pullRequests += 1;
@@ -187,6 +213,7 @@ export function createActivePullRequestPoll(
           }
           try {
             await pollPullRequest(repository, number, entry, deps, summary);
+            if (mode !== 'off') await followCi(options, repository, number, entry, cards, mode, deps, summary);
           } catch (error) {
             if (error instanceof GithubRateLimited) throw error;
             // The webhook has it in hand: this pull request is read again next tick.
@@ -215,16 +242,19 @@ async function activePullRequests(
   rules: GithubRules,
   boards: ReturnType<typeof toBoardSource>,
   repository: ReconcileRepository,
-): Promise<Map<number, number>> {
+  ci: ActivePollCiFollow | undefined,
+): Promise<Map<number, ActivePullRequest>> {
   const projects =
     repository.projects ??
     (await options.sourceControl.projectRepositories.listByExternalRepository({
       installationExternalId: String(repository.installationId),
       repositoryExternalId: String(repository.id),
     }));
-  const active = new Map<number, number>();
+  const active = new Map<number, ActivePullRequest>();
+  const rank = { off: 0, status: 1, autofix: 2 } as const;
   for (const project of projects) {
     await rules.loadBoards(project);
+    const mode = ci ? await ci.mode(project) : 'off';
     for (const item of await options.storage.listShared({
       orgId: project.orgId,
       factoryProjectId: project.factoryProjectId,
@@ -232,7 +262,12 @@ async function activePullRequests(
       if (workItemPhaseSemantics(boards.forProject(item), item)?.kind !== 'working') continue;
       const enteredAt = enteredCurrentPhaseAt(item);
       for (const number of boundPullRequests(item, repository)) {
-        active.set(number, Math.min(active.get(number) ?? enteredAt, enteredAt));
+        const known = active.get(number);
+        active.set(number, {
+          enteredAt: Math.min(known?.enteredAt ?? enteredAt, enteredAt),
+          cards: [...(known?.cards ?? []), item],
+          mode: known && rank[known.mode] > rank[mode] ? known.mode : mode,
+        });
       }
     }
   }
@@ -362,6 +397,7 @@ async function pollPullRequest(
 
   const reviews = await readAll(`${base}/pulls/${number}/reviews?per_page=100`, entry.reviews?.etag);
   if (reviews) {
+    entry.reviewStates = latestReviewStates(reviews.items);
     for (const review of reviews.items) {
       const id = `review:${String(review.id)}`;
       if (review.state === 'PENDING' || entry.delivered.has(id)) continue;
@@ -418,6 +454,109 @@ async function pollPullRequest(
     // Read from the newest on next time; a new `since` is a new listing, so its ETag starts over.
     entry.comments = newest > since ? { since: newest } : { since, ...(comments.etag ? { etag: comments.etag } : {}) };
   }
+}
+
+/**
+ * fork(claude-agent): the head's CI for the pull request's cards. Its check runs and commit statuses are
+ * read conditionally, as the rest; the status (with the reviews' standing) is written on each card
+ * when it changed; with auto-fix, a failure not yet sent back for this head goes to the board's rules
+ * as `pullRequestChecksFailed`, once. Only a same-repository head's checks count: a fork's CI is
+ * not the repository's own.
+ */
+async function followCi(
+  options: GithubRulesOptions,
+  repository: ReconcileRepository,
+  number: number,
+  entry: Seen,
+  cards: Card[],
+  mode: 'status' | 'autofix',
+  deps: Pick<Parameters<typeof createActivePullRequestPoll>[1], 'get' | 'deliver' | 'ci'>,
+  summary: ActivePullRequestPollSummary,
+): Promise<void> {
+  const pull = entry.pull;
+  const head = record(pull?.body.head);
+  const sha = typeof head.sha === 'string' ? head.sha.toLowerCase() : undefined;
+  if (!pull || !sha) return;
+  const sameRepository = record(head.repo).id === repository.id;
+  const read = async (path: string, etag: string | undefined) => {
+    const answer = await deps.get({ installationId: repository.installationId, path, ...(etag ? { etag } : {}) });
+    if (answer.status === 304) summary.notModified += 1;
+    else summary.fetched += 1;
+    return answer;
+  };
+  if (pull.state === 'open' && sameRepository) {
+    const known = entry.checks?.sha === sha ? entry.checks : undefined;
+    const base = `/repos/${repository.fullName}/commits/${sha}`;
+    const runs = await read(`${base}/check-runs?per_page=100`, known?.runsEtag);
+    const statuses = await read(`${base}/status`, known?.statusEtag);
+    entry.checks = {
+      sha,
+      ...(runs.status === 200 ? (runs.etag ? { runsEtag: runs.etag } : {}) : known?.runsEtag ? { runsEtag: known.runsEtag } : {}),
+      ...(statuses.status === 200
+        ? statuses.etag
+          ? { statusEtag: statuses.etag }
+          : {}
+        : known?.statusEtag
+          ? { statusEtag: known.statusEtag }
+          : {}),
+      runs: runs.status === 200 ? list(record(runs.data).check_runs) : (known?.runs ?? []),
+      statuses: statuses.status === 200 ? list(record(statuses.data).statuses) : (known?.statuses ?? []),
+    };
+  }
+  const computed = pullRequestCiStatus({
+    open: pull.state === 'open' && sameRepository,
+    checkRuns: entry.checks?.sha === sha ? entry.checks.runs : [],
+    statuses: entry.checks?.sha === sha ? entry.checks.statuses : [],
+    reviewStates: entry.reviewStates ?? {},
+    ...(deps.ci?.ownApp ? { ownApp: deps.ci.ownApp } : {}),
+  });
+  const metadata: PullRequestCiMetadata | null = computed
+    ? {
+        status: computed.status,
+        pullRequestNumber: number,
+        headSha: sha,
+        failing: computed.failing.map(({ excerpt: _excerpt, ...check }) => check),
+        updatedAt: new Date().toISOString(),
+      }
+    : null;
+  for (const card of cards) {
+    const current = card.metadata?.[PULL_REQUEST_CI_METADATA_KEY] as PullRequestCiMetadata | undefined;
+    const same =
+      (current ?? null) === null
+        ? metadata === null
+        : metadata !== null &&
+          current!.status === metadata.status &&
+          current!.headSha === metadata.headSha &&
+          current!.pullRequestNumber === metadata.pullRequestNumber &&
+          JSON.stringify(current!.failing) === JSON.stringify(metadata.failing);
+    if (same) continue;
+    await options.storage.syncCard({
+      orgId: card.orgId,
+      id: card.id,
+      userId: 'factory-ci',
+      patch: { metadata: { [PULL_REQUEST_CI_METADATA_KEY]: metadata } },
+    });
+  }
+  if (mode !== 'autofix' || computed?.status !== 'checks_failing') return;
+  const signature = failureSignature(computed.failing);
+  const sent = (entry.sentFailures ??= new Set());
+  const key = `${sha} ${signature}`;
+  if (sent.has(key)) return;
+  await deps.deliver({
+    event: 'check_suite',
+    deliveryId: `ci:${repository.id}:pull-request:${number}:${sha}:${createHash('sha256').update(signature).digest('hex').slice(0, 16)}`,
+    payload: {
+      action: 'completed',
+      installation: { id: repository.installationId },
+      repository: { id: repository.id, full_name: repository.fullName },
+      sender: { login: 'github' },
+      check_suite: { head_sha: sha, conclusion: 'failure' },
+      pull_request: pull.body,
+      factory_checks: { headSha: sha, signature, failing: computed.failing },
+    },
+  });
+  sent.add(key);
+  summary.delivered += 1;
 }
 
 function senderOf(user: unknown): Record<string, unknown> {
@@ -507,6 +646,14 @@ export class GithubActivePullRequestPollWorker extends MastraWorker {
     return this.#running;
   }
 
+  /** fork(claude-agent): poll again in a few seconds (a check webhook said something changed). */
+  nudge(): void {
+    if (!this.#running || this.#inFlight) return;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#timer = undefined;
+    this.#schedule(NUDGE_DELAY_MS);
+  }
+
   /** One poll now, under the lease (kept from the last tick, or taken). */
   async tick(): Promise<ActivePullRequestPollSummary | undefined> {
     if (!(await this.#lease())) return undefined;
@@ -562,6 +709,9 @@ export class GithubActivePullRequestPollWorker extends MastraWorker {
 }
 
 const LEASE_KEY = 'github:active-pull-request-poll';
+
+/** How soon a check webhook's nudge polls: a burst of check events is one poll. */
+const NUDGE_DELAY_MS = 5_000;
 
 /** The poll's interval from the environment: unset is the default, `0` is off (`undefined`). */
 export function activePullRequestPollInterval(value: string | undefined): number | undefined {

@@ -1489,6 +1489,8 @@ export class FactoryDecisionDispatcher {
   // `autoStartWhen` matches). Anything else waits for a person.
   async #needsApproval(record: FactoryDeferredDecisionRecord, decision: FactoryCommitDecision): Promise<boolean> {
     if (record.approvedAt !== null) return false;
+    // fork(claude-agent): a move the rule held for a person (an auto-fix past its attempts).
+    if (decision.type === 'transition' && decision.consent === 'required') return true;
     const boards = await this.#boards.load(record);
     if (!requestsConsent(boards, record, decision)) return false;
     const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;

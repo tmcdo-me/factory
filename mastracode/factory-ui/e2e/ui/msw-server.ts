@@ -61,6 +61,7 @@ export const server = setupServer(
       }),
   ),
   http.get('*/web/factory/projects/:id/runtime', () => HttpResponse.json({ runtimeId: 'mastra-code' })),
+  http.get('*/web/factory/projects/:id/ci-follow', () => HttpResponse.json({ mode: 'status', maxAttempts: 3 })),
   // Ambient run queue: no automated run waits for a slot. Run-queue tests override it with `server.use(...)`.
   http.get('*/web/factory/projects/:id/run-queue', () =>
     HttpResponse.json({ slots: null, running: 0, claimed: [], queuedCount: 0, queued: [] }),

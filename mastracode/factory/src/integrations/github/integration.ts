@@ -71,7 +71,7 @@ import {
   githubRulesOptions,
   openPullRequestLister,
 } from './rules.js';
-import type { ReconcileIssueState, ReconcilePullRequestState } from './rules.js';
+import type { CiFollowSettings, ReconcileIssueState, ReconcilePullRequestState } from './rules.js';
 import type { GitIdentity } from './sandbox.js';
 import {
   createGithubSubscriptionTools,
@@ -1423,12 +1423,20 @@ export class GithubIntegration implements FactoryIntegration {
       // The webhook is handling it right now: read it again next tick, in case that fails.
       if (outcome === 'busy') throw new GithubEventBusy(event.deliveryId);
     };
-    return new GithubActivePullRequestPollWorker({
-      poll: createActivePullRequestPoll(options, { get: input => this.conditionalGet(input), deliver }),
+    const ciFollow = this.ciFollow;
+    this.#activePollWorker = new GithubActivePullRequestPollWorker({
+      poll: createActivePullRequestPoll(options, {
+        get: input => this.conditionalGet(input),
+        deliver,
+        ...(ciFollow
+          ? { ci: { mode: project => ciFollow.mode(project), ...(this.slug ? { ownApp: this.slug } : {}) } }
+          : {}),
+      }),
       sourceControl: ctx.storage.sourceControl,
       intervalMs,
       ...(this.activePollPreferred ? { preferred: this.activePollPreferred } : {}),
     });
+    return this.#activePollWorker;
   }
 
   /**
@@ -1442,6 +1450,16 @@ export class GithubIntegration implements FactoryIntegration {
    * running Claude Agent sessions); another takes the poll's lease only once it was left free.
    */
   activePollPreferred: (() => Promise<boolean>) | undefined;
+
+  /** fork(claude-agent): each project's CI follow-up setting and its pull requests' fix attempts. */
+  ciFollow: CiFollowSettings | undefined;
+
+  #activePollWorker: GithubActivePullRequestPollWorker | undefined;
+
+  /** fork(claude-agent): a check finished or a status changed (a webhook): poll the active pull requests soon. */
+  nudgeActivePoll(): void {
+    this.#activePollWorker?.nudge();
+  }
 
   /** fork(claude-agent): a REST read conditional on its last ETag; a `304` is free against the rate limit. */
   readonly conditionalGet: ConditionalGithubGet = async ({ installationId, path, etag }) => {
