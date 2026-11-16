@@ -14,6 +14,7 @@ import { mkdirSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import type { IncomingHttpHeaders, Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { resolveAuthenticatedCredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
@@ -81,7 +82,7 @@ let otherRequests: string[] = [];
 let server: Server;
 const realFetch = globalThis.fetch;
 const savedEnv = { ...process.env };
-const appDataDir = join(process.env.TMPDIR ?? '/Volumes/Dev/tmp', `factory-claude-refusal-${process.pid}`);
+const appDataDir = join(tmpdir(), `factory-claude-refusal-${process.pid}`);
 
 beforeAll(async () => {
   server = createServer((req, res) => {
