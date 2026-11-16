@@ -712,6 +712,10 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       const boards = await this.boards.load(binding);
       if (!itemInRuleStage(boards, item) || isTerminalWorkItem(boards, item)) return;
       if (hasOpenPullRequest({ workItem: item.workItem, source: workItemSource(item.externalSource) })) return;
+      // Its pull request already has a card of its own (boards that file it separately): nothing to file.
+      const linked = await this.options.storage.listLinked({ item, limit: 100 });
+      if (linked.some(card => card.parentWorkItemId === item.id && card.externalSource?.type === 'pull-request'))
+        return;
       const url = await find(binding);
       if (!url) return;
       const callId = `own-branch-pull-request:${url}`;

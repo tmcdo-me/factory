@@ -2122,6 +2122,27 @@ describe("FactoryPhaseStateProcessor: the card's own pull request", () => {
     expect(findOwnBranchPullRequest).toHaveBeenCalledTimes(1);
   });
 
+  it('asks GitHub nothing when the pull request already has a card of its own', async () => {
+    const { processor, prepared, storage, findOwnBranchPullRequest } = await building({
+      ownBranchPullRequest: 'https://github.com/acme/repo/pull/17',
+    });
+    await storage.upsert({
+      orgId: 'org-1',
+      userId: 'user-1',
+      factoryProjectId: PROJECT_ID,
+      input: {
+        externalSource: pullRequest17,
+        parentWorkItemId: prepared.item.id,
+        title: 'PR 17',
+        stages: ['pr-review'],
+        sessions: {},
+        metadata: {},
+      },
+    });
+    await processor.attachOwnBranchPullRequest(prepared.binding);
+    expect(findOwnBranchPullRequest).not.toHaveBeenCalled();
+  });
+
   it('leaves the card be when its branch has no open pull request', async () => {
     const { processor, card, prepared, recordPullRequestProvenance } = await building();
     await processor.attachOwnBranchPullRequest(prepared.binding);
