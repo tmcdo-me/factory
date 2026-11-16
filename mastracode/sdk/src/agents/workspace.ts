@@ -276,20 +276,32 @@ export async function getDynamicWorkspace({
  * `search_content`, etc.). Returns `undefined` when no workspace can be resolved
  * (e.g. no project path), keeping the default judge text-only rather than
  * throwing inside the goal step.
+ *
+ * fork(claude-agent): `resolveWorkspace` is the host's own workspace (`createMastraCode`'s
+ * `workspace`), so the judge reads the files the agent works on and nothing else. Without it the
+ * judge built this module's default local workspace even for a host with its own, rooted at the
+ * session's `projectPath` on the server's filesystem (plus its temp directory) while the agent's
+ * checkout is in a remote sandbox such as a Sprite. A host workspace that resolves nothing leaves the
+ * judge text-only.
  */
 export async function getGoalJudgeTools({
   requestContext,
   mastra,
+  resolveWorkspace,
 }: {
   requestContext: RequestContext;
   mastra?: Mastra;
+  resolveWorkspace?: (args: { requestContext: RequestContext; mastra?: Mastra }) => Promise<Workspace | undefined>;
 }): Promise<ToolsInput | undefined> {
-  let workspace: Workspace;
+  let workspace: Workspace | undefined;
   try {
-    workspace = await getDynamicWorkspace({ requestContext, mastra });
+    workspace = resolveWorkspace
+      ? await resolveWorkspace({ requestContext, mastra })
+      : await getDynamicWorkspace({ requestContext, mastra });
   } catch {
     return undefined;
   }
+  if (!workspace) return undefined;
 
   const allTools = await createWorkspaceTools(workspace, { requestContext, workspace });
   const readonly: ToolsInput = {};

@@ -1528,7 +1528,20 @@ export async function createMastraCodeAgentController(config?: MastraCodeConfig)
       // find_files, file_stat, lsp_inspect) rather than grading prose alone —
       // restoring the original MastraCode judge's verification ability. Resolved
       // per-request from the active workspace (mirrors `judge`).
-      tools: getGoalJudgeTools,
+      // fork(claude-agent): the host's workspace when it passes one, never the default local one.
+      tools: ({ requestContext, mastra }) =>
+        getGoalJudgeTools({
+          requestContext,
+          mastra,
+          ...(config?.workspace !== undefined
+            ? {
+                resolveWorkspace: async args => {
+                  const configured = config.workspace;
+                  return typeof configured === 'function' ? await configured(args) : configured;
+                },
+              }
+            : {}),
+        }),
     },
     inputProcessors: ({ requestContext }) => {
       const resolveProcessors = (configured: InputProcessor[]) => [

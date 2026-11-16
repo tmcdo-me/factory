@@ -63,6 +63,41 @@ describe('getGoalJudgeTools', () => {
     }
   });
 
+  // fork(claude-agent): a host with its own workspace (Factory, whose checkouts may live in a Sprite)
+  // gets the judge's tools from that workspace, never a local one built from `projectPath`.
+  it("uses the host's workspace, and stays text-only when it resolves none", async () => {
+    const projectDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mastracode-goal-judge-project-'));
+    const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), 'mastracode-goal-judge-host-'));
+    try {
+      const { getGoalJudgeTools } = await import('../workspace.js');
+      const { Workspace, LocalFilesystem } = await import('@mastra/core/workspace');
+      const { createMastraCodeWorkspaceTools } = await import('../tool-availability.js');
+      const requestContext = createRequestContext(projectDir);
+
+      const none = vi.fn(async () => undefined);
+      expect(
+        await getGoalJudgeTools({ requestContext: requestContext as any, resolveWorkspace: none }),
+      ).toBeUndefined();
+      expect(none).toHaveBeenCalledWith(expect.objectContaining({ requestContext }));
+
+      const hostWorkspace = new Workspace({
+        id: 'host-workspace',
+        name: 'Host workspace',
+        filesystem: new LocalFilesystem({ basePath: hostDir }),
+        tools: createMastraCodeWorkspaceTools(false),
+      });
+      const tools = await getGoalJudgeTools({
+        requestContext: requestContext as any,
+        resolveWorkspace: async () => hostWorkspace,
+      });
+      expect(Object.keys(tools ?? {})).toContain('view');
+      for (const name of MUTATING) expect(Object.keys(tools ?? {})).not.toContain(name);
+    } finally {
+      await fs.rm(projectDir, { recursive: true, force: true });
+      await fs.rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
   it('returns undefined when no project path can be resolved (keeps judge text-only)', async () => {
     const { getGoalJudgeTools } = await import('../workspace.js');
     // Empty controller state → getDynamicWorkspace throws → resolver returns undefined.
