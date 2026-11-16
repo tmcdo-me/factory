@@ -39,7 +39,12 @@ export class ClaudeAgentEventMapper {
   /** The main agent's latest model call: its model and the size of the prompt it sent. */
   #lastCall: { model?: string; contextTokens?: number } = {};
 
-  map(message: SDKMessage, context: { runId?: string } = {}): FactoryEvent[] {
+  /**
+   * `stopping` is true while Factory is interrupting the turn (the person pressed stop). What Claude
+   * Code then reports as failures (the interrupted tool's result, the turn's `error_during_execution`)
+   * is the stop itself, not an error.
+   */
+  map(message: SDKMessage, context: { runId?: string; stopping?: boolean } = {}): FactoryEvent[] {
     const runId = context.runId ? { runId: context.runId } : {};
     switch (message.type) {
       case 'system':
@@ -53,7 +58,7 @@ export class ClaudeAgentEventMapper {
       case 'assistant':
         return this.#assistant(message, runId);
       case 'user':
-        return this.#toolResults(message);
+        return this.#toolResults(message, context.stopping === true);
       case 'result': {
         const usage = message.usage as unknown as Json;
         const { contextTokens } = this.#lastCall;
@@ -73,7 +78,8 @@ export class ClaudeAgentEventMapper {
             ...(contextWindow !== undefined ? { contextWindow } : {}),
           },
         ];
-        if (message.subtype !== 'success') {
+        // An interrupted turn ends with `error_during_execution`; when Factory stopped it, that is the stop.
+        if (message.subtype !== 'success' && !(context.stopping && message.subtype === 'error_during_execution')) {
           out.push({
             type: 'error',
             message: message.errors?.join('\n') || message.subtype,
@@ -268,7 +274,7 @@ export class ClaudeAgentEventMapper {
     return out;
   }
 
-  #toolResults(message: Extract<SDKMessage, { type: 'user' }>): FactoryEvent[] {
+  #toolResults(message: Extract<SDKMessage, { type: 'user' }>, stopping: boolean): FactoryEvent[] {
     const content = (message.message as unknown as Json).content;
     if (!Array.isArray(content)) return [];
     const out: FactoryEvent[] = [];
@@ -288,13 +294,16 @@ export class ClaudeAgentEventMapper {
       }
       out.push(
         block.is_error === true
-          ? { type: 'tool.ended', callId, error: text || 'Tool failed' }
+          ? // The interrupted tool's result is Claude Code's own rejection text; show the stop instead.
+            stopping
+            ? { type: 'tool.ended', callId, error: 'Stopped', stopped: true }
+            : { type: 'tool.ended', callId, error: text || 'Tool failed' }
           : { type: 'tool.ended', callId, result: structured ?? text },
       );
       if (this.#subagents.delete(callId)) {
         out.push(
           block.is_error === true
-            ? { type: 'subagent.ended', callId, error: text || 'Subagent failed' }
+            ? { type: 'subagent.ended', callId, error: stopping ? 'Stopped' : text || 'Subagent failed' }
             : { type: 'subagent.ended', callId, result: text },
         );
       }

@@ -74,6 +74,8 @@ export interface ToolItem {
   exit?: ToolExit;
   /** The human declined it, so it never ran (status is `error`). */
   denied?: boolean;
+  /** The person stopped the run while it was in flight (status is `error`); show it as stopped, not failed. */
+  stopped?: boolean;
   startedAt: string;
   endedAt?: string;
   /** `seq` of the `tool.ended` event; lets callers process results incrementally. */
@@ -233,6 +235,7 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
         error: event.error,
         ...(event.exit ? { exit: event.exit } : {}),
         ...(event.denied ? { denied: true } : {}),
+        ...(event.stopped ? { stopped: true } : {}),
         endedAt: at,
         endedSeq: seq,
       }));

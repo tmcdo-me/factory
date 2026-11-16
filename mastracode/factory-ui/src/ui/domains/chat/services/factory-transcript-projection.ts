@@ -166,11 +166,14 @@ function toolPart(tool: ToolItem): Part {
   const toolInvocation =
     tool.status === 'running'
       ? { ...base, state: 'call' }
-      : tool.denied
-        ? { ...base, state: 'output-denied', errorText: tool.error ?? 'Denied' }
-        : tool.status === 'error'
-          ? { ...base, state: 'output-error', errorText: tool.error ?? 'Tool failed' }
-          : { ...base, state: 'result', result: tool.result };
+      : // fork(claude-agent): a stop the person asked for is not a failure.
+        tool.stopped
+        ? { ...base, state: 'result', result: 'Stopped' }
+        : tool.denied
+          ? { ...base, state: 'output-denied', errorText: tool.error ?? 'Denied' }
+          : tool.status === 'error'
+            ? { ...base, state: 'output-error', errorText: tool.error ?? 'Tool failed' }
+            : { ...base, state: 'result', result: tool.result };
   return { type: 'tool-invocation', toolInvocation } as unknown as Part;
 }
 
@@ -180,8 +183,17 @@ function toolCall(tool: ToolItem): ToolCall {
     toolName: tool.name,
     argsText: tool.inputText,
     ...(tool.input !== undefined ? { args: tool.input } : {}),
-    status: tool.status,
-    ...(tool.status === 'error' ? { result: tool.error } : tool.result !== undefined ? { result: tool.result } : {}),
+    // fork(claude-agent): a stopped tool shows as stopped, not as a failure.
+    ...(tool.stopped
+      ? { status: 'done' as const, result: 'Stopped' }
+      : {
+          status: tool.status,
+          ...(tool.status === 'error'
+            ? { result: tool.error }
+            : tool.result !== undefined
+              ? { result: tool.result }
+              : {}),
+        }),
     output: tool.stdout + tool.stderr,
     createdAt: Date.parse(tool.startedAt) || undefined,
     ...(tool.exit

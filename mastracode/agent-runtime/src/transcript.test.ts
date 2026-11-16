@@ -131,7 +131,7 @@ describe('transcript reducer', () => {
     expect(unknown.lastSeq).toBe(3);
   });
 
-  it('streams tool input, records exits and denials, and keeps the latest progress', () => {
+  it('streams tool input, records exits, denials and stops, and keeps the latest progress', () => {
     const transcript = buildTranscript(
       's',
       envelopes(
@@ -144,6 +144,8 @@ describe('transcript reducer', () => {
         { type: 'tool.ended', callId: 'c1', result: 'x', exit: { code: 2, timedOut: true } },
         { type: 'tool.started', callId: 'c2', name: 'push', category: 'factory', executor: 'factory', input: {} },
         { type: 'tool.ended', callId: 'c2', denied: true },
+        { type: 'tool.started', callId: 'c3', name: 'ask_user', category: 'factory', executor: 'factory', input: {} },
+        { type: 'tool.ended', callId: 'c3', error: 'Stopped', stopped: true },
       ),
     );
     expect(transcript.items).toMatchObject([
@@ -156,6 +158,7 @@ describe('transcript reducer', () => {
         status: 'done',
       },
       { callId: 'c2', status: 'error', denied: true },
+      { callId: 'c3', status: 'error', error: 'Stopped', stopped: true },
     ]);
   });
 

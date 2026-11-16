@@ -263,7 +263,8 @@ export class ClaudeAgentSession {
   #handle(message: SDKMessage): void {
     if (message.type === 'system' && message.subtype === 'init') this.#claudeSessionId = message.session_id;
     const runId = this.#runs[0];
-    for (const event of this.#mapper.map(message, runId ? { runId } : {})) this.#options.emit(event);
+    const stopping = this.#aborting;
+    for (const event of this.#mapper.map(message, { ...(runId ? { runId } : {}), stopping })) this.#options.emit(event);
     if (message.type !== 'result' || !runId) return;
     this.#runs.shift();
     const reason: RunEndReason = this.#aborting ? 'aborted' : message.subtype === 'success' ? 'complete' : 'error';
