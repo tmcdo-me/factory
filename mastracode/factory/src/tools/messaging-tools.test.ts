@@ -2,6 +2,8 @@ import { InMemoryNotificationsStorage } from '@mastra/core/notifications';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
 import { describe, expect, it, vi } from 'vitest';
 
+import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
+import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
 import type { FactoryRunBindingRecord, WorkItemSubscription } from '../storage/domains/work-items/base.js';
 import { createProviderWorkItemForTests } from '../storage/test-utils.js';
@@ -77,6 +79,8 @@ function setup({
   busy = [] as string[],
   /** fork(claude-agent): sessions that run on Claude Agent, reached through the runtime. */
   claude = [] as string[],
+  /** fork(claude-agent): whether the runtime keeps their messages across a restart. */
+  durable = false,
 } = {}) {
   const notifications = new InMemoryNotificationsStorage();
   const sent: Array<{ input: SendNotificationSignalInput; target: { resourceId: string; threadId: string } }> = [];
@@ -115,12 +119,46 @@ function setup({
     ...claude.map(id => [id, row(id)]),
   ]);
   let claudeRuns = 0;
+  // As Claude Agent sessions keep them: what each was told, and what waits for its next turn.
+  const claudeMessages = new InMemoryAgentMessages();
   const runtime = {
     runs: async (sessionId: string) => claude.includes(sessionId),
     isRunning: () => false,
-    message: vi.fn(async (_sessionId: string, message: { wake: boolean }) =>
-      message.wake ? { runId: `run-${++claudeRuns}` } : {},
+    message: vi.fn(
+      async (
+        sessionId: string,
+        message: Parameters<FactoryRuntimeSessions['message']>[1],
+      ): Promise<{ runId?: string }> => {
+        const kept = {
+          id: message.delivery?.id ?? `message-${claudeRuns}`,
+          sessionId,
+          source: message.source,
+          text: message.text,
+          attributes: { ...message.attributes, ...(message.delivery ? { id: message.delivery.id } : {}) },
+          ...(message.delivery ? { delivery: message.delivery } : {}),
+          createdAt: new Date(),
+        };
+        if (!message.wake) {
+          await claudeMessages.hold(kept, 20);
+          return {};
+        }
+        await claudeMessages.told(kept);
+        return { runId: `run-${++claudeRuns}` };
+      },
     ),
+    deliveries: {
+      durable,
+      get: (sessionId: string, id: string) => claudeMessages.get(sessionId, id),
+      recentOnThread: (threadId: string, limit: number) => claudeMessages.recentOnThread(threadId, limit),
+      claimReply: vi.fn((sessionId: string, id: string, leaseUntil: Date) =>
+        claudeMessages.claimReply(sessionId, id, leaseUntil),
+      ),
+      extendReply: vi.fn((sessionId: string, id: string, leaseUntil: Date) =>
+        claudeMessages.extendReply(sessionId, id, leaseUntil),
+      ),
+      confirmReply: vi.fn((sessionId: string, id: string) => claudeMessages.confirmReply(sessionId, id)),
+      releaseReply: vi.fn((sessionId: string, id: string) => claudeMessages.releaseReply(sessionId, id)),
+    },
   };
   const deps: FactoryMessagingToolDependencies = {
     sessions: {
@@ -185,6 +223,9 @@ function setup({
     run,
     dropThreads: () => {
       threadsGone = true;
+    },
+    restoreThreads: () => {
+      threadsGone = false;
     },
     ageDeliveredRecords: (createdAt: Date) => {
       createdAtOverride = createdAt;
@@ -324,7 +365,7 @@ describe('factory_signal_session', () => {
     for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
       await expect(
         run(USER, 'factory_signal_session', { sessionId: 'session-claude', message: `ping ${i}` }),
-      ).resolves.toMatchObject({ delivered: 'woken', notificationId: `run-${i + 1}` });
+      ).resolves.toMatchObject({ delivered: 'woken', notificationId: expect.any(String) });
     }
     await expect(
       run(USER, 'factory_signal_session', { sessionId: 'session-claude', message: 'again' }),
@@ -1038,6 +1079,244 @@ describe('Factory toolset composition', () => {
     ]) {
       expect(tools[name]?.requireApproval).toBeFalsy();
       expect(FACTORY_TOOLS_WITHOUT_APPROVAL).toContain(name);
+    }
+  });
+});
+
+// fork(claude-agent)
+describe('factory_message_origin in a Claude Agent session', () => {
+  /** A Claude Agent session's turn: its thread is its own id. */
+  const CLAUDE: FactoryToolScope = {
+    ...WORKER,
+    sessionId: 'session-claude',
+    resourceId: 'session-claude',
+    threadId: 'session-claude',
+  };
+
+  async function messaged(env: ReturnType<typeof setup>, priority: 'medium' | 'low' = 'medium') {
+    const sent = (await env.run(USER, 'factory_signal_session', {
+      sessionId: 'session-claude',
+      message: 'Is the build green?',
+      priority,
+    })) as { notificationId: string; delivered: string };
+    return sent;
+  }
+
+  it('answers a message it received on the sender’s thread, once, as a Mastra Code session would', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    // Claude reads the message under the id the sender was given.
+    const runtime = (await env.deps.messaging())!.runtime!;
+    expect(vi.mocked(runtime.message).mock.calls[0]![1]).toMatchObject({
+      attributes: { kind: 'message', 'from-session': 'session-1' },
+      delivery: { id: notificationId, kind: 'message', priority: 'medium', sourceId: 'session-1' },
+    });
+
+    const result = await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Yes, all green.',
+      inReplyTo: notificationId,
+      status: 'done',
+    });
+
+    expect(result).toEqual({ notificationId: expect.any(String), delivered: 'woken' });
+    expect(env.sent.at(-1)!.target).toEqual({ resourceId: 'session-1', threadId: 'thread-session-1' });
+    const [reply] = await env.notifications.listNotifications({ threadId: 'thread-session-1' });
+    expect(reply).toMatchObject({
+      kind: 'reply',
+      priority: 'high',
+      attributes: {
+        'from-session': 'session-claude',
+        'from-thread': 'session-claude',
+        'in-reply-to': notificationId,
+        status: 'done',
+      },
+    });
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Still green.', inReplyTo: notificationId }),
+    ).rejects.toThrow(`You already answered ${notificationId}.`);
+  });
+
+  it('answers a message held for its next turn', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const held = await messaged(env, 'low');
+    expect(held).toMatchObject({
+      delivered: 'held',
+      notificationId: expect.any(String),
+      note: "It waits in this server's memory for the session's next turn; a server restart would lose it.",
+    });
+
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Will do.', inReplyTo: held.notificationId }),
+    ).resolves.toMatchObject({ delivered: 'woken' });
+  });
+
+  it('answers only what reached this session, and only messages', async () => {
+    const env = setup({ claude: ['session-claude', 'session-claude-2'] });
+    const { notificationId } = await messaged(env);
+
+    await expect(
+      env.run(
+        { ...CLAUDE, sessionId: 'session-claude-2', resourceId: 'session-claude-2', threadId: 'session-claude-2' },
+        'factory_message_origin',
+        { message: 'Not mine.', inReplyTo: notificationId },
+      ),
+    ).rejects.toThrow(`No message ${notificationId} was sent to this session.`);
+    await expect(env.run(CLAUDE, 'factory_message_origin', { message: 'Hm.', inReplyTo: 'made-up' })).rejects.toThrow(
+      'No message made-up was sent to this session.',
+    );
+  });
+
+  it('counts replies to a Claude Agent session toward the cap, from what its runtime kept', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.run(USER, 'factory_signal_session', {
+        sessionId: 'session-claude',
+        message: `ping ${i}`,
+        priority: 'low',
+      });
+    }
+    // Held, not woken, and still counted: the cap limits how fast a sender fills the session's turns.
+    await expect(
+      env.run(USER, 'factory_signal_session', { sessionId: 'session-claude', message: 'again', priority: 'low' }),
+    ).resolves.toMatchObject({ delivered: 'queued' });
+  });
+
+  it('says a held message survives a restart only where the runtime keeps it so', async () => {
+    const env = setup({ claude: ['session-claude'], durable: true });
+    await expect(messaged(env, 'low')).resolves.toMatchObject({
+      delivered: 'held',
+      note: "It waits for the session's next turn, kept even across a server restart.",
+    });
+  });
+
+  it('lets only one of two answers sent together through', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    const results = await Promise.allSettled([
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Also green.', inReplyTo: notificationId }),
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.message).toBe(
+      `You already answered ${notificationId}.`,
+    );
+    const replies = await env.notifications.listNotifications({ threadId: 'thread-session-1' });
+    expect(replies.filter(record => record.kind === 'reply')).toHaveLength(1);
+  });
+
+  it("lets it answer again when its answer couldn't be sent", async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    env.dropThreads();
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+    ).rejects.toThrow('not available');
+    env.restoreThreads();
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+    ).resolves.toMatchObject({ delivered: 'woken' });
+  });
+
+  it("leaves a Mastra Code session's answers to the notification store, as before", async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const sent = (await env.run(USER, 'factory_signal_session', { sessionId: 'session-b', message: 'Hi?' })) as {
+      notificationId: string;
+    };
+    await env.run(WORKER, 'factory_message_origin', { message: 'Hi.', inReplyTo: sent.notificationId });
+    const runtime = (await env.deps.messaging())!.runtime!;
+    expect(runtime.deliveries!.claimReply).not.toHaveBeenCalled();
+  });
+
+  it('lets an answer through once a claim left by a stopped server lapses, not before', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    // Claimed, then the server stopped before the answer went out.
+    await deliveries.claimReply('session-claude', notificationId, new Date(Date.now() + 60_000));
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+    ).rejects.toThrow(`You already answered ${notificationId}.`);
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.now() + 2 * 60_000) });
+    try {
+      await expect(
+        env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+      ).resolves.toMatchObject({ delivered: 'woken' });
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(deliveries.confirmReply).toHaveBeenCalledWith('session-claude', notificationId);
+  });
+
+  it('lets an answer queued past the rate limit, then lost to a restart, be sent again', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    // The session already sent its fill to the sender's thread.
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { delivered: string; deliverAt: string };
+    expect(queued.delivered).toBe('queued');
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    // Held while it waits: a second answer now is refused.
+    expect(deliveries.extendReply).toHaveBeenCalledWith('session-claude', notificationId, expect.any(Date));
+    await expect(
+      env.run(CLAUDE, 'factory_message_origin', { message: 'Green!', inReplyTo: notificationId }),
+    ).rejects.toThrow(`You already answered ${notificationId}.`);
+
+    // The server restarted and the queue went with it; once the lease is past, it can answer again.
+    // (Here the queue is still there: it would send its copy when its window opens.)
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 16 * 60_000) });
+    try {
+      await expect(
+        env.run(CLAUDE, 'factory_message_origin', { message: 'Green.', inReplyTo: notificationId }),
+      ).resolves.toMatchObject({ delivered: 'woken' });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('confirms a queued answer once it goes out', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { deliverAt: string };
+    const deliveries = (await env.deps.messaging())!.runtime!.deliveries!;
+    expect(deliveries.confirmReply).not.toHaveBeenCalled();
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 1000) });
+    try {
+      await vi.waitFor(() => expect(deliveries.confirmReply).toHaveBeenCalledWith('session-claude', notificationId), {
+        timeout: QUEUE_WAIT_MS * 3,
+      });
+    } finally {
+      vi.useRealTimers();
     }
   });
 });

@@ -1,4 +1,5 @@
 // fork(claude-agent): Factory's live Claude Agent sessions.
+import { randomUUID } from 'node:crypto';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +36,8 @@ import type { RequestContext } from '@mastra/core/request-context';
 
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeRunUsage } from '../rules/runtime-sessions.js';
+import type { AgentMessage, AgentMessageStore } from '../storage/domains/agent-messages/base.js';
+import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { withWorkItemDescription } from '../work-items/description-context.js';
 import type { ClaudeAgentContext, ClaudeAgentContextBlock } from './claude-agent-context.js';
@@ -108,6 +111,11 @@ export interface ClaudeAgentSessionsDeps {
    * `claudeAgentHostLease`). Without it every process may.
    */
   host?: Pick<ClaudeAgentHost, 'held' | 'onLost'>;
+  /**
+   * Where Factory's messages wait for a session's next turn, so a restart keeps them, and what each
+   * session was told, so it can answer a message. In this process's memory without it.
+   */
+  messages?: AgentMessageStore;
   hostEnv?: Record<string, string | undefined>;
   query?: QueryFn;
 }
@@ -132,10 +140,10 @@ export class ClaudeAgentSessions {
   readonly #runContexts = new Map<string, unknown>();
   /** Per open session: what it was opened with, and what Factory told it last. */
   readonly #opened = new Map<string, OpenSession>();
-  /** Factory messages that wait for the session's next turn (in memory, at most `MAX_WAITING_MESSAGES`). */
-  readonly #notes = new Map<string, ClaudeTurnNotice[]>();
-  /** How many waiting messages were dropped since the session last heard, by session. */
-  readonly #dropped = new Map<string, number>();
+  /** Factory messages that wait for each session's next turn (at most `MAX_WAITING_MESSAGES`), and what it was told. */
+  readonly #messages: AgentMessageStore;
+  /** When the last message was kept, so two kept in one millisecond keep their order. */
+  #lastMessageAt = 0;
   /** Resume state of a Claude Code just closed to restart, so the restart resumes it even before it is stored. */
   readonly #resume = new Map<string, ClaudeAgentRuntimeState>();
   /** Context last told to each session, by context id. Kept across reopens: the conversation resumes. */
@@ -165,6 +173,7 @@ export class ClaudeAgentSessions {
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
+    this.#messages = deps.messages ?? new InMemoryAgentMessages();
     // Another process runs Claude Agent sessions now: stop this one's, and open no more (`#openSession`).
     deps.host?.onLost(() => void this.#stopAll(HOST_LOST_NOTICE));
   }
@@ -379,7 +388,7 @@ export class ClaudeAgentSessions {
    */
   async #send(session: ClaudeAgentSession, input: SendInput | ClaudeTurnInput, context: unknown): Promise<string> {
     const told = await this.#context(session.id, context);
-    const dropped = this.#dropped.get(session.id) ?? 0;
+    const { messages: waiting, dropped } = await this.#waiting(session.id);
     const notes = [
       ...(dropped
         ? [
@@ -389,10 +398,8 @@ export class ClaudeAgentSessions {
             ),
           ]
         : []),
-      ...(this.#notes.get(session.id) ?? []),
+      ...waiting.map(message => factoryMessage(message.text, message.source, message.attributes)),
     ];
-    this.#notes.delete(session.id);
-    this.#dropped.delete(session.id);
     const extra = (input as ClaudeTurnInput).context ?? [];
     const turn: ClaudeTurnInput = { ...input, context: [...notes, ...told.map(contextNotice), ...extra] };
     // Set before Claude Code reads the turn: `send` queues it and returns without yielding to it.
@@ -577,15 +584,44 @@ export class ClaudeAgentSessions {
     return this.open(sessionId, requestContext);
   }
 
-  /** Hold a Factory message for the session's next turn, dropping the oldest past the cap. */
-  #hold(sessionId: string, notice: ClaudeTurnNotice): void {
-    const notes = [...(this.#notes.get(sessionId) ?? []), notice];
-    const over = notes.length - MAX_WAITING_MESSAGES;
-    if (over > 0) {
-      notes.splice(0, over);
-      this.#dropped.set(sessionId, (this.#dropped.get(sessionId) ?? 0) + over);
+  /**
+   * The Factory messages that waited for this turn, which it now carries. One that can't be read
+   * keeps waiting for a later turn rather than holding this one up.
+   */
+  async #waiting(sessionId: string): ReturnType<AgentMessageStore['take']> {
+    try {
+      return await this.#messages.take(sessionId);
+    } catch (error) {
+      console.warn(`[factory] Claude Agent session ${sessionId}: reading its waiting messages failed`, error);
+      return { messages: [], dropped: 0 };
     }
-    this.#notes.set(sessionId, notes);
+  }
+
+  /** A Factory message to the session, as it is kept. */
+  #message(sessionId: string, message: Parameters<FactoryRuntimeSessions['message']>[1]): AgentMessage {
+    const { delivery } = message;
+    this.#lastMessageAt = Math.max(Date.now(), this.#lastMessageAt + 1);
+    return {
+      id: delivery?.id ?? randomUUID(),
+      sessionId,
+      source: message.source,
+      text: message.text,
+      // A notification Claude can answer carries its id, as Mastra Code's do.
+      ...(message.attributes || delivery
+        ? { attributes: { ...message.attributes, ...(delivery ? { id: delivery.id } : {}) } }
+        : {}),
+      ...(delivery
+        ? {
+            delivery: {
+              threadId: delivery.threadId,
+              kind: delivery.kind,
+              priority: delivery.priority,
+              ...(delivery.sourceId ? { sourceId: delivery.sourceId } : {}),
+            },
+          }
+        : {}),
+      createdAt: new Date(this.#lastMessageAt),
+    };
   }
 
   /** Board runs on Claude Agent sessions, for the dispatcher. */
@@ -666,17 +702,42 @@ export class ClaudeAgentSessions {
         return { ended };
       },
       message: async (sessionId, message, requestContext) => {
-        const notice = factoryMessage(message.text, message.source, message.attributes);
+        const kept = this.#message(sessionId, message);
         if (!message.wake) {
-          this.#hold(sessionId, notice);
+          // Kept for the session's next turn, dropping the oldest past the cap; a restart keeps it too.
+          await this.#messages.hold(kept, MAX_WAITING_MESSAGES);
           return {};
         }
         const session = await this.#ready(sessionId, requestContext);
         if (!session) {
           throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
         }
-        const { text, ...shown } = notice;
-        return { runId: await this.#send(session, { text, notice: shown }, requestContext) };
+        const { text, ...shown } = factoryMessage(kept.text, kept.source, kept.attributes);
+        // Kept before Claude reads it, so the session can answer it and the sender's limit counts it;
+        // a message that can't be kept isn't sent, and one whose turn never started is forgotten.
+        await this.#messages.told(kept);
+        try {
+          return { runId: await this.#send(session, { text, notice: shown }, requestContext) };
+        } catch (error) {
+          await this.#messages
+            .forget(sessionId, kept.id)
+            .catch(forgetting =>
+              console.warn(
+                `[factory] Claude Agent session ${sessionId}: forgetting an unsent message failed`,
+                forgetting,
+              ),
+            );
+          throw error;
+        }
+      },
+      deliveries: {
+        durable: this.#messages.durable,
+        get: (sessionId, id) => this.#messages.get(sessionId, id),
+        recentOnThread: (threadId, limit) => this.#messages.recentOnThread(threadId, limit),
+        claimReply: (sessionId, id, leaseUntil) => this.#messages.claimReply(sessionId, id, leaseUntil),
+        extendReply: (sessionId, id, leaseUntil) => this.#messages.extendReply(sessionId, id, leaseUntil),
+        confirmReply: (sessionId, id) => this.#messages.confirmReply(sessionId, id),
+        releaseReply: (sessionId, id) => this.#messages.releaseReply(sessionId, id),
       },
       abort: async (sessionId, requestContext) => {
         await this.commands().abort(sessionId, { context: requestContext });

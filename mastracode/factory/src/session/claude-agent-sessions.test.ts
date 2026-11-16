@@ -7,14 +7,18 @@ import { join } from 'node:path';
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import type { InteractionRecord, SessionCommands } from '@factory/agent-runtime';
+import { ClaudeAgentSession } from '@factory/runtime-claude-agent';
 import type { QueryFn } from '@factory/runtime-claude-agent';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
 import { LocalSkillSource, Workspace } from '@mastra/core/workspace';
-import { describe, expect, it, vi } from 'vitest';
+import { LibSQLFactoryStorage } from '@mastra/libsql';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 
 import { FACTORY_INTERACTIVE_KEY } from '../auth.js';
+import { AgentMessagesStorage } from '../storage/domains/agent-messages/base.js';
+import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
@@ -1243,5 +1247,118 @@ describe('ClaudeAgentSessions approvals from outside the session', () => {
       { message: { content: lateAnswer(record, { kind: 'plan_approval', action: 'approved' }) } },
     ]);
     expect(await store.get('int-1')).toMatchObject({ status: 'resolved', resolvedBy: 'user-b' });
+  });
+});
+
+describe('ClaudeAgentSessions messages that wait', () => {
+  const owner = () => hostContext('user-a', false);
+  const userText = (message: unknown) => (message as { message: { content: string } }).message.content;
+  const fromSession = (id: string, wake: boolean) => ({
+    text: 'Is the build green?',
+    source: 'factory-session',
+    wake,
+    attributes: { kind: 'message', 'from-session': 'session-a' },
+    delivery: { id, threadId: 's1', kind: 'message', priority: 'medium', sourceId: 'session-a' },
+  });
+
+  async function messageStore() {
+    const storage = new LibSQLFactoryStorage({ id: 'claude-agent-messages', url: ':memory:' });
+    const messages = storage.registerDomain(new AgentMessagesStorage());
+    await storage.init();
+    onTestFinished(() => storage.close());
+    return messages;
+  }
+
+  it("keeps a held message across a restart, and tells it with the session's next turn", async () => {
+    const messages = await messageStore();
+    const before = toolSetup(toolCallingQuery(async () => {}).fn, { messages });
+    await before.sessions.runtimeSessions().message('s1', fromSession('note-1', false), owner());
+    await before.sessions.shutdown();
+
+    // A new process: nothing of the old one is left but the store.
+    const fake = toolCallingQuery(async () => {});
+    const after = toolSetup(fake.fn, { messages });
+    await after.sessions.commands().send('s1', { text: 'Carry on.' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () =>
+      expect((await after.log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true),
+    );
+
+    // Claude reads it under its id, so it can answer it.
+    expect(userText(fake.seen[0])).toBe(
+      '<factory-message kind="message" from-session="session-a" id="note-1" source="factory-session">\n' +
+        'Is the build green?\n</factory-message>\n\nCarry on.',
+    );
+    expect(await messages.take('s1')).toEqual({ messages: [], dropped: 0 });
+    expect(await after.sessions.runtimeSessions().deliveries!.get('s1', 'note-1')).toMatchObject({ status: 'told' });
+  });
+
+  it('keeps a message that woke the session, so the session can answer it', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    const { runId } = await runs.message('s1', fromSession('note-2', true), owner());
+    expect(runId).toEqual(expect.any(String));
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    expect(userText(fake.seen[0])).toContain('id="note-2"');
+    expect(await runs.deliveries!.get('s1', 'note-2')).toMatchObject({
+      status: 'told',
+      delivery: { threadId: 's1', kind: 'message', sourceId: 'session-a' },
+    });
+    expect((await runs.deliveries!.recentOnThread('s1', 10)).map(record => record.id)).toEqual(['note-2']);
+    expect(await runs.deliveries!.get('s2', 'note-2')).toBeUndefined();
+  });
+
+  it("says so when a message can't be kept, rather than claiming it waits", async () => {
+    const messages = new InMemoryAgentMessages();
+    vi.spyOn(messages, 'hold').mockRejectedValue(new Error('db down'));
+    const { sessions } = toolSetup(toolCallingQuery(async () => {}).fn, { messages });
+    await expect(sessions.runtimeSessions().message('s1', fromSession('note-3', false), owner())).rejects.toThrow(
+      'db down',
+    );
+  });
+
+  it("sends no message it couldn't keep, and forgets one whose turn never started", async () => {
+    const messages = new InMemoryAgentMessages();
+    const fake = toolCallingQuery(async () => {});
+    const { sessions } = toolSetup(fake.fn, { messages });
+    const runs = sessions.runtimeSessions();
+    const told = vi.spyOn(messages, 'told').mockRejectedValueOnce(new Error('db down'));
+    await expect(runs.message('s1', fromSession('note-5', true), owner())).rejects.toThrow('db down');
+    expect(fake.seen).toHaveLength(0);
+    told.mockRestore();
+
+    const send = vi.spyOn(ClaudeAgentSession.prototype, 'send').mockRejectedValueOnce(new Error('closed'));
+    await expect(runs.message('s1', fromSession('note-6', true), owner())).rejects.toThrow('closed');
+    expect(await runs.deliveries!.get('s1', 'note-6')).toBeUndefined();
+    send.mockRestore();
+  });
+
+  it('says whether what waits survives a restart', async () => {
+    const memory = toolSetup(toolCallingQuery(async () => {}).fn);
+    expect(memory.sessions.runtimeSessions().deliveries!.durable).toBe(false);
+    const stored = toolSetup(toolCallingQuery(async () => {}).fn, { messages: await messageStore() });
+    expect(stored.sessions.runtimeSessions().deliveries!.durable).toBe(true);
+  });
+
+  it("still takes its turn when the waiting messages can't be read, and tells them later", async () => {
+    const messages = new InMemoryAgentMessages();
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn, { messages });
+    const runs = sessions.runtimeSessions();
+    await runs.message('s1', fromSession('note-4', false), owner());
+    const take = vi.spyOn(messages, 'take').mockRejectedValueOnce(new Error('db down'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await sessions.commands().send('s1', { text: 'one' }, { context: hostContext('user-a') });
+    await sessions.commands().send('s1', { text: 'two' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(2),
+    );
+
+    expect(userText(fake.seen[0])).toBe('one');
+    expect(userText(fake.seen[1])).toContain('id="note-4"');
+    expect(take).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 });

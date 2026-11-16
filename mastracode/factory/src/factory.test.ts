@@ -980,6 +980,7 @@ describe('MastraFactory.prepare', () => {
       'agent-events', // fork(claude-agent)
       'agent-sessions', // fork(claude-agent)
       'agent-interactions', // fork(claude-agent)
+      'agent-messages', // fork(claude-agent)
       'integrations',
       'projects',
       'filesystem',

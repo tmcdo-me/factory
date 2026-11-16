@@ -9,6 +9,7 @@ import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { listFactorySessionThreads, sessionMemoryResourceId, sessionStampCounts } from '../session/session-threads.js';
 import type { FactorySessionOwnership, SessionRunBindings } from '../session/session-threads.js';
+import type { AgentMessageRecord } from '../storage/domains/agent-messages/base.js'; // fork(claude-agent)
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 
 /** Notifications between Factory sessions all carry this source. */
@@ -24,55 +25,6 @@ export type FactoryDeliveryController = Pick<
   | 'createSession'
   | 'getCurrentAgent'
 >;
-
-/**
- * fork(claude-agent): what was delivered to sessions on another runtime, which store no notification
- * record, by target thread, newest last (at most `RUNTIME_DELIVERIES_KEPT` each). Process-local, like
- * the messaging tools' waiting queues. The messaging tools count these as they count stored records,
- * so the per-sender rate limit holds for Claude Agent sessions too.
- */
-const runtimeDeliveries = new Map<string, NotificationRecord[]>();
-const RUNTIME_DELIVERIES_KEPT = 100;
-/**
- * A thread's deliveries are forgotten once its newest is this old (well past the messaging tools'
- * rate window), and at most this many threads are remembered, least recently delivered to dropped
- * first, so the map stays bounded however many sessions ever got a message.
- */
-export const RUNTIME_DELIVERIES_TTL_MS = 60 * 60 * 1000;
-export const RUNTIME_DELIVERY_THREADS_KEPT = 1000;
-
-/** fork(claude-agent): recent deliveries to a thread of a session on another runtime, as notification records. */
-export function recentRuntimeDeliveries(threadId: string): NotificationRecord[] {
-  return [...(runtimeDeliveries.get(threadId) ?? [])];
-}
-
-function rememberRuntimeDelivery(
-  target: FactoryDeliveryTarget,
-  notification: Omit<SendNotificationSignalInput, 'source'>,
-  id: string,
-): void {
-  const kept = runtimeDeliveries.get(target.threadId) ?? [];
-  kept.push({
-    id,
-    threadId: target.threadId,
-    source: FACTORY_SESSION_NOTIFICATION_SOURCE,
-    kind: notification.kind,
-    summary: notification.summary,
-    priority: notification.priority ?? 'medium',
-    ...(notification.attributes ? { attributes: notification.attributes } : {}),
-    ...(notification.sourceId ? { sourceId: notification.sourceId } : {}),
-    createdAt: new Date(),
-  } as unknown as NotificationRecord);
-  // Re-inserted, so the map runs from the least to the most recently delivered thread.
-  runtimeDeliveries.delete(target.threadId);
-  runtimeDeliveries.set(target.threadId, kept.slice(-RUNTIME_DELIVERIES_KEPT));
-  const expired = Date.now() - RUNTIME_DELIVERIES_TTL_MS;
-  for (const [threadId, records] of runtimeDeliveries) {
-    const newest = records.at(-1)?.createdAt.getTime() ?? 0;
-    if (runtimeDeliveries.size <= RUNTIME_DELIVERY_THREADS_KEPT && newest > expired) break;
-    runtimeDeliveries.delete(threadId);
-  }
-}
 
 /** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
 export type FactoryRuntimeDelivery = Pick<FactoryRuntimeSessions, 'runs' | 'isRunning' | 'message' | 'approvals'>;
@@ -92,10 +44,10 @@ export type FactoryDeliveryResult =
    */
   | { delivered: 'woken' | 'mid-run' | 'persisted' | 'summarized'; notificationId: string; reason?: string }
   /**
-   * fork(claude-agent): a session on another runtime holds the message for its next turn, in memory:
-   * nothing is stored, so there is no notification to name.
+   * fork(claude-agent): a session on another runtime keeps the message for its next turn (across a
+   * restart, where the server stores it). Nothing woke it.
    */
-  | { delivered: 'held'; reason: 'next-turn' }
+  | { delivered: 'held'; notificationId: string; reason: 'next-turn' }
   | {
       delivered: 'skipped';
       notificationId?: string;
@@ -151,13 +103,8 @@ export async function deliverFactorySessionNotification({
   if (runtime && (await runtime.runs(target.sessionId))) {
     const row = await loadRow();
     if (!row) return { delivered: 'skipped', reason: 'session-not-found' };
-    const result = await deliverOnRuntime(runtime, target.sessionId, row, notification, onlyIfLive);
-    rememberRuntimeDelivery(
-      target,
-      notification,
-      ('notificationId' in result && result.notificationId) || randomUUID(),
-    );
-    return result;
+    // The runtime keeps what it was sent: the messaging tools count it and answer it from there.
+    return deliverOnRuntime(runtime, target.sessionId, target.threadId, row, notification, onlyIfLive);
   }
 
   // No request context: without a user the controller's access check is a no-op,
@@ -213,6 +160,7 @@ export async function deliverFactorySessionNotification({
 async function deliverOnRuntime(
   runtime: FactoryRuntimeDelivery,
   sessionId: string,
+  threadId: string,
   row: { userId: string; orgId: string },
   notification: Omit<SendNotificationSignalInput, 'source'>,
   onlyIfLive: boolean,
@@ -222,14 +170,71 @@ async function deliverOnRuntime(
   const requestContext = new RequestContext();
   requestContext.set('user', { workosId: row.userId, organizationId: row.orgId });
   const attributes: Record<string, string> = { kind: notification.kind, ...notification.attributes };
+  // The id Claude sees the message by, and answers it with: the notification's id, as in Mastra Code.
+  const notificationId = randomUUID();
   const { runId } = await runtime.message(
     sessionId,
-    { text: notification.summary, source: FACTORY_SESSION_NOTIFICATION_SOURCE, wake, attributes },
+    {
+      text: notification.summary,
+      source: FACTORY_SESSION_NOTIFICATION_SOURCE,
+      wake,
+      attributes,
+      delivery: {
+        id: notificationId,
+        threadId,
+        kind: notification.kind,
+        priority: notification.priority ?? 'medium',
+        ...(notification.sourceId ? { sourceId: notification.sourceId } : {}),
+      },
+    },
     requestContext,
   );
-  // A woken session's message is a turn of its own: the turn's run names it.
-  if (!runId) return { delivered: 'held', reason: 'next-turn' };
-  return { delivered: running ? 'mid-run' : 'woken', notificationId: runId };
+  if (!runId) return { delivered: 'held', notificationId, reason: 'next-turn' };
+  return { delivered: running ? 'mid-run' : 'woken', notificationId };
+}
+
+/**
+ * fork(claude-agent): the notifications sessions on another runtime were sent on a thread, newest
+ * first, as the messaging tools read stored ones: for the rate limit and "already answered".
+ */
+export async function runtimeDeliveriesOnThread(
+  runtime: Pick<FactoryRuntimeSessions, 'deliveries'> | undefined,
+  threadId: string,
+  limit: number,
+): Promise<NotificationRecord[]> {
+  if (!runtime?.deliveries) return [];
+  return (await runtime.deliveries.recentOnThread(threadId, limit)).flatMap(record => {
+    const notification = asNotificationRecord(record);
+    return notification ? [notification] : [];
+  });
+}
+
+/** fork(claude-agent): a notification a session on another runtime was sent, as a stored one reads. */
+export async function runtimeDelivery(
+  runtime: Pick<FactoryRuntimeSessions, 'deliveries'> | undefined,
+  sessionId: string,
+  id: string,
+): Promise<NotificationRecord | null> {
+  const record = await runtime?.deliveries?.get(sessionId, id);
+  return (record && asNotificationRecord(record)) ?? null;
+}
+
+function asNotificationRecord(record: AgentMessageRecord): NotificationRecord | undefined {
+  const { delivery } = record;
+  if (!delivery) return undefined;
+  // What the session was shown, less what the record says in its own fields.
+  const { id: _id, kind: _kind, ...attributes } = record.attributes ?? {};
+  return {
+    id: record.id,
+    threadId: delivery.threadId,
+    source: FACTORY_SESSION_NOTIFICATION_SOURCE,
+    kind: delivery.kind,
+    summary: record.text,
+    priority: delivery.priority,
+    attributes,
+    ...(delivery.sourceId ? { sourceId: delivery.sourceId } : {}),
+    createdAt: record.createdAt,
+  } as unknown as NotificationRecord;
 }
 
 export interface FactorySessionActivity {

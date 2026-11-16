@@ -193,6 +193,7 @@ import { createSpaStaticMiddleware, resolveUiDistDir } from './spa-static.js';
 import { createStateSigner } from './state-signing.js';
 import { AgentEventsStorage } from './storage/domains/agent-events/base.js';
 import { AgentInteractionsStorage } from './storage/domains/agent-interactions/base.js';
+import { AgentMessagesStorage } from './storage/domains/agent-messages/base.js'; // fork(claude-agent)
 import { AgentSessionsStorage } from './storage/domains/agent-sessions/base.js';
 import { observeAgentGitAction } from './storage/domains/audit/agent-audit.js';
 import { AuditStorage } from './storage/domains/audit/base.js';
@@ -961,6 +962,8 @@ export class MastraFactory {
     const agentEventHub = new SessionEventHub(storage.registerDomain(new AgentEventsStorage()));
     const agentSessionsStorage = storage.registerDomain(new AgentSessionsStorage());
     const agentInteractionsStorage = storage.registerDomain(new AgentInteractionsStorage());
+    // fork(claude-agent): Factory's messages to Claude Agent sessions, kept across restarts.
+    const agentMessagesStorage = storage.registerDomain(new AgentMessagesStorage());
     this.#agentSeam = {
       events: agentEventHub,
       interactions: agentInteractionsStorage,
@@ -1876,6 +1879,13 @@ export class MastraFactory {
       identity: claudeAgentHostIdentity(claudeAgentHome()),
     });
     this.#claudeAgentHost = claudeAgentHost;
+    // fork(claude-agent): without the domain, Claude Agent sessions' held messages live in memory only.
+    const agentMessagesReady = storage.isDomainReady('agent-messages');
+    if (!agentMessagesReady) {
+      console.warn(
+        "[factory] The agent-messages storage domain isn't ready: messages held for Claude Agent sessions are kept in memory and lost on restart.",
+      );
+    }
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
@@ -1883,6 +1893,8 @@ export class MastraFactory {
       home: claudeAgentHome(),
       // fork(claude-agent): one process sharing the database runs Claude Agent sessions.
       host: claudeAgentHost,
+      // Held messages survive a restart where the domain is up; otherwise they wait in memory.
+      ...(agentMessagesReady ? { messages: agentMessagesStorage } : {}),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: pendingInteractions, hub: agentEventHub }),
       // A review session, or one on a pull request card, loads none of its checkout's own settings.
