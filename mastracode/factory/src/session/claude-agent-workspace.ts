@@ -1,4 +1,6 @@
 // fork(claude-agent): a Claude Agent session's checkout, from Factory's own workspace factory.
+import { stat } from 'node:fs/promises';
+
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
@@ -48,11 +50,21 @@ export function createClaudeAgentWorkspaceResolver(options: {
     if ((sandbox as { provider?: string }).provider !== 'local') {
       throw new Error('Claude Agent sessions need a local sandbox for now (FACTORY_SANDBOX_PROVIDER=local)');
     }
-    const lifecycle = sandbox as unknown as { ensureRunning?(): Promise<void>; start?(): Promise<void> };
+    const lifecycle = sandbox as unknown as {
+      ensureRunning?(): Promise<void>;
+      start?(): Promise<void>;
+      _startPromise?: Promise<unknown>;
+    };
     await (lifecycle.ensureRunning ? lifecycle.ensureRunning() : lifecycle.start?.());
+    // A sandbox reports `running` before its start hook (which clones the repository) finishes, so a
+    // start already in flight (Factory starts sandboxes eagerly) must settle before the checkout is
+    // there. Session retirement waits on the same promise.
+    await lifecycle._startPromise;
     // By instance: the memo is keyed by the source-control session row id, not this session id.
     const layout = sessionLayout(findSessionSandboxEntry(sandbox));
-    if (!layout) throw new Error(`Session ${sessionId}'s checkout is not ready`);
+    if (!layout || !(await isDirectory(layout.root))) {
+      throw new Error(`Session ${sessionId}'s checkout is not ready`);
+    }
     const env = (sandbox as unknown as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {};
     return {
       cwd: layout.root,
@@ -72,4 +84,11 @@ function contextEntries(requestContext: unknown): [string, unknown][] | undefine
   const entries = (requestContext as { entries?: unknown } | null | undefined)?.entries;
   if (typeof entries !== 'function') return undefined;
   return [...(entries.call(requestContext) as Iterable<[string, unknown]>)];
+}
+
+async function isDirectory(dir: string): Promise<boolean> {
+  return stat(dir).then(
+    info => info.isDirectory(),
+    () => false,
+  );
 }
