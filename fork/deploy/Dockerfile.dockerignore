@@ -35,10 +35,15 @@
 examples
 templates
 
-# Secrets and data: never in the context
-**/.env
-**/.env.local
-**/.env.*.local
+# Secrets and data: never in the context. Every .env-style file goes; the build reads only
+# mastracode/web/.env.schema (varlock's schema, no values), and the committed .env.example files carry
+# no values either.
+**/.env*
+!**/.env.schema
+!**/.env.example
+**/.envrc
+**/.npmrc
+**/*.key
 **/*.pem
 **/*.db
 **/*.db-*

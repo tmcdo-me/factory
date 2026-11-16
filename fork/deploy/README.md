@@ -1,26 +1,40 @@
 # Running Factory in a container
 
 Fork-only. These files run the Factory server (`mastracode/web`) as a container: on the homelab's
-Docker host as a Compose stack (the primary place), or on one Fly.io Machine (the secondary). Every
+Docker host as a Compose stack (the primary place), or on one Fly.io Machine (an option, untested). Every
 session runs on its own Fly.io Sprite (`@factory/sandbox-sprites`); the server itself keeps only the
 UI, the API and one libSQL file. `fork/ops/` is the same server as a LaunchAgent on mac-mini.
 
-| File                      | What it is                                                                                |
-| ------------------------- | ----------------------------------------------------------------------------------------- |
-| `Dockerfile`              | The image. Build context: the repository root                                             |
-| `Dockerfile.dockerignore` | Keeps the context to sources (no `node_modules`, build output, `.git`, `.env`, databases) |
-| `stage-runtime.mjs`       | Build step: hard-links what the server loads into `/app`, so the image has no build tools |
-| `factory-snapshot.sh`     | Online, checked copy of the database onto the volume (`/usr/local/bin/factory-snapshot`)  |
-| `factory-healthcheck.mjs` | The image's health check, `GET /auth/me` (`/usr/local/bin/factory-healthcheck`)           |
-| `compose.yaml`            | Compose stack in the homelab repository's conventions, with the snapshot sidecar          |
-| `compose.env.example`     | Its `.env.example`: `op://` references, no values                                         |
-| `fly.toml`                | One Fly Machine with a volume                                                             |
+| File                       | What it is                                                                                |
+| -------------------------- | ----------------------------------------------------------------------------------------- |
+| `Dockerfile`               | The image. Build context: the repository root                                             |
+| `Dockerfile.dockerignore`  | Keeps the context to sources (no `node_modules`, build output, `.git`, `.env`, databases) |
+| `stage-runtime.mjs`        | Build step: hard-links what the server loads into `/app`, so the image has no build tools |
+| `factory-entrypoint.sh`    | After tini: gives a fresh `/data` to `node`, then runs the command as node                |
+| `factory-snapshot.sh`      | Online, checked copy of the database onto the volume (`/usr/local/bin/factory-snapshot`)  |
+| `factory-sqlite-check.mjs` | `integrity_check` through libSQL, for a schema stock SQLite cannot parse (vector indexes) |
+| `factory-healthcheck.mjs`  | The image's health check, `GET /auth/me` (`/usr/local/bin/factory-healthcheck`)           |
+| `smoke.sh`                 | End-to-end check of a built image, with a throwaway volume and env                        |
+| `compose.yaml`             | Compose stack in the homelab repository's conventions, with the snapshot sidecar          |
+| `compose.env.example`      | Its `.env.example`: `op://` references, no values                                         |
+| `fly.toml`                 | One Fly Machine with a volume                                                             |
 
 ## The image
 
+`.github/workflows/fork-image.yml` (`Fork image`) builds it on a Blacksmith runner (linux/amd64, the
+Docker VM is x86) with Blacksmith's layer cache, runs `smoke.sh` against it, and on `main` pushes it
+to `ghcr.io/tmcdo-me/factory`, tagged with the full commit SHA and `main`, with OCI labels, provenance
+and an SBOM. Pull requests that touch `fork/deploy/`, the workflow, `mastracode/web/` or the lockfiles
+build and check it without pushing. By hand:
+
 ```sh
-docker build -f fork/deploy/Dockerfile -t factory:dev .     # from the repository root
+docker build -f fork/deploy/Dockerfile -t factory:dev .     # from the repository root; ~10 GB free
+fork/deploy/smoke.sh factory:dev
 ```
+
+The GHCR package is private when the workflow first creates it. The repository is public, so making
+the package public (its settings on GitHub, the owner's call) lets the Docker VM pull it with no
+credential; otherwise the VM needs `docker login ghcr.io` with a token that can read packages.
 
 The build stage installs only the workspace packages the server links and their dependencies (the
 filter of `mastracode/web`'s `prebuild`, about 70 of the monorepo's 200 projects), runs the same
@@ -32,9 +46,12 @@ runs inside each Sprite, from Anthropic's installer, checked against the SDK's `
 stays) and onnxruntime-node's macOS and Windows libraries.
 
 The runtime stage is `node:24.22.2-trixie-slim`, pinned by version and index digest, plus `tini`,
-`sqlite3` and `tzdata`; npm and corepack are removed. It runs as `node` (uid 1000) and starts
-`tini -> varlock run -> node index.mjs` in the bundle's directory, as `mastra start` does. tini is PID 1
-and forwards SIGTERM; varlock checks the environment against `.env.schema` and redacts the values it
+`sqlite3` and `tzdata`; npm and corepack are removed. The container starts as root only for
+`factory-entrypoint`: a fresh volume is root's (a Fly volume, or a directory Docker created for a bind
+mount, hides the image's `/data`), so when `/data`, `/data/app` or `/data/backups` is not `node`'s it
+gives `/data` to node (`chown -R`, only then), and it replaces itself, through `setpriv`, with the
+command as `node` (uid 1000). The server is `tini -> varlock run -> node index.mjs` in the bundle's
+directory, as `mastra start` does; tini stays PID 1 (root, holding nothing) and forwards SIGTERM; varlock checks the environment against `.env.schema` and redacts the values it
 marks sensitive from the server's output; Factory's shutdown (`[factory] the server is shutting down;
 stopping Factory first`) runs on the signal. Telemetry is off (`MASTRA_TELEMETRY_DISABLED`,
 `VARLOCK_TELEMETRY_DISABLED`, `DO_NOT_TRACK`).
@@ -83,16 +100,16 @@ copied to `stacks/factory/` as they are:
 
 - `name: factory`, `x-homelab: {host: docker}`; explicit `environment:` (no `env_file:`), secrets as
   `op://Homelab/...` references in `.env.example` (the item names are suggestions);
-- built by the applier from this public repository at `FACTORY_REF` (`build:` with a git context, the
-  branch-tag row): a deploy is a PR that moves the ref. The build takes about 6 GB of disk while it
-  runs;
+- `image: ghcr.io/tmcdo-me/factory:${FACTORY_IMAGE_TAG}`, the full commit SHA of a `Fork image` run
+  (the exact-release row: a deploy is a PR that moves it; nothing is built on the VM);
 - the volume `${APPDATA_ROOT}/factory/data:/data` on the VM's own disk. SQLite's locks and its WAL
   shared memory are not safe on NFS or SMB: never `/mnt/nas`;
 - DockTail labels advertise `svc:factory` (443 -> 5873), taking the name over from mac-mini; the port
   is published on `127.0.0.1` only, for `cloudflared-truenas` (host network) and the webhook route;
 - `homelab.gate=backup`, `stop_grace_period: 60s`, `restart: unless-stopped`, the image's health
-  check, json-file logs capped, a read-only root filesystem with `/tmp` and `$HOME` in memory, no
-  capabilities, `no-new-privileges`;
+  check, json-file logs capped, a read-only root filesystem with `/tmp` and `$HOME` in memory,
+  `no-new-privileges`, and all capabilities dropped but `CHOWN`, `SETUID` and `SETGID`, which the
+  entrypoint needs as root and the server, running as node, does not have;
 - an explicit `/28` network (the VM's predefined pools are used up; pick a free one).
 
 ## Backups
@@ -102,7 +119,12 @@ SQLite's online backup API:
 
 ```sh
 docker compose exec factory-snapshot factory-snapshot   # one now (or `exec factory`)
+fly ssh console --app <app> -C factory-snapshot          # on Fly
 ```
+
+Started as root, as those are, it switches to `node` first, so the lock, `.last-status` and any `-wal`
+or `-shm` it opens on the live database stay node's (root-owned ones would stop the server writing). A
+stop during a run removes its lock and partial copy.
 
 `factory-snapshot` writes `/data/backups/mastra.db-YYYY-MM-DD` (a second run the same day replaces
 it), a standalone file (rollback journal, no `-wal`) that passed `PRAGMA integrity_check` before it took
@@ -110,9 +132,19 @@ the name, keeps the newest `FACTORY_BACKUP_KEEP` (7), and records `<epoch> <exit
 `/data/backups/.last-status`. The `factory-snapshot` sidecar runs it daily at `FACTORY_SNAPSHOT_AT`
 (02:10, ahead of the 02:30 PBS window) and is unhealthy when the last run failed. The dated name is
 backup-verify's dated-copy pattern, so its freshness (96 h) and integrity are checked with no
-registration; the live `mastra.db` is checked as every `*.db` is. The homelab's rule is that SQLite is
+registration; the live `mastra.db` is checked as every `*.db` is. A database whose schema uses
+libSQL's own functions (a vector index in `mastra-vectors.db`, when Mastra Code's recall makes one) is
+copied the same way, since the backup API copies pages, but stock SQLite cannot parse its schema, so
+libSQL checks the copy (`factory-sqlite-check`) and it is named `mastra-vectors.db.libsql-YYYY-MM-DD`,
+outside backup-verify's patterns, which read with stock sqlite3 and would report it corrupt (the live
+`mastra-vectors.db` would be, too: exclude it there if it appears). The homelab's rule is that SQLite is
 never dumped because PBS's `fs-freeze` image is crash-consistent; the dated copy is the owner's choice
 on top of that: a checked database that a restore can take as it is, without replaying a WAL.
+
+Sizing: the volume holds the database, its `-wal`, `FACTORY_BACKUP_KEEP` dated copies and room for
+the next, so at least `(FACTORY_BACKUP_KEEP + 2) x` the database. The snapshot fails when there is not
+room for the copy, and warns (its log, and `.last-status`, still exit 0) when what is left after it is
+under twice the database. Today's database is a few MB.
 
 What is not in it: the environment. `FACTORY_CREDENTIAL_ENCRYPTION_KEY` above all belongs in the
 vault; without it the stored model keys and integration secrets cannot be read.
@@ -144,9 +176,10 @@ Nothing else is public. Slack, if it is turned on later, needs no route in Socke
 (`SLACK_APP_TOKEN`); its webhook mode would add `POST /api/agent-controllers/<id>/channels/slack/webhook`
 and `GET /connect/slack/*`.
 
-## Fly.io
+## Fly.io (untested)
 
-`fly.toml` is one Machine (the database is a file one process opens), a volume `factory_data` at
+An option the owner keeps open, not exercised: nothing here has run on Fly. `fly.toml` passes
+`fly config validate`; the image it would build is the one the workflow checks. `fly.toml` is one Machine (the database is a file one process opens), a volume `factory_data` at
 `/data`, `kill_timeout = 60`, an HTTP service on 5873 checked on `/auth/me`, and auto-stop off: the
 dispatcher, Slack's socket and live Claude Code sessions work with no request in flight.
 
@@ -212,22 +245,11 @@ container in between stay in the container's copy).
 
 ## Verify an image
 
-What a change to these files should still pass, on a spare port with a throwaway volume and env:
-
-```sh
-docker build --progress=plain -f fork/deploy/Dockerfile -t factory:check .
-docker volume create factory-check
-docker run -d --name factory-check -p 127.0.0.1:5877:5873 --env-file <throwaway env> \
-  -v factory-check:/data --read-only --tmpfs /tmp:uid=1000,gid=1000,mode=0700 \
-  --tmpfs /home/node:uid=1000,gid=1000,mode=0700 --cap-drop ALL factory:check
-curl -s http://127.0.0.1:5877/auth/me                    # {"authenticated":false,…,"provider":"oidc"}
-curl -s -H 'Accept: text/html' http://127.0.0.1:5877/signin | grep '<title>'   # Mastra Factory
-docker exec factory-check factory-snapshot               # /data/backups/mastra.db-<today>
-docker run --rm --env-file <throwaway env> -e FACTORY_SANDBOX_PROVIDER=local factory:check   # refused
-time docker stop factory-check && docker logs factory-check | tail -1   # stopping Factory first; exit 0
-docker rm factory-check && docker volume rm factory-check && docker rmi factory:check
-```
-
-A throwaway env needs only a fake `OIDC_ISSUER` (discovery is fetched on first sign-in, not at boot),
-random `FACTORY_SESSION_SECRET` and `FACTORY_CREDENTIAL_ENCRYPTION_KEY`, any `SPRITES_TOKEN`, a
-`FACTORY_SPRITES_PREFIX` of its own and `MASTRACODE_PUBLIC_URL=http://localhost:5877`.
+`fork/deploy/smoke.sh <image>` is what the `Fork image` workflow runs after every build, with a
+throwaway volume and env (a fake OIDC issuer, which is fetched only at the first sign-in; random
+secrets; a dummy Sprites token and a prefix of its own) and the compose stack's hardening. It checks
+that the server answers `/auth/me` and serves the UI, that its processes run as uid 1000 and it goes
+healthy, that the guard refuses `FACTORY_SANDBOX_PROVIDER=local`, that a fresh root-owned `/data` is
+given to node, that `factory-snapshot` exec'd as root leaves only node's files and copies a libSQL
+vector index, that the sidecar loop stops cleanly, and that `docker stop` runs Factory's shutdown and
+exits 0 within the grace period. It prints the image's size and cleans up after itself.

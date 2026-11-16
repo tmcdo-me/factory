@@ -51,7 +51,10 @@ ARG WORKSPACE_FILTER="--filter mastra-turbo \
 #    package's tools, which are not installed; the server reads none of it.
 #  - Left out of /app: the Agent SDK's own Claude Code binaries (~330 MB; Claude Code runs inside each
 #    Sprite, installed there from Anthropic's installer and checked against the SDK's manifest.json,
-#    which stays), and onnxruntime-node's macOS and Windows libraries (~220 MB).
+#    which stays), and onnxruntime-node's macOS and Windows libraries (~220 MB). The staging fails the
+#    build when a package something depends on is not installed; `--optional @mastra/mcp`: the bundle
+#    imports it only on demand (Factory's built-in MCP endpoint answers 501 without it), and the host
+#    project does not install it, in the image as in a checkout.
 WORKDIR /src
 RUN --mount=type=bind,target=/context \
     --mount=type=cache,id=factory-turbo-cache,target=/turbo-cache \
@@ -67,7 +70,7 @@ RUN --mount=type=bind,target=/context \
     TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web build; \
     test -f mastracode/web/.mastra/output/index.mjs; \
     test -f mastracode/web/.mastra/output/factory/index.html; \
-    node fork/deploy/stage-runtime.mjs /src /app --skip @anthropic-ai/claude-agent-sdk-; \
+    node fork/deploy/stage-runtime.mjs /src /app --skip @anthropic-ai/claude-agent-sdk- --optional @mastra/mcp; \
     find /app -type d -path '*/onnxruntime-node/bin/napi-v*/*' \( -name darwin -o -name win32 \) -prune \
       -exec rm -rf {} +; \
     cd /; \
@@ -80,12 +83,14 @@ FROM ${NODE_IMAGE} AS runtime
 
 # tini: PID 1, forwards SIGTERM to the server so Factory's shutdown runs, reaps orphans.
 # sqlite3: factory-snapshot's online backup (`.backup`) and integrity check. tzdata: so TZ applies (the
-# snapshot's daily time, log times). Nothing else: with every session on a Sprite the server itself runs
-# no git, gh or shell tools (it clones, commits and pushes inside the Sprite).
+# snapshot's daily time, log times). setpriv (util-linux, in the base image): the entrypoint's and the
+# snapshot's switch to `node`. Nothing else: with every session on a Sprite the server itself runs no
+# git, gh or shell tools (it clones, commits and pushes inside the Sprite).
 RUN set -eux; \
     apt-get update; \
     apt-get install -y --no-install-recommends tini sqlite3 tzdata; \
     rm -rf /var/lib/apt/lists/*; \
+    command -v setpriv; \
     # npm and corepack are build tools; the server is node and its own files.
     rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
       /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack; \
@@ -93,13 +98,18 @@ RUN set -eux; \
     chown -R node:node /data
 
 COPY --from=build /app /app
+COPY --chmod=0755 fork/deploy/factory-entrypoint.sh /usr/local/bin/factory-entrypoint
 COPY --chmod=0755 fork/deploy/factory-snapshot.sh /usr/local/bin/factory-snapshot
+COPY --chmod=0755 fork/deploy/factory-sqlite-check.mjs /usr/local/bin/factory-sqlite-check
 COPY --chmod=0755 fork/deploy/factory-healthcheck.mjs /usr/local/bin/factory-healthcheck
 
-# Settings the image decides (no CLI or usage telemetry from Mastra or varlock: fork/specs §11); everything else (MASTRACODE_PUBLIC_URL, OIDC_*, FACTORY_SESSION_SECRET,
+# Settings the image decides (no CLI or usage telemetry from Mastra or varlock: fork/specs §11);
+# everything else (MASTRACODE_PUBLIC_URL, OIDC_*, FACTORY_SESSION_SECRET,
 # FACTORY_CREDENTIAL_ENCRYPTION_KEY, SPRITES_TOKEN, CLAUDE_CODE_OAUTH_TOKEN, GITHUB_APP_*, …) is the
-# operator's environment. See fork/deploy/README.md and mastracode/web/.env.schema.
+# operator's environment. See fork/deploy/README.md and mastracode/web/.env.schema. HOME is node's
+# whoever starts a process (the entrypoint and `exec` start as root, then switch to node).
 ENV NODE_ENV=production \
+    HOME=/home/node \
     PORT=5873 \
     MASTRA_HOST=0.0.0.0 \
     MASTRA_SKIP_DOTENV=1 \
@@ -115,15 +125,17 @@ ENV NODE_ENV=production \
     MASTRA_DB_PATH=/data/app/mastra.db \
     FACTORY_BACKUP_DIR=/data/backups
 
-USER node
+# No `USER`: the container starts as root only for factory-entrypoint, which gives a fresh volume to
+# `node` and runs the command as node (setpriv); factory-snapshot does the same when exec'd as root.
 WORKDIR /app/mastracode/web/.mastra/output
 VOLUME ["/data"]
 EXPOSE 5873
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 CMD ["factory-healthcheck"]
 
-# The chain is tini -> varlock -> node. varlock checks the environment against .env.schema and redacts
-# the values it marks sensitive from the server's output; each step forwards SIGTERM and waits. The
-# working directory is the bundle's, as `mastra start` runs it.
-ENTRYPOINT ["/usr/bin/tini", "--"]
+# The chain is tini -> factory-entrypoint (exec'd away as setpriv, then the command, as node) -> varlock
+# -> node. varlock checks the environment against .env.schema and redacts the values it marks sensitive
+# from the server's output; each step forwards SIGTERM and waits. The working directory is the
+# bundle's, as `mastra start` runs it.
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/factory-entrypoint"]
 CMD ["node", "/app/mastracode/web/node_modules/varlock/bin/cli.js", "run", "--path", "/app/mastracode/web/", "--", "node", "index.mjs"]

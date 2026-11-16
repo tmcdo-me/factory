@@ -1,0 +1,130 @@
+# fork(claude-agent): builds the Factory server image (fork/deploy/Dockerfile), checks it end to end
+# (fork/deploy/smoke.sh), and on main publishes it to ghcr.io/tmcdo-me/factory, tagged with the full
+# commit SHA and `main`. Pull requests that touch the image's own files build and check it, never push.
+# linux/amd64 only: the homelab's Docker VM is x86. Actions are pinned by commit.
+name: Fork image
+
+on:
+  push:
+    branches: [main]
+    # What goes into the image: the server's host project, the workspace packages it builds, the
+    # lockfiles and build config, and these files.
+    paths:
+      - fork/deploy/**
+      - .github/workflows/fork-image.yml
+      - mastracode/**
+      - packages/**
+      - stores/**
+      - auth/**
+      - client-sdks/**
+      - server-adapters/**
+      - workspaces/**
+      - pubsub/**
+      - browser/**
+      - channels/**
+      - integrations/**
+      - observability/**
+      - signals/**
+      - voice/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - turbo.json
+      - patches/**
+  pull_request:
+    branches: [main]
+    paths:
+      - fork/deploy/**
+      - .github/workflows/fork-image.yml
+      - mastracode/web/**
+      - package.json
+      - pnpm-lock.yaml
+      - pnpm-workspace.yaml
+      - turbo.json
+  workflow_dispatch:
+
+concurrency:
+  group: fork-image-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/tmcdo-me/factory
+
+jobs:
+  image:
+    if: github.repository == 'tmcdo-me/factory'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+
+      # BuildKit on a Blacksmith sticky disk: the layer cache (and the build's turbo cache mount)
+      # carries across runs of this Dockerfile.
+      - name: Set up the builder
+        uses: useblacksmith/setup-docker-builder@06dd9c83a5d541274d2e3ac67625560979275267 # v2.3.0
+        with:
+          cache-key: fork/deploy/Dockerfile
+
+      - name: Build
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
+        with:
+          context: .
+          file: fork/deploy/Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: factory:ci
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Factory server
+            org.opencontainers.image.description=Mastra Factory with Claude Agent (tmcdo-me fork); sessions on Fly.io Sprites
+
+      - name: Smoke test
+        run: fork/deploy/smoke.sh factory:ci
+
+      - name: Log in to ghcr.io
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@8aa5831fb8d48d8f76594c7ddde61ae58019f550 # v4.8.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The same build again from the cache, now with provenance and an SBOM, pushed only after the
+      # image passed the smoke test.
+      - name: Push
+        id: push
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: useblacksmith/build-push-action@9b0579bbec7a6cad2f171596c57e7ac1e7658850 # v2.3.0
+        with:
+          context: .
+          file: fork/deploy/Dockerfile
+          platforms: linux/amd64
+          push: true
+          provenance: mode=max
+          sbom: true
+          tags: |
+            ${{ env.IMAGE }}:${{ github.sha }}
+            ${{ env.IMAGE }}:main
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.title=Factory server
+            org.opencontainers.image.description=Mastra Factory with Claude Agent (tmcdo-me fork); sessions on Fly.io Sprites
+
+      - name: Published
+        if: steps.push.outcome == 'success'
+        run: |
+          {
+            echo "### ${IMAGE}"
+            echo
+            echo "- \`${IMAGE}:${GITHUB_SHA}\`"
+            echo "- digest \`${{ steps.push.outputs.digest }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -2,7 +2,7 @@
 // as hard links (no extra space), so the image carries that and not the build's tools and dev
 // dependencies. Fork-only.
 //
-//   node fork/deploy/stage-runtime.mjs <repository root> <out dir> [--skip <package name prefix>]...
+//   node fork/deploy/stage-runtime.mjs <repository root> <out dir> [--skip <prefix>]... [--optional <name>]...
 //
 // The server is mastracode/web's bundle (.mastra/output) plus the packages it imports, which Node finds
 // through node_modules as in the checkout: the monorepo's built packages through the host's `link:`
@@ -12,9 +12,10 @@
 // them (from the package's real directory, up through each `node_modules`), and stages each package
 // found, with the symlinks on the way to it. Never `devDependencies`: a build-time tool the bundle still
 // imports is one of its roots. What is not installed (another platform's optional binary, an optional
-// peer) is skipped; a missing regular dependency is reported, and the server's boot is what proves the
-// tree whole (fork/deploy/README.md, "Verify an image"). `--skip` leaves out packages whose name starts
-// with the prefix, for what this deployment never loads (the Dockerfile says which and why).
+// peer) is skipped. A regular dependency, or a bundle import, that is not installed FAILS the staging
+// (exit 1), unless it is named with `--optional` (an import the bundle makes only on demand, in a
+// try). `--skip` leaves out packages whose name starts with the prefix, for what this deployment never
+// loads (the Dockerfile says which and why).
 import {
   existsSync,
   linkSync,
@@ -30,12 +31,14 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 
 let [rootArg, outArg, ...rest] = process.argv.slice(2);
 const skipped = [];
+const optional = new Set();
 for (let i = 0; i < rest.length; i += 2) {
-  if (rest[i] !== '--skip' || !rest[i + 1]) rootArg = undefined;
-  else skipped.push(rest[i + 1]);
+  if (rest[i] === '--skip' && rest[i + 1]) skipped.push(rest[i + 1]);
+  else if (rest[i] === '--optional' && rest[i + 1]) optional.add(rest[i + 1]);
+  else rootArg = undefined;
 }
 if (!rootArg || !outArg) {
-  console.error('usage: stage-runtime.mjs <repository root> <out dir> [--skip <package name prefix>]...');
+  console.error('usage: stage-runtime.mjs <repository root> <out dir> [--skip <prefix>]... [--optional <name>]...');
   process.exit(2);
 }
 const root = realpathSync(rootArg);
@@ -95,6 +98,7 @@ function find(name, from) {
 
 const seen = new Set();
 const missing = [];
+const optionalMissing = [];
 /** Stage package `name` as resolved from `from`, and what it depends on. */
 const left = new Set();
 function visit(name, from, kind) {
@@ -104,7 +108,10 @@ function visit(name, from, kind) {
   }
   const found = find(name, from);
   if (!found) {
-    if (kind === 'dependency') missing.push(`${name} (from ${relative(root, from) || '.'})`);
+    if (kind !== 'dependency') return;
+    const entry = `${name} (from ${relative(root, from) || '.'})`;
+    if (optional.has(name)) optionalMissing.push(entry);
+    else missing.push(entry);
     return;
   }
   stageLinksTo(found);
@@ -138,7 +145,12 @@ console.log(
   `stage-runtime: ${seen.size} packages, ${files} files from ${roots.length} bundle imports and varlock into ${out}`,
 );
 if (left.size) console.log(`stage-runtime: skipped as asked: ${[...left].sort().join(', ')}`);
+if (optionalMissing.length) {
+  console.log('stage-runtime: not installed, optional as asked:');
+  for (const entry of optionalMissing) console.log(`  ${entry}`);
+}
 if (missing.length) {
-  console.log(`stage-runtime: not installed, left out (the boot check shows whether it matters):`);
-  for (const entry of missing) console.log(`  ${entry}`);
+  console.error('stage-runtime: FAILED: dependencies that are not installed (the server would not load them):');
+  for (const entry of missing) console.error(`  ${entry}`);
+  process.exit(1);
 }

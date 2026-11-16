@@ -10,19 +10,14 @@ name: factory
 x-homelab:
   host: docker
 
-# Built from this repository at a pinned ref (the public GitHub repository, so no credential): the
-# branch-tag row of homelab-compose's container-upgrades, the applier runs `pull --ignore-buildable` and
-# `up --build`. A deploy is a PR moving FACTORY_REF. The build needs about 6 GB of disk while it runs
-# and keeps a cache. Both services name the same build, so neither is pulled from a registry. A
-# prebuilt image instead: delete both `build:` lines and set `image:` to it.
-x-factory-build: &factory-build
-  context: https://github.com/tmcdo-me/factory.git#${FACTORY_REF}
-  dockerfile: fork/deploy/Dockerfile
+# The image is built, smoke-tested and published by tmcdo-me/factory's `Fork image` workflow
+# (.github/workflows/fork-image.yml) as ghcr.io/tmcdo-me/factory:<full commit SHA>; a deploy is a PR
+# that moves FACTORY_IMAGE_TAG. The applier pulls it like any other image: the package must be public
+# (the repository is), or the Docker VM needs `docker login ghcr.io` with a read:packages token.
 
 services:
   factory:
-    build: *factory-build
-    image: factory:${FACTORY_REF}
+    image: ghcr.io/tmcdo-me/factory:${FACTORY_IMAGE_TAG}
     container_name: factory
     hostname: factory
     restart: unless-stopped
@@ -81,6 +76,12 @@ services:
       - /home/node:uid=1000,gid=1000,mode=0700
     cap_drop:
       - ALL
+    cap_add:
+      # The entrypoint starts as root only to give a fresh /data to `node` (CHOWN, used only when the
+      # ownership is wrong) and to switch to node (SETUID, SETGID); the server runs as node with none.
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
     labels:
@@ -109,9 +110,9 @@ services:
     # /data/backups/mastra.db-YYYY-MM-DD, integrity-checked, newest FACTORY_BACKUP_KEEP kept. The dated
     # name is backup-verify's dated-copy pattern, so it checks freshness (96 h) and integrity with no
     # registration. Same image, same volume; it holds no data of its own. One now, before anything
-    # copies the volume: `docker compose exec factory-snapshot factory-snapshot`.
-    build: *factory-build
-    image: factory:${FACTORY_REF}
+    # copies the volume: `docker compose exec factory-snapshot factory-snapshot` (it switches to node
+    # itself, so nothing it leaves on the volume is root's).
+    image: ghcr.io/tmcdo-me/factory:${FACTORY_IMAGE_TAG}
     container_name: factory-snapshot
     hostname: factory-snapshot
     restart: unless-stopped
@@ -128,8 +129,14 @@ services:
       - /tmp:uid=1000,gid=1000,mode=0700
     cap_drop:
       - ALL
+    cap_add:
+      - CHOWN
+      - SETUID
+      - SETGID
     security_opt:
       - no-new-privileges:true
+    # A stop during a snapshot takes effect when sqlite3 returns (it waits up to 30 s for a lock).
+    stop_grace_period: 60s
     healthcheck:
       # Unhealthy means the last attempt failed; no attempt yet is healthy (stacks/mealie's rule).
       test:

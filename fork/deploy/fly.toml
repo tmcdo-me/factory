@@ -1,5 +1,6 @@
-# The Factory server on one Fly.io Machine (the secondary place to run it; the homelab's compose stack
-# is the primary). An example: set `app` and `primary_region`, then from the repository root
+# The Factory server on one Fly.io Machine: an option, untested (the homelab's compose stack is where it
+# runs; nothing here has run on Fly). An example: set `app` and `primary_region`, then from the
+# repository root
 #
 #   fly deploy . --config fork/deploy/fly.toml \
 #     --dockerfile fork/deploy/Dockerfile --ignorefile fork/deploy/Dockerfile.dockerignore
@@ -29,7 +30,8 @@ MASTRACODE_PUBLIC_URL = "https://factory-example.fly.dev"
 # Fly regions are not Sprites regions; leave unset for the Sprites default, or pick one near the app.
 FACTORY_SPRITES_REGION = "ord"
 
-# /data holds the database and its snapshots. A Fly volume is local NVMe on the Machine's host, which
+# /data holds the database and its snapshots. A new Fly volume is root's; the image's entrypoint gives it
+# to the server's user on first start. A Fly volume is local NVMe on the Machine's host, which
 # SQLite needs (no network filesystem). Fly also snapshots volumes daily (crash-consistent; SQLite in
 # WAL mode recovers from that state); `factory-snapshot` makes the checked copy (README).
 [mounts]
