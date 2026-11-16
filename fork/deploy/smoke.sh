@@ -84,10 +84,10 @@ asset=$(curl -s -H 'Accept: text/html' "http://127.0.0.1:$port/signin" | grep -o
 code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$port$asset")
 [ -n "$asset" ] && [ "$code" = 200 ] && say "UI asset $asset: 200" || fail "UI asset '$asset' answered $code"
 docker exec "$name" factory-healthcheck && say "health check: ok" || fail "factory-healthcheck failed"
-users=$(docker top "$name" -o uid,args | tail -n +2)
+users=$(docker top "$name" -o pid,uid,args | tail -n +2)
 echo "$users" | sed 's/^/  /'
 # tini (PID 1) stays root to forward signals; everything it starts runs as node.
-[ "$(echo "$users" | grep -v '/usr/bin/tini' | awk '$1 != 1000' | wc -l)" = 0 ] &&
+[ "$(echo "$users" | grep -v '/usr/bin/tini' | awk '$2 != 1000' | wc -l)" = 0 ] &&
   [ "$(echo "$users" | grep -vc '/usr/bin/tini')" -ge 2 ] && say "the server's processes run as uid 1000" ||
   fail "a server process runs as another user"
 [ "$(docker exec "$name" stat -c %U /data/app/mastra.db)" = node ] && say "database owned by node" ||
