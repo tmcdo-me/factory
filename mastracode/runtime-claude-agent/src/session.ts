@@ -55,6 +55,11 @@ export interface ClaudeAgentSessionOptions {
   skills?: ClaudeAgentSkills;
   /** Claude Code session id to resume (from `runtimeState()`). */
   resume?: string;
+  /**
+   * The checkout holds content nobody vetted (a pull request under review): its CLAUDE.md and
+   * `.claude/` settings, hooks included, could be anyone's, so none of them load.
+   */
+  untrustedCheckout?: boolean;
   /** Subprocess environment; build it with `claudeProcessEnv`. */
   env: Record<string, string>;
   /** Launch Claude Code somewhere other than this host (e.g. inside a Sprite). */
@@ -68,6 +73,26 @@ export interface ClaudeAgentSessionOptions {
 
 export interface ClaudeAgentRuntimeState {
   claudeSessionId?: string;
+}
+
+/** Context Factory hands Claude with a turn; the transcript shows it as a notice, not as the user's words. */
+export interface ClaudeTurnNotice {
+  /** The notice's kind, as Mastra Code names its signals (`state`, `reactive`, `system-reminder`). */
+  kind: string;
+  /** The element Claude reads it in, e.g. `factory-phase`. */
+  tag: string;
+  text: string;
+  attributes?: Record<string, string | number | boolean>;
+}
+
+/** One turn: the user's message, or a turn Factory starts (a board kickoff, a notification). */
+export interface ClaudeTurnInput extends SendInput {
+  /** The run's id, for a caller that must recognise the run later (a kickoff's delivery id). */
+  runId?: string;
+  /** Read by Claude ahead of `text`, each shown in the transcript as its own notice. */
+  context?: readonly ClaudeTurnNotice[];
+  /** Show `text` itself as a notice (a skill kickoff) rather than a message the user typed. */
+  notice?: Omit<ClaudeTurnNotice, 'text'>;
 }
 
 /** A simple async queue feeding the SDK's streaming input. */
@@ -133,24 +158,42 @@ export class ClaudeAgentSession {
     return this.#runs.length ? 'running' : 'idle';
   }
 
+  /** The run Claude Code is answering now (the oldest open one), if any. */
+  currentRunId(): string | undefined {
+    return this.#runs[0];
+  }
+
   runtimeState(): ClaudeAgentRuntimeState {
     return this.#claudeSessionId ? { claudeSessionId: this.#claudeSessionId } : {};
   }
 
   /** Start a turn. Turns sent while one runs queue behind it, as in Claude Code. */
-  async send(input: SendInput): Promise<{ runId: string }> {
+  async send(input: ClaudeTurnInput): Promise<{ runId: string }> {
     if (this.#closed) throw new Error(`Session ${this.id} is closed`);
-    const runId = this.#newId();
-    const messageId = this.#newId();
+    const runId = input.runId ?? this.#newId();
     this.#runs.push(runId);
     this.#options.emit({ type: 'run.started', runId });
-    this.#options.emit({ type: 'message.started', messageId, role: 'user', runId });
-    this.#options.emit({ type: 'message.delta', messageId, part: 'text', delta: input.text });
-    this.#options.emit({ type: 'message.ended', messageId });
+    for (const notice of [...(input.context ?? []), ...(input.notice ? [{ ...input.notice, text: input.text }] : [])]) {
+      this.#options.emit({
+        type: 'notice',
+        noticeId: this.#newId(),
+        kind: notice.kind,
+        tag: notice.tag,
+        text: notice.text,
+        ...(notice.attributes ? { attributes: notice.attributes } : {}),
+        runId,
+      });
+    }
+    if (!input.notice) {
+      const messageId = this.#newId();
+      this.#options.emit({ type: 'message.started', messageId, role: 'user', runId });
+      this.#options.emit({ type: 'message.delta', messageId, part: 'text', delta: input.text });
+      this.#options.emit({ type: 'message.ended', messageId });
+    }
     this.#start();
     this.#input!.push({
       type: 'user',
-      message: { role: 'user', content: userContent(input) },
+      message: { role: 'user', content: userContent({ ...input, text: turnText(input) }) },
       parent_tool_use_id: null,
     } as SDKUserMessage);
     return { runId };
@@ -203,7 +246,8 @@ export class ClaudeAgentSession {
         permissionMode: 'bypassPermissions',
         allowDangerouslySkipPermissions: true,
         // The repository's CLAUDE.md and .claude/ apply; the operator's personal ~/.claude does not.
-        settingSources: ['project'],
+        // An untrusted checkout's own settings don't apply either.
+        settingSources: options.untrustedCheckout ? [] : ['project'],
         // Isolation: nothing of the operator's Claude account or install reaches the session beyond
         // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but Factory's,
         // no skills but Factory's (bundled and repository skills stay off), no auto-memory.
@@ -285,6 +329,35 @@ export class ClaudeAgentSession {
     }
     this.#aborting = false;
   }
+}
+
+/** What Claude reads: the turn's context, each in its own element, then the turn (in its notice's element). */
+function turnText(input: ClaudeTurnInput): string {
+  return [
+    ...(input.context ?? []).map(element),
+    input.notice ? element({ ...input.notice, text: input.text }) : input.text,
+  ].join('\n\n');
+}
+
+/** Element and attribute names Factory writes; anything else is dropped rather than written raw. */
+const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * One piece of context as Claude reads it. Its text is escaped, so content from outside Factory (a
+ * pull request comment, a card's description) can't close the element and forge another, such as a
+ * `<factory-phase>` or `<skill>` block.
+ */
+function element(notice: ClaudeTurnNotice): string {
+  const tag = NAME.test(notice.tag) ? notice.tag : 'factory-context';
+  const attributes = Object.entries(notice.attributes ?? {})
+    .filter(([key]) => NAME.test(key))
+    .map(([key, value]) => ` ${key}="${escapeMarkup(String(value)).replaceAll('"', '&quot;')}"`)
+    .join('');
+  return `<${tag}${attributes}>\n${escapeMarkup(notice.text)}\n</${tag}>`;
+}
+
+function escapeMarkup(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function userContent(input: SendInput): string | Record<string, unknown>[] {

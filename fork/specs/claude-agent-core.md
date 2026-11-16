@@ -320,6 +320,16 @@ Each slice: implement → focused tests → manual check where noted → commit.
    `factory_answer_approval`, follower notifications.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
+   - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's
+     default runtime (`session/run-runtime.ts`); the dispatcher kicks off, messages and watches
+     Claude Agent sessions through `FactoryRuntimeSessions` (`rules/runtime-sessions.ts`), with
+     the same supersession, staleness and "the run moved the card" rules; Claude Code restarts
+     (resuming) at each kickoff so the phase's tools and skills apply; `factory-phase` and
+     `factory-work-item` reach Claude with each turn they changed; a review session or one on a
+     pull request card (read from its binding, failing closed) loads none of its checkout's own
+     settings. Only a session minted by the start takes the default: one the card holds, or with
+     thread messages or events, stays on Mastra Code. Project default runtime in Settings → Manage Factory. Phase goals
+     (`maxRuns` re-kicks) stay Mastra Code only for now.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

@@ -22,7 +22,7 @@
 import { existsSync } from 'node:fs';
 
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
-import { CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
+import { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
 import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code';
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
@@ -155,6 +155,8 @@ import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
+import { stateSignalContext } from './session/claude-agent-context.js';
+import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
 import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
 import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
@@ -172,6 +174,7 @@ import { hasResolvedOrg } from './session/org-seed.js';
 import { FactoryReplyCredentialProcessor } from './session/reply-credential-processor.js';
 import { migrateSessionResources, privatizeOwnerResourceSessions } from './session/resource-migration.js';
 import { observeSessionRunEnd } from './session/run-audit.js';
+import { createRunRuntimes } from './session/run-runtime.js';
 import { selfReviewApprovedHead } from './session/self-review-gate.js';
 import { sessionMemoryResourceId, sessionStampCounts } from './session/session-threads.js';
 import type { ReviewedChangeRequest } from './session/source-control-tools.js';
@@ -1805,10 +1808,21 @@ export class MastraFactory {
       workspace: createClaudeAgentWorkspaceResolver({
         resolveWorkspace: workspaceFactory,
         getMastra: () => this.#prepared?.base.controller.getMastra(),
+        // The resource its run binding records, so Factory's tools find the session's card.
+        resourceIdOf: async sessionId =>
+          (await this.#prepared?.base.controller.queryThreadById({ threadId: sessionId }))?.resourceId,
+        modelIdOf: async sessionId =>
+          (await agentSessionsStorage.get(sessionId))?.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL,
       }),
       home: claudeAgentHome(),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: agentInteractionsStorage, hub: agentEventHub }),
+      // A review session, or one on a pull request card, loads none of its checkout's own settings.
+      ...(workItemsReady
+        ? { checkout: claudeAgentCheckoutPosture({ sessions: sourceControlSessions, workItems: workItemsStorage }) }
+        : {}),
+      // The card and phase each turn, as Mastra Code's state signals tell its sessions.
+      context: stateSignalContext([factoryProcessor, workItemProcessor].filter(processor => processor !== undefined)),
     });
     this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>
@@ -2252,6 +2266,24 @@ export class MastraFactory {
               ? { storedBoards: { storage: storedBoardsStorage, cache: this.#projectBoards } }
               : {}),
             factoryTransitionService: transitionService,
+            // fork(claude-agent): board runs take the project's default runtime.
+            startRuntimes: createRunRuntimes({
+              sessions: agentSessionsStorage,
+              events: agentEventHub.log,
+              threadHasMessages: async threadId => {
+                const memory = await storage.getMastraStorage().getStore('memory');
+                if (!memory) return false;
+                const { messages } = await memory.listMessages({
+                  threadId,
+                  page: 0,
+                  perPage: 1,
+                  orderBy: { field: 'createdAt', direction: 'ASC' },
+                });
+                return messages.length > 0;
+              },
+              unscopedDefaults: () => !routeAuth.enabled(),
+              ownConversation: [CLAUDE_AGENT_RUNTIME_ID],
+            }),
             runSlots: () => this.#dispatcher?.runSlots(),
             onFactoryRuntime: ({ transitionService: runtimeTransitionService, startCoordinator, prepareBinding }) => {
               this.#startCoordinator = startCoordinator;
@@ -2270,6 +2302,7 @@ export class MastraFactory {
                 reconcileToolResults: () => factoryProcessor?.reconcileAllBoundThreads() ?? Promise.resolve(),
                 reconcileRunBinding: binding => factoryProcessor?.reconcileBinding(binding) ?? Promise.resolve(),
                 prepareBinding,
+                runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
                 ...(githubIntegration
                   ? {
                       dismissStaleReviews: async decision => {

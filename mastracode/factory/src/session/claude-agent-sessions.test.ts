@@ -469,6 +469,300 @@ describe('ClaudeAgentSessions with Factory tools', () => {
   });
 });
 
+describe('ClaudeAgentSessions board runs', () => {
+  const owner = () => hostContext('user-a', false);
+  const planSkills = () =>
+    new Workspace({
+      skillSource: new FactorySkillSource(new LocalSkillSource({ basePath: '/' }), [], undefined, async () => false),
+      skills: [FACTORY_SKILLS_MOUNT],
+    }).skills!;
+  const userText = (message: unknown) => (message as { message: { content: string } }).message.content;
+
+  it("kicks a phase's skill off in a freshly started Claude Code, under the run id the dispatcher chose", async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-home-'));
+    try {
+      const fake = toolCallingQuery(async () => {});
+      const skills = planSkills();
+      const { sessions, log } = toolSetup(fake.fn, {
+        home,
+        workspace: async () => ({
+          cwd: '/sandboxes/s1/repo',
+          env: {},
+          skills,
+          requestContext: claudeAgentRequestContext('s1'),
+        }),
+      });
+      const runs = sessions.runtimeSessions();
+      expect(await runs.runs('s1')).toBe(true);
+      expect(await runs.runs('mastra-session')).toBe(false);
+
+      // A person's turn first: Claude Code starts once for it.
+      await sessions.commands().send('s1', { text: 'look around' }, { context: hostContext('user-a') });
+      await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+      expect(fake.options).toHaveLength(1);
+
+      const { ended } = await runs.kickoff(
+        's1',
+        {
+          runId: 'decision-1',
+          skill: { name: 'factory-plan', arguments: 'card 42' },
+          description: 'Make it faster',
+          preface: 'The card moved to Planning.',
+        },
+        owner(),
+      );
+      expect(await ended).toEqual({ reason: 'complete' });
+
+      // The kickoff started Claude Code again (its phase decides its tools and skills), resuming the conversation.
+      expect(fake.options).toHaveLength(2);
+      expect(fake.options[1]).toMatchObject({ resume: 'claude-xyz' });
+      const kickoff = userText(fake.seen[1]);
+      expect(kickoff).toContain(
+        '<factory-message source="stage-transition">\nThe card moved to Planning.\n</factory-message>',
+      );
+      expect(kickoff).toContain('<skill name="factory-plan">\nRun the `factory:factory-plan` skill now');
+      expect(kickoff).toContain('ARGUMENTS: card 42');
+      // The card's description is data, and arrives escaped with the rest of the kickoff.
+      expect(kickoff).toContain('&lt;work-item-description&gt;');
+      expect(await runs.hasRun('s1', 'decision-1')).toBe(true);
+      expect(await runs.hasRun('s1', 'decision-2')).toBe(false);
+      const events = (await log.list('s1')).map(e => e.event);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.started', runId: 'decision-1' }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'notice',
+          kind: 'reactive',
+          tag: 'skill',
+          attributes: { name: 'factory-plan' },
+        }),
+      );
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a skill the session doesn't have, before anything reaches Claude", async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions } = toolSetup(fake.fn);
+    await expect(
+      sessions.runtimeSessions().kickoff('s1', { runId: 'd1', skill: { name: 'factory-plan' } }, owner()),
+    ).rejects.toMatchObject({ code: 'run_configuration_invalid' });
+    expect(fake.seen).toHaveLength(0);
+  });
+
+  it('knows only the runs this process started: a run never outlives its Claude Code', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    // Before a restart the kickoff landed; its Claude Code died with that process, so it is owed again.
+    await log.append('s1', [{ type: 'run.started', runId: 'decision-1' }]);
+    const runs = sessions.runtimeSessions();
+    expect(await runs.hasRun('s1', 'decision-1')).toBe(false);
+    const { ended } = await runs.kickoff('s1', { runId: 'decision-1', prompt: 'Go.' }, owner());
+    await ended;
+    expect(await runs.hasRun('s1', 'decision-1')).toBe(true);
+  });
+
+  it('resumes the conversation across a restart even before its resume state is stored', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const store = memoryStore([claude('s1')]);
+    // Saving the resume state is fire-and-forget; here it never lands.
+    store.setRuntimeState.mockImplementation(() => new Promise<void>(() => {}));
+    const { sessions } = toolSetup(fake.fn, { sessions: store });
+    const runs = sessions.runtimeSessions();
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'One.' }, owner())
+    ).ended;
+    await (
+      await runs.kickoff('s1', { runId: 'd2', prompt: 'Two.' }, owner())
+    ).ended;
+    expect(fake.options).toHaveLength(2);
+    expect(fake.options[0]).not.toHaveProperty('resume');
+    expect(fake.options[1]).toMatchObject({ resume: 'claude-xyz' });
+  });
+
+  it('holds at most 20 waiting messages, and says how many it dropped', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    for (let n = 1; n <= 25; n += 1) {
+      await runs.message('s1', { text: `news ${n}`, source: 'source-activity', wake: false }, owner());
+    }
+    await runs.message('s1', { text: 'now', source: 'rule-message', wake: true }, owner());
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    const told = userText(fake.seen[0]);
+    expect(told).toContain('5 earlier Factory messages were dropped');
+    expect(told).not.toContain('news 5\n');
+    expect(told).toContain('news 6');
+    expect(told).toContain('news 25');
+  });
+
+  it("says so when a session's runtime cannot be looked up, rather than guessing", async () => {
+    const store = memoryStore([]);
+    const { sessions } = toolSetup(toolCallingQuery(async () => {}).fn, {
+      sessions: { ...store, get: async () => Promise.reject(new Error('db down')) },
+    });
+    await expect(sessions.runtimeSessions().runs('s1')).rejects.toThrow('db down');
+  });
+
+  it("tells a board run parked on its own plan from a person's turn waiting on their question", async () => {
+    const fake = toolCallingQuery(async (client, index) => {
+      if (index === 0) await client.call('ask_user', { question: 'Ship it?' }, 'toolu_person');
+      else await client.call('submit_plan', { path: 'plan.md' }, 'toolu_board');
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+
+    await sessions.commands().send('s1', { text: 'decide' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    expect(runs.isRunning('s1')).toBe(true);
+    expect(await runs.parkedBoardRun('s1')).toBe(false);
+
+    await runs.abort('s1', owner());
+    await runs.idle('s1');
+    const board = await runs.kickoff('s1', { runId: 'board-1', prompt: 'Plan it.' }, owner());
+    expect(await board.ended).toEqual({ reason: 'awaiting_interaction' });
+    expect(await runs.parkedBoardRun('s1')).toBe(true);
+  });
+
+  it("tells the session Factory's messages: waking it with a turn, or with its next one", async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+
+    await runs.message('s1', { text: 'Comment by @ann on #42', source: 'source-activity', wake: false }, owner());
+    expect(fake.seen).toHaveLength(0);
+    await runs.message('s1', { text: 'Rebase onto main.', source: 'rule-message', wake: true }, owner());
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    expect(userText(fake.seen[0])).toBe(
+      '<factory-message source="source-activity">\nComment by @ann on #42\n</factory-message>\n\n' +
+        '<factory-message source="rule-message">\nRebase onto main.\n</factory-message>',
+    );
+    // Factory's words, not the person's.
+    const events = (await log.list('s1')).map(e => e.event);
+    expect(events.some(e => e.type === 'message.started' && e.role === 'user')).toBe(false);
+    expect(events.filter(e => e.type === 'notice').map(e => (e as { text: string }).text)).toEqual([
+      'Comment by @ann on #42',
+      'Rebase onto main.',
+    ]);
+  });
+
+  it("tells each turn the card's context when it changed since the session last heard it", async () => {
+    const fake = toolCallingQuery(async () => {});
+    let revision = 1;
+    const context = vi.fn(async (_rc: RequestContext, previous: ReadonlyMap<string, { cacheKey: string }>) => {
+      const cacheKey = `rev-${revision}`;
+      if (previous.get('factory-phase')?.cacheKey === cacheKey) return [];
+      return [{ id: 'factory-phase', cacheKey, kind: 'state', tag: 'factory-phase', text: `Revision: ${revision}` }];
+    });
+    const { sessions, log } = toolSetup(fake.fn, { context });
+    const commands = sessions.commands();
+    const turns = async (count: number) =>
+      vi.waitFor(async () =>
+        expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(count),
+      );
+
+    await commands.send('s1', { text: 'one' }, { context: hostContext('user-a') });
+    await turns(1);
+    await commands.send('s1', { text: 'two' }, { context: hostContext('user-a') });
+    await turns(2);
+    revision = 2;
+    await commands.send('s1', { text: 'three' }, { context: hostContext('user-a') });
+    await turns(3);
+
+    expect(fake.seen.map(userText)).toEqual([
+      '<factory-phase>\nRevision: 1\n</factory-phase>\n\none',
+      'two',
+      '<factory-phase>\nRevision: 2\n</factory-phase>\n\nthree',
+    ]);
+    // It reads the card as the session's tools do: through the session's controller context.
+    const rc = context.mock.calls[0]![0];
+    expect((rc.get('controller') as { sessionId: string }).sessionId).toBe('s1');
+    // The person's words stay theirs; the context is a notice beside them.
+    const users = (await log.list('s1')).filter(e => e.event.type === 'message.delta').map(e => e.event);
+    expect(users.map(e => (e as { delta: string }).delta)).toEqual(['one', 'two', 'three']);
+  });
+
+  it("approves a board run's plan on the board's behalf while the dispatcher says so", async () => {
+    const replies: string[] = [];
+    const fake = toolCallingQuery(async client => {
+      replies.push(
+        (await client.call('submit_plan', { path: 'plan.md' }, `toolu_plan_${replies.length}`)).content[0]!.text,
+      );
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    let approvals = 0;
+    const { ended } = await runs.kickoff(
+      's1',
+      { runId: 'd1', prompt: 'Plan it.', autoApprovePlan: () => approvals++ < 1 },
+      owner(),
+    );
+    expect(await ended).toEqual({ reason: 'complete' });
+    expect(replies[0]).toMatch(/^Plan approved\./);
+    expect(await store.listPending({ sessionId: 's1' })).toHaveLength(0);
+
+    // Past what the board allows, the plan waits for a person: the run is parked, as a suspended
+    // Mastra Code run ends, while Claude's turn stays open for the answer.
+    const second = await runs.kickoff(
+      's1',
+      { runId: 'd2', prompt: 'Plan again.', autoApprovePlan: () => approvals++ < 1 },
+      owner(),
+    );
+    expect(await second.ended).toEqual({ reason: 'awaiting_interaction' });
+    expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1);
+    expect(await runs.awaitsPerson('s1')).toBe(true);
+    expect(runs.isRunning('s1')).toBe(true);
+  });
+
+  it("never approves a person's own plan, even one queued behind a board run that may approve its own", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const replies: string[] = [];
+    const fake = toolCallingQuery(async (client, index) => {
+      if (index === 0) return gate; // the board's run
+      replies.push((await client.call('submit_plan', { path: 'plan.md' }, 'toolu_person')).content[0]!.text);
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    const board = await runs.kickoff(
+      's1',
+      { runId: 'board-1', prompt: 'Plan it.', autoApprovePlan: () => true },
+      owner(),
+    );
+    await sessions.commands().send('s1', { text: 'here is my plan' }, { context: hostContext('user-a') });
+    release();
+    await board.ended;
+
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    expect(replies).toEqual([]);
+  });
+
+  it('waits for the run in flight before saying the session is idle', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const fake = toolCallingQuery(async () => gate);
+    const { sessions } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    await expect(runs.idle('s1')).resolves.toBeUndefined();
+    await runs.message('s1', { text: 'go', source: 'rule-message', wake: true }, owner());
+    await vi.waitFor(() => expect(runs.isRunning('s1')).toBe(true));
+    let idle = false;
+    void runs.idle('s1').then(() => {
+      idle = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(idle).toBe(false);
+    release();
+    await vi.waitFor(() => expect(idle).toBe(true));
+  });
+});
+
 describe('routeSessionCommands', () => {
   it('sends commands to the runtime recorded for the session, else the fallback', async () => {
     const calls: string[] = [];
@@ -489,5 +783,25 @@ describe('routeSessionCommands', () => {
     await router.answer('c1', { callId: 'x' }, { kind: 'question', answer: 'y' }, request);
     await router.setModel('m1', { modelId: 'm' }, request);
     expect(calls).toEqual(['claude:send:c1', 'mastra:send:m1', 'claude:answer:c1', 'mastra:model:m1']);
+  });
+
+  it("refuses, rather than guessing, when the session's runtime can't be read", async () => {
+    const calls: string[] = [];
+    const fake: SessionCommands = {
+      send: async id => (calls.push(`send:${id}`), { ok: true }),
+      abort: async id => (calls.push(`abort:${id}`), { ok: true }),
+      answer: async id => (calls.push(`answer:${id}`), { ok: true }),
+      setModel: async id => (calls.push(`model:${id}`), { ok: true }),
+    };
+    const router = routeSessionCommands({
+      sessions: { get: async () => Promise.reject(new Error('db down')) },
+      runtimes: { 'claude-agent': fake },
+      fallback: fake,
+    });
+    expect(await router.send('c1', { text: 'x' }, { context: undefined })).toMatchObject({
+      ok: false,
+      reason: 'unavailable',
+    });
+    expect(calls).toEqual([]);
   });
 });

@@ -50,16 +50,26 @@ export function buildAgentRuntimeRoutes({
     return tenant ? { ok: true as const, orgId: tenant.orgId } : { ok: false as const };
   };
 
-  /** The caller's organization owns the project (with auth off, any project id is accepted). */
+  /**
+   * The project, owned by the caller's organization. With auth on, a caller with no organization has
+   * no project (boards require one), so none of its runtime can be read or set. With auth off every
+   * project is unscoped (`local`).
+   */
   const projectScope = async (c: ReturnType<typeof loose>) => {
+    const projectId = c.req.param('projectId');
+    if (!auth.enabled()) {
+      return projectId ? { status: 200 as const, scope: { orgId: 'local', projectId } } : { status: 404 as const };
+    }
     const who = await viewer(c);
     if (!who.ok) return { status: 401 as const };
-    const projectId = c.req.param('projectId');
-    if (!projectId) return { status: 404 as const };
-    const orgId = who.orgId ?? 'local';
-    if (who.orgId && !(await projects.get({ orgId, id: projectId }))) return { status: 404 as const };
-    return { status: 200 as const, scope: { orgId, projectId } };
+    if (!who.orgId) return { status: 403 as const };
+    if (!projectId || !(await projects.get({ orgId: who.orgId, id: projectId }))) return { status: 404 as const };
+    return { status: 200 as const, scope: { orgId: who.orgId, projectId } };
   };
+  const scopeError = (status: 401 | 403 | 404) =>
+    status === 403
+      ? { error: 'organization_required', message: 'Agent runtimes are set per organization.' }
+      : { error: status === 401 ? 'unauthorized' : 'Project not found' };
 
   return [
     registerApiRoute('/web/factory/runtimes', {
@@ -113,7 +123,7 @@ export function buildAgentRuntimeRoutes({
       handler: async cc => {
         const c = loose(cc);
         const found = await projectScope(c);
-        if (found.status !== 200) return c.json({ error: 'Project not found' }, found.status);
+        if (found.status !== 200) return c.json(scopeError(found.status), found.status);
         return c.json({ runtimeId: (await sessions.getProjectDefault(found.scope)) ?? DEFAULT_RUNTIME_ID });
       },
     }),
@@ -123,7 +133,7 @@ export function buildAgentRuntimeRoutes({
       handler: async cc => {
         const c = loose(cc);
         const found = await projectScope(c);
-        if (found.status !== 200) return c.json({ error: 'Project not found' }, found.status);
+        if (found.status !== 200) return c.json(scopeError(found.status), found.status);
         const parsed = projectRuntimeBody.safeParse(await c.req.json().catch(() => undefined));
         if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
         await sessions.setProjectDefault(found.scope, parsed.data.runtimeId);

@@ -32,8 +32,9 @@ export interface SessionRuntime {
 
 async function json<T>(response: Response, what: string): Promise<T> {
   if (response.ok) return (await response.json()) as T;
-  const body = (await response.json().catch(() => ({}))) as { error?: string };
-  throw new Error(body.error ?? `${what} failed (${response.status})`);
+  // A route's `message` is for people; its `error` may be a code (`organization_required`).
+  const body = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+  throw new Error(body.message ?? body.error ?? `${what} failed (${response.status})`);
 }
 
 export const fetchRuntimeCatalog = async (baseUrl: string) =>

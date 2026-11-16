@@ -27,6 +27,7 @@ import type { CardSource } from '../integrations/kept-cards.js';
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryBindingPreparationInput } from '../rules/dispatcher.js';
 import { FactoryStartCoordinator } from '../rules/start-coordinator.js';
+import type { FactoryStartRuntimes } from '../rules/start-coordinator.js';
 import { FactoryTransitionService } from '../rules/transition-service.js';
 import { workItemSource } from '../rules/types.js';
 import type { FactoryRuleActor } from '../rules/types.js';
@@ -169,6 +170,8 @@ export interface FactoryApiRoutesDeps {
   moveThread?: (input: { threadId: string; resourceId: string }) => Promise<unknown>;
   /** This process's dispatcher run slots, for the run queue; `undefined` until the dispatcher exists. */
   runSlots?: () => { inUse: number; cap: number } | undefined;
+  /** fork(claude-agent): which agent runtime a run's session uses; without it, Mastra Code. */
+  startRuntimes?: FactoryStartRuntimes;
   onFactoryRuntime?: (runtime: {
     transitionService: FactoryTransitionService;
     startCoordinator: FactoryStartCoordinator;
@@ -904,6 +907,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
         deps.domains.intake,
         { projects: deps.domains.projects, modelDefaults: deps.domains.modelDefaults },
         deps.boardRegistry,
+        deps.startRuntimes, // fork(claude-agent)
       )
     : undefined;
   if (transitionService && startCoordinator) {

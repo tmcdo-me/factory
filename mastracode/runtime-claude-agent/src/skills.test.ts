@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { writeSkillsPlugin } from './skills';
+import { skillKickoffText, writeSkillsPlugin } from './skills';
 
 let root: string;
 beforeEach(async () => {
@@ -63,5 +63,16 @@ describe('writeSkillsPlugin', () => {
     await expect(
       writeSkillsPlugin(join(root, 'b'), [{ ...plan, files: [{ path: '../../outside.md', content: 'x' }] }]),
     ).rejects.toThrow(/outside its folder/);
+  });
+});
+
+describe('skillKickoffText', () => {
+  it("starts the plugin's skill with its arguments, or continues one already open", () => {
+    expect(skillKickoffText('factory-plan', { arguments: ' card 42 ' })).toBe(
+      'Run the `factory:factory-plan` skill now: open it with the Skill tool and follow its instructions.\n\nARGUMENTS: card 42',
+    );
+    const resumed = skillKickoffText('factory-plan', { resume: true });
+    expect(resumed).toContain('Resume the active `factory:factory-plan` skill');
+    expect(resumed).not.toContain('ARGUMENTS');
   });
 });

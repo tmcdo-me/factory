@@ -242,6 +242,8 @@ describe('Factory session commands', () => {
     [{ ok: false, reason: 'session_not_found' } as const, 404],
     [{ ok: false, reason: 'not_pending', message: 'stale_tool_call' } as const, 409],
     [{ ok: false, reason: 'invalid' } as const, 400],
+    // fork(claude-agent)
+    [{ ok: false, reason: 'unavailable', message: 'try again' } as const, 503],
   ])('maps a runtime refusal %o to HTTP %i', async (result, status) => {
     const { commands } = fakeCommands(result);
     const res = await buildApp({ user: alice, commands }).app.request('/web/factory/sessions/s1/abort', {
