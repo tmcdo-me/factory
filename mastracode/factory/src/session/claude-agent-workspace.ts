@@ -1,13 +1,12 @@
 // fork(claude-agent): a Claude Agent session's checkout, from Factory's own workspace factory.
 import type { SandboxProcesses, SessionWorkspace } from '@factory/agent-runtime';
-import { ensureClaudeCode, sandboxClaudeCodeLaunch } from '@factory/runtime-claude-agent';
+import { ensureClaudeCode, runInProcesses, sandboxClaudeCodeLaunch } from '@factory/runtime-claude-agent';
 import type { ClaudeCodeLaunch, InstalledClaudeCode, RunInSandbox } from '@factory/runtime-claude-agent';
 import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
-import type { MastraSandbox, Workspace, WorkspaceSandbox, WorkspaceSkills } from '@mastra/core/workspace';
+import type { MastraSandbox, Workspace, WorkspaceSkills } from '@mastra/core/workspace';
 
-import { requireExec } from '../sandbox/materialization.js';
 import { sessionSandboxProcesses } from '../sandbox/sandbox-processes.js';
 import { findSessionSandboxEntry, sessionLayout } from '../sandbox/session-sandbox.js';
 
@@ -40,15 +39,17 @@ export interface ClaudeAgentWorkspace {
   /** The session's workspace as the runtime seam describes it (what Factory's tools get). */
   sessionWorkspace?: SessionWorkspace;
   /**
+   * The sandbox's environment as it is now, after Factory refreshed what it keeps current (a
+   * GitHub token re-minted once it is stale): read whenever Claude Code (re)starts.
+   */
+  freshEnv?(): Promise<Record<string, string>>;
+  /**
    * The request context Factory's tools run with for a turn the host sent with `hostContext`: the
    * host's entries (the signed-in caller) plus this session's controller context, as Mastra Code's
    * tools see it. The controller state is shared across turns, so what one tool heals stays healed.
    */
   requestContext(hostContext: unknown): RequestContext;
 }
-
-/** How long the first start of a session's Sprite may take to install Claude Code. */
-const INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * Resolve a session's workspace exactly as a Mastra Code session would (same factory instance, same
@@ -72,20 +73,16 @@ export function createClaudeAgentWorkspaceResolver(options: {
   /** Installs Claude Code in a sandbox that runs it remotely; injected for tests. */
   installClaudeCode?: (run: RunInSandbox) => Promise<InstalledClaudeCode>;
 }) {
-  const installed = new WeakMap<object, Promise<InstalledClaudeCode>>();
-  /** Once per sandbox instance in this process; an installed sandbox answers with one `--version`. */
-  const claudeCodeIn = (sandbox: WorkspaceSandbox, processes: SandboxProcesses): Promise<ClaudeCodeLaunch> => {
-    let install = installed.get(sandbox);
-    if (!install) {
-      const exec = requireExec(sandbox);
-      install = (options.installClaudeCode ?? ensureClaudeCode)(script =>
-        exec.executeCommand(script, undefined, { timeout: INSTALL_TIMEOUT_MS }),
-      );
-      installed.set(sandbox, install);
-      install.catch(() => installed.delete(sandbox));
-    }
-    return install.then(claudeCode => sandboxClaudeCodeLaunch(processes, claudeCode));
-  };
+  /**
+   * On every open, never remembered: the sandbox may have been reset (a new VM behind the same
+   * object) or its binary changed since. A verified sandbox answers with one checksum. Run through
+   * the sandbox's own processes with no environment, so no credential is near it or its errors.
+   */
+  const claudeCodeIn = async (processes: SandboxProcesses): Promise<ClaudeCodeLaunch> =>
+    sandboxClaudeCodeLaunch(
+      processes,
+      await (options.installClaudeCode ?? ensureClaudeCode)(runInProcesses(processes)),
+    );
   return async (sessionId: string, requestContext: unknown): Promise<ClaudeAgentWorkspace> => {
     const [resourceId, modelId] = await Promise.all([
       options.resourceIdOf?.(sessionId),
@@ -120,11 +117,19 @@ export function createClaudeAgentWorkspaceResolver(options: {
     if (!layout || !(await processes.files.isDirectory(layout.root))) {
       throw new Error(`Session ${sessionId}'s checkout is not ready`);
     }
-    const sandboxEnv = (sandbox as unknown as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {};
-    const env = Object.fromEntries(
-      Object.entries(sandboxEnv).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
-    );
-    const launch = processes.kind === 'local' ? undefined : await claudeCodeIn(sandbox, processes);
+    const currentEnv = () =>
+      Object.fromEntries(
+        Object.entries(
+          (sandbox as unknown as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {},
+        ).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      );
+    const env = currentEnv();
+    const launch = processes.kind === 'local' ? undefined : await claudeCodeIn(processes);
+    // Factory re-mints a stale GitHub token before any sandbox command; a no-op command triggers it.
+    const freshEnv = async () => {
+      await sandbox.executeCommand?.('true').catch(() => undefined);
+      return currentEnv();
+    };
     return {
       cwd: layout.root,
       env,
@@ -136,9 +141,10 @@ export function createClaudeAgentWorkspaceResolver(options: {
         kind: processes.kind,
         checkoutDir: layout.root,
         sandbox: sandbox as MastraSandbox,
-        env: async () => ({ ...env }),
+        env: freshEnv,
         spawn: processes.spawn,
       },
+      freshEnv,
       requestContext: contextFor,
     };
   };

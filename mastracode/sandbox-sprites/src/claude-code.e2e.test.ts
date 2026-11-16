@@ -7,6 +7,7 @@
  *
  * Opt-in (it runs a ~350 MB binary): `FACTORY_SPRITES_E2E=1 pnpm test src/claude-code.e2e.test.ts`.
  */
+import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -27,17 +28,30 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+import { envOverStdin } from './sprite-exec';
 import { spawnInSprite } from './sprite-process';
-import { fakeSpriteExec } from './test-utils';
+import { execUrl, fakeSpriteExec } from './test-utils';
 
 /** A value only the process's environment carries (as a credential would). */
 const MARKER = 'only-in-the-environment-7f3a';
 
-/** The SDK's bundled native binary for this machine, standing in for the one installed in a Sprite. */
-function bundledBinary(): string {
+/**
+ * The SDK's bundled native binary for this machine, standing in for the one installed in a Sprite,
+ * with its release checksum from the SDK's manifest (as the install step verifies it).
+ */
+function bundledBinary(): { executable: string; checksum: string } {
   const sdk = createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk');
   const platform = `${process.platform}-${process.arch}`;
-  return join(dirname(createRequire(sdk).resolve(`@anthropic-ai/claude-agent-sdk-${platform}/package.json`)), 'claude');
+  const manifest = JSON.parse(readFileSync(join(dirname(sdk), 'manifest.json'), 'utf8')) as {
+    platforms: Record<string, { checksum: string }>;
+  };
+  return {
+    executable: join(
+      dirname(createRequire(sdk).resolve(`@anthropic-ai/claude-agent-sdk-${platform}/package.json`)),
+      'claude',
+    ),
+    checksum: manifest.platforms[platform]!.checksum,
+  };
 }
 
 describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
@@ -52,7 +66,8 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
     });
 
     it('starts, serves Factory tools over its stdio, and loads the skills plugin', { timeout: 120_000 }, async () => {
-      const sprite = fakeSpriteExec();
+      const raw = fakeSpriteExec();
+      const sprite = envOverStdin({ spawn: raw.spawn });
       const processes: SandboxProcesses = {
         kind: 'sprite',
         spawn: (command, args, options) => spawnInSprite(sprite.spawn, command, args, options),
@@ -61,7 +76,7 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
       const home = join(root, 'claude-home');
       const cwd = join(root, 'repo');
       await HOST_FILES.mkdir(cwd);
-      const launch = sandboxClaudeCodeLaunch(processes, { home, executable: bundledBinary() });
+      const launch = sandboxClaudeCodeLaunch(processes, { home, ...bundledBinary() });
       const skills = await writeSkillsPlugin(
         join(home, 'factory-skills', 's1'),
         [{ name: 'factory-plan', description: 'Plan the work', instructions: '# Factory Plan' }],
@@ -126,11 +141,15 @@ describe.skipIf(!process.env.FACTORY_SPRITES_E2E)(
         // Its environment arrived over stdin (the fake exec gives it only PATH): it keeps its config in
         // the home Factory chose.
         expect((await stat(join(home, '.claude'))).isDirectory()).toBe(true);
-        // It ran as the Sprite exec, through the stdin preamble: no environment in the exec request.
-        expect(sprite.requests).toHaveLength(1);
-        expect(sprite.requests[0]).toMatchObject({ command: 'sh', options: { cwd } });
-        expect(sprite.requests[0]!.args.slice(2, 3)).toEqual([launch.pathToClaudeCodeExecutable]);
-        expect(JSON.stringify(sprite.requests[0])).not.toContain(MARKER);
+        // It ran as one Sprite exec: the environment preamble, then the launch check, then the binary
+        // (verified against its release checksum); no environment in the exec request.
+        expect(raw.requests).toHaveLength(1);
+        const [request] = raw.requests;
+        expect(request).toMatchObject({ command: 'sh', options: { cwd } });
+        expect(request!.args.slice(2, 4)).toEqual(['sh', '-c']);
+        expect(request!.args[4]).toContain(launch.pathToClaudeCodeExecutable);
+        expect(request!.options).not.toHaveProperty('env');
+        expect(execUrl(request!)).not.toContain(MARKER);
       } finally {
         release();
         claude.close();

@@ -5,6 +5,14 @@
  * Claude's own credential is whatever the operator configured for the `claude` binary: its saved
  * login (`claude /login`), or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` in the server's
  * environment, passed through untouched. Factory never reads, stores or logs them.
+ *
+ * Known gap: Claude Code's own tool processes (Bash, and what they run: a repository's tests)
+ * inherit that credential. Claude Code 2.1.325 has a switch for this, `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB`,
+ * but it is not set here: it is the hardening mode for CI on untrusted input, and in this version
+ * it forces the permission mode to `default` (Factory sessions run `bypassPermissions` with no
+ * permission prompt to answer, so tools would be refused), and it scrubs `GH_TOKEN`/`GITHUB_TOKEN`
+ * and every token-, secret- or key-like variable from subprocesses too, which takes away the
+ * session's git credentials. It is not part of the Agent SDK's documented options either.
  */
 const PASSTHROUGH = [
   'LANG',

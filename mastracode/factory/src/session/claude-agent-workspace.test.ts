@@ -1,7 +1,9 @@
 // fork(claude-agent)
+import { EventEmitter } from 'node:events';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough } from 'node:stream';
 
 import { SANDBOX_PROCESSES } from '@factory/agent-runtime';
 import type { SandboxProcesses } from '@factory/agent-runtime';
@@ -57,6 +59,17 @@ const resolverFor = (sandbox: unknown) =>
  * A started Sprite sandbox as Factory's workspace hands it out: its checkout lives in the VM (not
  * on this host), and it carries the seam's processes. Commands record what they run.
  */
+/** A process that exits at once with no output, as a stand-in for the install exec. */
+function fakeProcess() {
+  const process = new EventEmitter() as EventEmitter & Record<string, unknown>;
+  Object.assign(process, { stdin: new PassThrough(), stdout: new PassThrough(), stderr: new PassThrough() });
+  setTimeout(() => {
+    (process.stdout as PassThrough).end();
+    process.emit('exit', 0, null);
+  }, 5);
+  return process;
+}
+
 function spriteSandbox(options: { checkout?: boolean } = {}) {
   const commands: string[] = [];
   const spawn = vi.fn();
@@ -75,7 +88,7 @@ function spriteSandbox(options: { checkout?: boolean } = {}) {
     provider: 'sprites',
     status: 'running',
     ensureRunning: async () => {},
-    getEnv: () => ({ GH_TOKEN: 'ghs_x' }),
+    getEnv: (): Record<string, string> => ({ GH_TOKEN: 'ghs_x' }),
     executeCommand: vi.fn(async (command: string) => {
       commands.push(command);
       return { exitCode: 0, stdout: '', stderr: '' };
@@ -90,14 +103,17 @@ function spriteSandbox(options: { checkout?: boolean } = {}) {
 const installed = {
   version: '2.1.325',
   home: '/home/sprite/.factory/claude-agent',
-  executable: '/home/sprite/.factory/claude-agent/.local/bin/claude',
+  executable: '/home/sprite/.factory/claude-agent/.local/share/claude/versions/2.1.325',
+  checksum: 'c'.repeat(64),
 };
 
 describe('Claude Agent workspace', () => {
-  it("runs Claude Code inside a Sprite: installed there once, launched through the sandbox's processes", async () => {
+  it("runs Claude Code inside a Sprite: installed and verified there, launched through the sandbox's processes", async () => {
     const { sandbox, spawn } = spriteSandbox();
+    const scripts: string[] = [];
     const install = vi.fn(async (run: (script: string) => Promise<unknown>) => {
-      await run('install script');
+      scripts.push('install');
+      void run;
       return installed;
     });
     const resolve = createClaudeAgentWorkspaceResolver({
@@ -113,25 +129,60 @@ describe('Claude Agent workspace', () => {
       launch: { home: installed.home, remote: true, pathToClaudeCodeExecutable: installed.executable },
       sessionWorkspace: { kind: 'sprite', checkoutDir: '/home/sprite/repo' },
     });
-    // The install step ran in the sandbox, with room for a first download.
-    expect(sandbox.executeCommand).toHaveBeenCalledWith('install script', undefined, { timeout: 600_000 });
 
-    // Claude Code starts through the Sprite, never as a process on this host.
+    // Claude Code starts through the Sprite, never as a process on this host, behind the launch check.
     workspace.launch!.spawnClaudeCodeProcess!({
       command: installed.executable,
       args: ['--resume', 'claude-1'],
       cwd: '/home/sprite/repo',
       env: { HOME: installed.home },
     });
-    expect(spawn).toHaveBeenCalledWith(installed.executable, ['--resume', 'claude-1'], {
-      cwd: '/home/sprite/repo',
-      env: { HOME: installed.home },
-      signal: undefined,
-    });
+    expect(spawn).toHaveBeenCalledWith(
+      'sh',
+      ['-c', expect.stringContaining(installed.checksum), 'claude', '--resume', 'claude-1'],
+      {
+        cwd: '/home/sprite/repo',
+        env: { HOME: installed.home },
+        signal: undefined,
+      },
+    );
 
-    // A reopen (a restart of Claude Code, the next kickoff) doesn't install again.
+    // Every open checks again: after a reset the same sandbox object is a new VM without the binary.
     await resolve('agent-session-1', undefined);
-    expect(install).toHaveBeenCalledTimes(1);
+    expect(install).toHaveBeenCalledTimes(2);
+  });
+
+  it('installs through the sandbox processes with no environment, never through a command with the sandbox env', async () => {
+    const { sandbox, spawn } = spriteSandbox();
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: async run => {
+        void run('the install script');
+        return installed;
+      },
+    });
+    spawn.mockReturnValue(fakeProcess());
+    await resolve('agent-session-1', undefined);
+    expect(spawn).toHaveBeenCalledWith('sh', ['-c', 'the install script'], expect.objectContaining({ env: {} }));
+    expect(sandbox.executeCommand).not.toHaveBeenCalledWith('the install script', expect.anything(), expect.anything());
+  });
+
+  it("reads the sandbox env afresh, after Factory's per-command token refresh, whenever Claude Code starts", async () => {
+    const { sandbox } = spriteSandbox();
+    let token = 'ghs_old';
+    sandbox.getEnv = () => ({ GH_TOKEN: token });
+    sandbox.executeCommand.mockImplementation(async (command: string) => {
+      if (command === 'true') token = 'ghs_fresh'; // what the refresh before a command does
+      return { exitCode: 0, stdout: '', stderr: '' };
+    });
+    const workspace = await createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox }) as never,
+      getMastra: () => undefined,
+      installClaudeCode: async () => installed,
+    })('agent-session-1', undefined);
+    expect(workspace.env).toEqual({ GH_TOKEN: 'ghs_old' });
+    expect(await workspace.freshEnv!()).toEqual({ GH_TOKEN: 'ghs_fresh' });
   });
 
   it('tries the install again on the next open when it failed', async () => {

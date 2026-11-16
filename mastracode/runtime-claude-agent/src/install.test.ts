@@ -1,61 +1,87 @@
-import { execFile } from 'node:child_process';
-import { readFileSync } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { execFile, spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
+import { existsSync, readFileSync } from 'node:fs';
+import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { SandboxProcess, SandboxProcesses } from '@factory/agent-runtime';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   CLAUDE_CODE_INSTALLER_URL,
+  bundledClaudeCodeChecksums,
   bundledClaudeCodeVersion,
   claudeCodeInstallScript,
   ensureClaudeCode,
+  runInProcesses,
 } from './install';
 import type { RunInSandbox } from './install';
 
 const sdkDir = dirname(createRequire(import.meta.url).resolve('@anthropic-ai/claude-agent-sdk'));
+const sdkManifest = JSON.parse(readFileSync(join(sdkDir, 'manifest.json'), 'utf8')) as {
+  version: string;
+  platforms: Record<string, { checksum: string }>;
+};
 
-describe('bundledClaudeCodeVersion', () => {
+describe('the pinned release', () => {
   it("is the CLI version the installed SDK bundles, read from the SDK's own package", () => {
-    const sdk = JSON.parse(readFileSync(join(sdkDir, 'package.json'), 'utf8')) as {
-      version: string;
-      claudeCodeVersion: string;
-    };
+    const sdk = JSON.parse(readFileSync(join(sdkDir, 'package.json'), 'utf8')) as { claudeCodeVersion: string };
     expect(bundledClaudeCodeVersion()).toBe(sdk.claudeCodeVersion);
-    // The SDK's binary manifest names the same CLI version.
-    expect(JSON.parse(readFileSync(join(sdkDir, 'manifest.json'), 'utf8')).version).toBe(bundledClaudeCodeVersion());
-    expect(bundledClaudeCodeVersion()).toMatch(/^\d+\.\d+\.\d+/);
+    expect(sdkManifest.version).toBe(bundledClaudeCodeVersion());
+  });
+
+  it("checks against the SDK manifest's checksums for that version's Linux builds", () => {
+    const linux = Object.entries(sdkManifest.platforms)
+      .filter(([platform]) => platform.startsWith('linux-'))
+      .map(([, entry]) => entry.checksum);
+    expect(linux.length).toBeGreaterThanOrEqual(2);
+    expect(bundledClaudeCodeChecksums()).toEqual(linux);
   });
 });
 
 describe('claudeCodeInstallScript', () => {
-  it('runs the official installer for exactly the pinned version, with auto-update off', () => {
-    const script = claudeCodeInstallScript('2.1.325');
+  const sum = 'a'.repeat(64);
+
+  it('runs the official installer for exactly the pinned version, from its own home, with auto-update off', () => {
+    const script = claudeCodeInstallScript('2.1.325', [sum]);
     expect(script).toContain(
       `curl -fsSL ${CLAUDE_CODE_INSTALLER_URL} | HOME="$home" DISABLE_AUTOUPDATER=1 bash -s "$want"`,
     );
     expect(script).toContain("want='2.1.325'");
+    expect(script.indexOf('cd "$home"')).toBeLessThan(script.indexOf('curl'));
     expect(CLAUDE_CODE_INSTALLER_URL).toBe('https://claude.ai/install.sh');
   });
 
-  it('refuses anything but a version, so nothing else reaches the shell', () => {
-    expect(() => claudeCodeInstallScript("2.1.325'; rm -rf ~; '")).toThrow(/Not a Claude Code version/);
-    expect(() => claudeCodeInstallScript('latest')).toThrow(/Not a Claude Code version/);
+  it('refuses anything but a version and digests, so nothing else reaches the shell', () => {
+    expect(() => claudeCodeInstallScript("2.1.325'; rm -rf ~; '", [sum])).toThrow(/Not a Claude Code version/);
+    expect(() => claudeCodeInstallScript('latest', [sum])).toThrow(/Not a Claude Code version/);
+    expect(() => claudeCodeInstallScript('2.1.325', ["'; rm -rf ~"])).toThrow(/SHA-256/);
+    expect(() => claudeCodeInstallScript('2.1.325', [])).toThrow(/SHA-256/);
   });
 });
 
 /**
  * The install script, run by a real `sh` in a fake sandbox: a home directory, and a fake `curl`
- * whose "installer" writes a `claude` that reports the version it was asked for (or a wrong one).
+ * serving an "installer" that installs a fixed binary as the real one does (a versioned file and a
+ * `~/.local/bin/claude` link to it). Each binary records it when it runs.
  */
 describe('ensureClaudeCode (in a fake sandbox)', () => {
   let root: string;
   let calls: string;
+  let ran: string;
+  let managedDir: string;
+  let official: string;
+  const binary = (name: string) => `#!/bin/sh\necho "${name}" >> '${ran}'\n`;
+  const sha = (content: string) => createHash('sha256').update(content).digest('hex');
+
   beforeEach(async () => {
     root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'claude-install-'));
     calls = join(root, 'installer-calls');
+    ran = join(root, 'binary-ran');
+    managedDir = join(root, 'etc-claude-code');
+    official = binary('official');
     await mkdir(join(root, 'bin'));
     await mkdir(join(root, 'home'));
   });
@@ -63,15 +89,16 @@ describe('ensureClaudeCode (in a fake sandbox)', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  /** A fake `curl` serving an installer that installs `reported` (default: the version asked for). */
-  async function fakeInstaller(reported?: string) {
+  /** A fake `curl` serving an installer that installs `content` as the binary. */
+  async function fakeInstaller(content = official) {
+    await writeFile(join(root, 'release'), content);
     const installer = [
       '#!/bin/sh',
-      `echo "$HOME $1" >> '${calls}'`,
-      'mkdir -p "$HOME/.local/bin"',
-      `version="${reported ?? '$1'}"`,
-      `printf '#!/bin/sh\\necho "%s (Claude Code)"\\n' "$version" > "$HOME/.local/bin/claude"`,
-      'chmod +x "$HOME/.local/bin/claude"',
+      `echo "$HOME $1 $(pwd)" >> '${calls}'`,
+      'mkdir -p "$HOME/.local/bin" "$HOME/.local/share/claude/versions"',
+      `cp '${join(root, 'release')}' "$HOME/.local/share/claude/versions/$1"`,
+      'chmod 755 "$HOME/.local/share/claude/versions/$1"',
+      'ln -sf "$HOME/.local/share/claude/versions/$1" "$HOME/.local/bin/claude"',
     ].join('\n');
     await writeFile(join(root, 'installer.sh'), installer);
     await writeFile(join(root, 'bin', 'curl'), `#!/bin/sh\ncat '${join(root, 'installer.sh')}'\n`);
@@ -83,51 +110,99 @@ describe('ensureClaudeCode (in a fake sandbox)', () => {
       execFile(
         'sh',
         ['-c', script],
-        { env: { HOME: join(root, 'home'), PATH: `${join(root, 'bin')}:/usr/bin:/bin` } },
+        { cwd: '/', env: { HOME: join(root, 'home'), PATH: `${join(root, 'bin')}:/usr/bin:/bin:/usr/sbin:/sbin` } },
         (error, stdout, stderr) =>
           resolve({ exitCode: error ? Number((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
       );
     });
+  const ensure = (checksums = [sha(official)]) => ensureClaudeCode(run, { version: '2.1.325', checksums, managedDir });
+  const installerRuns = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n') : []);
 
-  it('installs the pinned version once, into a home of its own, and finds it again after that', async () => {
+  it('installs the pinned version once, from its own home, and finds it verified after that', async () => {
     await fakeInstaller();
     const home = join(root, 'home', '.factory', 'claude-agent');
-    const installed = await ensureClaudeCode(run, { version: '2.1.325' });
-    expect(installed).toEqual({ version: '2.1.325', home, executable: join(home, '.local', 'bin', 'claude') });
-    expect(readFileSync(calls, 'utf8')).toBe(`${home} 2.1.325\n`); // the installer ran with that home and version
+    const installed = await ensure();
+    expect(installed).toEqual({
+      version: '2.1.325',
+      home,
+      executable: join(home, '.local', 'share', 'claude', 'versions', '2.1.325'),
+      checksum: sha(official),
+    });
+    expect(installerRuns()).toEqual([`${home} 2.1.325 ${home}`]); // that home, that version, run from it
 
-    // A later start (or a Factory restart) finds it installed: no second install.
-    expect(await ensureClaudeCode(run, { version: '2.1.325' })).toEqual(installed);
-    expect(readFileSync(calls, 'utf8').trim().split('\n')).toHaveLength(1);
+    // A later open (or a Factory restart) finds it verified: no second install.
+    expect(await ensure()).toEqual(installed);
+    expect(installerRuns()).toHaveLength(1);
+    // A binary is never run to check it.
+    expect(existsSync(ran)).toBe(false);
   });
 
-  it('reinstalls when the sandbox has another version, as after an SDK upgrade', async () => {
+  it('replaces a binary planted in its place, without ever running the planted one', async () => {
     await fakeInstaller();
-    await ensureClaudeCode(run, { version: '2.1.300' });
-    await ensureClaudeCode(run, { version: '2.1.325' });
-    expect(
-      readFileSync(calls, 'utf8')
-        .trim()
-        .split('\n')
-        .map(line => line.split(' ')[1]),
-    ).toEqual(['2.1.300', '2.1.325']);
+    const installed = await ensure();
+    // A repository's setup plants a wrapper (one that would print the right version).
+    const planted = join(root, 'planted');
+    await writeFile(planted, binary('planted'));
+    await chmod(planted, 0o755);
+    const link = join(installed.home, '.local', 'bin', 'claude');
+    await rm(link);
+    await symlink(planted, link);
+
+    expect(await ensure()).toEqual(installed);
+    expect(installerRuns()).toHaveLength(2);
+    expect(existsSync(ran)).toBe(false);
   });
 
-  it('defaults to the version the SDK bundles', async () => {
-    await fakeInstaller();
-    expect((await ensureClaudeCode(run)).version).toBe(bundledClaudeCodeVersion());
-  });
-
-  it('fails, saying so, when the installer leaves another version behind', async () => {
-    await fakeInstaller('9.9.9');
-    await expect(ensureClaudeCode(run, { version: '2.1.325' })).rejects.toThrow(
-      /Claude Agent could not be installed.*2\.1\.325.*installed version is 9\.9\.9 \(Claude Code\), wanted 2\.1\.325/s,
+  it('fails, saying so, when the installer leaves a binary that is not the release', async () => {
+    await fakeInstaller(binary('tampered'));
+    await expect(ensure()).rejects.toThrow(
+      /Claude Agent could not be installed.*2\.1\.325.*does not match its published checksum/s,
     );
+  });
+
+  it('refuses a sandbox that holds managed settings Factory did not write', async () => {
+    await fakeInstaller();
+    await mkdir(managedDir);
+    await writeFile(join(managedDir, 'managed-settings.json'), '{"permissions":{}}');
+    await expect(ensure()).rejects.toThrow(/managed settings Factory did not write/);
+    expect(installerRuns()).toHaveLength(0);
   });
 
   it('fails when the sandbox answers without saying where it installed', async () => {
     await expect(ensureClaudeCode(async () => ({ exitCode: 0, stdout: 'ok\n', stderr: '' }))).rejects.toThrow(
       /could not be installed/,
     );
+  });
+});
+
+describe('runInProcesses', () => {
+  /** This host's processes, as a sandbox's. */
+  const local = () => {
+    const spawnLocal = vi.fn(
+      (command: string, args: string[], options: { cwd: string; env: Record<string, string>; signal?: AbortSignal }) =>
+        spawn(command, args, {
+          cwd: options.cwd,
+          env: { PATH: '/usr/bin:/bin', ...options.env },
+          stdio: 'pipe',
+          ...(options.signal ? { signal: options.signal } : {}),
+        }) as unknown as SandboxProcess,
+    );
+    return { spawn: spawnLocal } satisfies Pick<SandboxProcesses, 'spawn'>;
+  };
+
+  it('runs the script through the sandbox with no environment, and collects its output', async () => {
+    const processes = local();
+    const result = await runInProcesses(processes)('echo out; echo err >&2; exit 3');
+    expect(result).toEqual({ exitCode: 3, stdout: 'out\n', stderr: 'err\n' });
+    expect(processes.spawn).toHaveBeenCalledWith('sh', ['-c', 'echo out; echo err >&2; exit 3'], {
+      cwd: '/',
+      env: {},
+      signal: expect.any(AbortSignal),
+    });
+  });
+
+  it('gives up on a script that runs too long', async () => {
+    const result = await runInProcesses(local(), { timeoutMs: 100 })('sleep 5');
+    expect(result.exitCode).toBe(124);
   });
 });

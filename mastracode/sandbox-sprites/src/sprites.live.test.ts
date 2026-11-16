@@ -14,13 +14,16 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { defineFactoryTool, sandboxProcessesOf } from '@factory/agent-runtime';
 import type { FactoryEvent } from '@factory/agent-runtime';
+import type { InstalledClaudeCode } from '@factory/runtime-claude-agent';
 import {
   CLAUDE_AGENT_ISOLATION,
   ClaudeAgentSession,
+  bundledClaudeCodeChecksums,
   bundledClaudeCodeVersion,
   claudeProcessEnv,
   createFactoryMcpServer,
   ensureClaudeCode,
+  runInProcesses,
   sandboxClaudeCodeLaunch,
   writeSkillsPlugin,
 } from '@factory/runtime-claude-agent';
@@ -37,31 +40,45 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
     { timeout: 15 * 60_000 },
     async () => {
       const region = process.env.FACTORY_SPRITES_REGION?.trim();
+      let prepared: InstalledClaudeCode | undefined;
       const sandbox = new SpritesFactorySandbox({
         token: process.env.SPRITES_TOKEN!,
+        namePrefix: 'factorylivecheck', // not `factory-…`, so it never looks like a session's
         ...(region ? { spriteConfig: { region } } : {}),
-      }).create({ sessionId: `live-${Date.now().toString(36)}`, getRepositoryAccess: undefined });
+        // As the web host does: install before any setup would run.
+        prepare: async processes => {
+          prepared = await ensureClaudeCode(runInProcesses(processes));
+        },
+      }).create({ sessionId: Date.now().toString(36), getRepositoryAccess: undefined });
       try {
         await sandbox.start();
         const processes = sandboxProcessesOf(sandbox)!;
 
-        // The environment arrives over stdin, and stdin goes on to the command untouched.
+        // The Sprite user is not root (Claude Code refuses bypassPermissions as root).
+        expect((await sandbox.executeCommand!('id -u')).stdout.trim()).not.toBe('0');
+
+        // The environment arrives over stdin (newlines too), and stdin goes on to the command untouched.
         const echo = processes.spawn('sh', ['-c', 'printf "%s|" "$FACTORY_LIVE_VALUE"; head -n 1'], {
           cwd: '/',
-          env: { FACTORY_LIVE_VALUE: 'from-the-environment' },
+          env: { FACTORY_LIVE_VALUE: 'from-the\nenvironment' },
         });
         let out = '';
         echo.stdout.setEncoding('utf8');
         echo.stdout.on('data', (chunk: string) => (out += chunk));
         echo.stdin.end('after-the-preamble\n');
         await new Promise(resolve => echo.once('exit', resolve));
-        expect(out).toBe('from-the-environment|after-the-preamble\n');
+        expect(out).toBe('from-the\nenvironment|after-the-preamble\n');
+
+        // Commands get the sandbox env the same way, and a failing exec's error carries no URL.
+        sandbox.setEnv(env => ({ ...env, FACTORY_LIVE_SECRET: 'live-secret-value' }));
+        expect((await sandbox.executeCommand!('printf %s "$FACTORY_LIVE_SECRET"')).stdout).toBe('live-secret-value');
 
         // The official installer, pinned to the SDK's bundled version; a second call finds it.
-        const run = (script: string) => sandbox.executeCommand!(script, undefined, { timeout: 10 * 60_000 });
-        const installed = await ensureClaudeCode(run);
-        expect(installed.version).toBe(bundledClaudeCodeVersion());
-        expect(await ensureClaudeCode(run)).toEqual(installed);
+        // The official installer ran in prepare, pinned and checksum-verified; a second check finds it.
+        expect(prepared?.version).toBe(bundledClaudeCodeVersion());
+        expect(bundledClaudeCodeChecksums()).toContain(prepared!.checksum);
+        const installed = await ensureClaudeCode(runInProcesses(processes));
+        expect(installed).toEqual(prepared);
 
         const launch = sandboxClaudeCodeLaunch(processes, installed);
         const checkout = `${installed.home}/live-checkout`;

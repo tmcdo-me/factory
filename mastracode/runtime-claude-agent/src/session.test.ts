@@ -683,3 +683,90 @@ describe('claudeProcessEnv', () => {
     });
   });
 });
+
+describe('ClaudeAgentSession process lifetime', () => {
+  function lifetimeSetup(options: {
+    idleCloseMs?: number;
+    recycleAfterMs?: number;
+    env?: () => Promise<Record<string, string>>;
+  }) {
+    const events: FactoryEvent[] = [];
+    const fake = fakeQuery([
+      [init, result()],
+      [init, result()],
+      [init, result()],
+    ]);
+    let tokens = 0;
+    const env = vi.fn(options.env ?? (async () => ({ GH_TOKEN: `ghs_${++tokens}` })));
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/work/s1',
+      env,
+      emit: event => events.push(event),
+      query: fake.fn,
+      ...(options.idleCloseMs !== undefined ? { idleCloseMs: options.idleCloseMs } : {}),
+      ...(options.recycleAfterMs !== undefined ? { recycleAfterMs: options.recycleAfterMs } : {}),
+    });
+    const optionsOf = (call: number) => fake.calls[call]!.options as { env: Record<string, string>; resume?: string };
+    return { session, events, fake, env, optionsOf };
+  }
+
+  it('stops an idle Claude Code, and resumes the conversation in a new one with a fresh environment', async () => {
+    const { session, events, fake, env, optionsOf } = lifetimeSetup({ idleCloseMs: 30 });
+    await session.send({ text: 'first' });
+    await settled(events);
+    await vi.waitFor(() => expect(fake.control.close).toHaveBeenCalledTimes(1), { timeout: 2_000 });
+    expect(session.status()).toBe('idle');
+
+    await session.send({ text: 'second' });
+    await settled(events, 2);
+    expect(fake.calls).toHaveLength(2);
+    expect(env).toHaveBeenCalledTimes(2);
+    expect(optionsOf(0).env).toEqual({ GH_TOKEN: 'ghs_1' });
+    expect(optionsOf(1)).toMatchObject({ env: { GH_TOKEN: 'ghs_2' }, resume: 'claude-1' });
+    // Stopping on purpose is not an error, and ends no run.
+    expect(events.filter(event => event.type === 'error')).toEqual([]);
+    expect(events.filter(event => event.type === 'run.ended').map(event => event.reason)).toEqual([
+      'complete',
+      'complete',
+    ]);
+    await session.close();
+  });
+
+  it('keeps a Claude Code that is busy, or idle for less than the timeout', async () => {
+    const { session, events, fake } = lifetimeSetup({ idleCloseMs: 60_000 });
+    await session.send({ text: 'first' });
+    await settled(events);
+    await session.send({ text: 'second' });
+    await settled(events, 2);
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.control.close).not.toHaveBeenCalled();
+    await session.close();
+  });
+
+  it('recycles a Claude Code that ran long enough once its run ends, so the next turn gets fresh credentials', async () => {
+    const { session, events, fake, optionsOf } = lifetimeSetup({ recycleAfterMs: 0 });
+    await session.send({ text: 'first' });
+    await settled(events);
+    expect(fake.control.close).toHaveBeenCalledTimes(1);
+    await session.send({ text: 'second' });
+    await settled(events, 2);
+    expect(optionsOf(1).env).toEqual({ GH_TOKEN: 'ghs_2' });
+    await session.close();
+  });
+
+  it('ends the turn with an error when the environment cannot be read', async () => {
+    const { session, events, fake } = lifetimeSetup({
+      env: async () => {
+        throw new Error('token mint failed');
+      },
+    });
+    await expect(session.send({ text: 'first' })).rejects.toThrow(/token mint failed/);
+    expect(fake.calls).toHaveLength(0);
+    expect(events.find(event => event.type === 'run.ended')).toMatchObject({
+      reason: 'error',
+      error: 'token mint failed',
+    });
+    expect(session.status()).toBe('idle');
+  });
+});

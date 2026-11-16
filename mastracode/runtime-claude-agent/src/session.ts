@@ -66,8 +66,22 @@ export interface ClaudeAgentSessionOptions {
    * `.claude/` settings, hooks included, could be anyone's, so none of them load.
    */
   untrustedCheckout?: boolean;
-  /** Subprocess environment; build it with `claudeProcessEnv`. */
-  env: Record<string, string>;
+  /**
+   * Subprocess environment; build it with `claudeProcessEnv`. A function is asked again each time
+   * Claude Code starts (after an idle close or a recycle), so credentials refreshed since (a
+   * re-minted `GH_TOKEN`) reach the new process.
+   */
+  env: Record<string, string> | (() => Promise<Record<string, string>>);
+  /**
+   * Stop Claude Code after this long with no run open; the next turn starts it again, resuming
+   * the conversation from its transcript. Frees the process (and a sandbox it keeps awake).
+   */
+  idleCloseMs?: number;
+  /**
+   * Stop Claude Code when a run ends and it has run this long, so the next turn starts it with a
+   * fresh environment (short-lived credentials such as a GitHub installation token).
+   */
+  recycleAfterMs?: number;
   /** Launch Claude Code somewhere other than this host (e.g. inside a Sprite). */
   spawnClaudeCodeProcess?: Options['spawnClaudeCodeProcess'];
   /** An installed `claude` instead of the SDK's bundled one. */
@@ -151,6 +165,11 @@ export class ClaudeAgentSession {
   #aborting = false;
   #closed = false;
   #claudeSessionId: string | undefined;
+  /** When the running Claude Code started. */
+  #startedAt = 0;
+  #idleTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A start waiting on the environment (`env` as a function). */
+  #starting: Promise<void> | undefined;
 
   constructor(options: ClaudeAgentSessionOptions) {
     this.id = options.sessionId;
@@ -196,7 +215,21 @@ export class ClaudeAgentSession {
       this.#options.emit({ type: 'message.delta', messageId, part: 'text', delta: input.text });
       this.#options.emit({ type: 'message.ended', messageId });
     }
-    this.#start();
+    this.#clearIdle();
+    const env = this.#options.env;
+    if (!this.#query && typeof env !== 'function') this.#start(env);
+    else if (!this.#query || this.#starting) {
+      // Turns sent while the environment is fetched queue behind the first, in order.
+      try {
+        await this.#ensureStarted();
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.#runs.splice(this.#runs.indexOf(runId), 1);
+        this.#options.emit({ type: 'error', message, retryable: true, runId });
+        this.#options.emit({ type: 'run.ended', runId, reason: 'error', error: message });
+        throw error;
+      }
+    }
     this.#input!.push({
       type: 'user',
       message: { role: 'user', content: userContent({ ...input, text: turnText(input) }) },
@@ -225,6 +258,7 @@ export class ClaudeAgentSession {
     this.#closed = true;
     this.#closeNotice = notice;
     this.#onClose?.();
+    this.#clearIdle();
     this.#input?.close();
     this.#query?.close();
     await this.#pump?.catch(() => undefined);
@@ -232,7 +266,59 @@ export class ClaudeAgentSession {
     this.#endOpenRuns('aborted', 'Session closed');
   }
 
-  #start(): void {
+  /** Start Claude Code if it isn't running, asking `env` for the environment when it is a function. */
+  async #ensureStarted(): Promise<void> {
+    const env = this.#options.env;
+    if (typeof env !== 'function') return this.#start(env);
+    if (this.#query && !this.#starting) return;
+    this.#starting ??= env()
+      .then(resolved => {
+        if (this.#closed) throw new Error(`Session ${this.id} is closed`);
+        this.#start(resolved);
+      })
+      .finally(() => {
+        this.#starting = undefined;
+      });
+    return this.#starting;
+  }
+
+  #clearIdle(): void {
+    if (this.#idleTimer) clearTimeout(this.#idleTimer);
+    this.#idleTimer = undefined;
+  }
+
+  /** After the last open run ended: recycle Claude Code now, or stop it once it stayed idle. */
+  #whenIdle(): void {
+    this.#clearIdle();
+    if (this.#closed || this.#runs.length || !this.#query) return;
+    const { recycleAfterMs, idleCloseMs } = this.#options;
+    if (recycleAfterMs !== undefined && Date.now() - this.#startedAt >= recycleAfterMs) {
+      this.#stopProcess();
+      return;
+    }
+    if (idleCloseMs === undefined || idleCloseMs <= 0) return;
+    this.#idleTimer = setTimeout(() => {
+      this.#idleTimer = undefined;
+      if (!this.#runs.length) this.#stopProcess();
+    }, idleCloseMs);
+    this.#idleTimer.unref?.();
+  }
+
+  /**
+   * Stop the running Claude Code without closing the session: the next turn starts a new one,
+   * resuming the conversation. Forgotten at once, so a turn sent meanwhile never lands in it.
+   */
+  #stopProcess(): void {
+    const query = this.#query;
+    const input = this.#input;
+    if (!query) return;
+    this.#query = undefined;
+    this.#input = undefined;
+    input?.close();
+    query.close();
+  }
+
+  #start(env: Record<string, string>): void {
     if (this.#query) return;
     const input = new InputQueue();
     this.#input = input;
@@ -250,7 +336,7 @@ export class ClaudeAgentSession {
       prompt: input,
       options: {
         cwd: options.cwd,
-        env: options.env,
+        env,
         ...(options.model ? { model: options.model } : {}),
         ...(this.#claudeSessionId ? { resume: this.#claudeSessionId } : {}),
         includePartialMessages: true,
@@ -294,14 +380,18 @@ export class ClaudeAgentSession {
       },
     });
     this.#query = query;
+    this.#startedAt = Date.now();
     this.#pump = this.#drain(query);
   }
 
   async #drain(query: Query): Promise<void> {
+    // A Claude Code stopped on purpose (idle, recycled) is no longer `#query`: its end is no news.
+    const current = () => this.#query === query || this.#closed;
     try {
       for await (const message of query) this.#handle(message);
-      this.#endOpenRuns('error', 'Claude Code exited');
+      if (current()) this.#endOpenRuns('error', 'Claude Code exited');
     } catch (error) {
+      if (!current()) return;
       const text = error instanceof Error ? error.message : String(error);
       // Told to stop: by the host's own shutdown (which signals Claude Code with it, often before it
       // closes the session), or by something else (an out-of-memory killer, an evicted container). Only
@@ -322,8 +412,10 @@ export class ClaudeAgentSession {
       this.#endOpenRuns('error', text);
     } finally {
       // A new send starts a fresh process (resuming the Claude session).
-      this.#query = undefined;
-      this.#input = undefined;
+      if (this.#query === query) {
+        this.#query = undefined;
+        this.#input = undefined;
+      }
     }
   }
 
@@ -344,6 +436,7 @@ export class ClaudeAgentSession {
         ? { error: message.errors?.join('\n') || message.subtype }
         : {}),
     });
+    if (!this.#runs.length) this.#whenIdle();
   }
 
   #closeNotice: string | undefined;

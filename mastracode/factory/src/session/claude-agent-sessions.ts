@@ -118,7 +118,27 @@ export interface ClaudeAgentSessionsDeps {
   messages?: AgentMessageStore;
   hostEnv?: Record<string, string | undefined>;
   query?: QueryFn;
+  /** fork(claude-agent): stop an idle Claude Code after this long (see `claudeAgentIdleCloseMs`). */
+  idleCloseMs?: number;
 }
+
+/**
+ * fork(claude-agent): how long a Claude Code may sit idle before it is stopped; the next turn starts
+ * it again, resuming from its transcript. Frees the process, and the Sprite it keeps awake.
+ * `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS` overrides the default (10 minutes); `0` keeps it running.
+ */
+export function claudeAgentIdleCloseMs(env: Record<string, string | undefined> = process.env): number {
+  const raw = env.FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS?.trim();
+  const value = raw ? Number(raw) : Number.NaN;
+  return Number.isFinite(value) && value >= 0 ? value : 10 * 60_000;
+}
+
+/**
+ * fork(claude-agent): a Claude Code that ran this long is restarted once its run ends, so it never
+ * holds a GitHub token past its life: Factory re-mints tokens once they are 30 minutes old, and
+ * they last an hour.
+ */
+const CLAUDE_AGENT_RECYCLE_AFTER_MS = 20 * 60_000;
 
 /**
  * Where Claude Code keeps its config, transcripts and login for Factory sessions: apart from the
@@ -219,14 +239,19 @@ export class ClaudeAgentSessions {
     this.#resume.delete(sessionId);
     let savedState = JSON.stringify(record.runtimeState ?? {});
     const resume = runtimeState?.claudeSessionId;
+    const hostEnv = this.#deps.hostEnv ?? process.env;
+    const envOptions = { ...(home ? { home } : {}), ...(launch?.remote ? { remote: true } : {}) };
+    const freshEnv = workspace.freshEnv;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
       sessionId,
       cwd,
       ...(untrusted ? { untrustedCheckout: true } : {}),
-      env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, {
-        ...(home ? { home } : {}),
-        ...(launch?.remote ? { remote: true } : {}),
-      }),
+      // fork(claude-agent): read again whenever Claude Code (re)starts, so refreshed credentials reach it.
+      env: freshEnv
+        ? async () => claudeProcessEnv(hostEnv, await freshEnv(), envOptions)
+        : claudeProcessEnv(hostEnv, env, envOptions),
+      idleCloseMs: this.#deps.idleCloseMs ?? claudeAgentIdleCloseMs(),
+      recycleAfterMs: CLAUDE_AGENT_RECYCLE_AFTER_MS,
       ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
       ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),

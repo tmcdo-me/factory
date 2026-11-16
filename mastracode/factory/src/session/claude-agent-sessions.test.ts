@@ -22,7 +22,13 @@ import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { answerParkedCall } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
-import { ClaudeAgentSessions, claudeAgentHome, lateAnswer, routeSessionCommands } from './claude-agent-sessions.js';
+import {
+  ClaudeAgentSessions,
+  claudeAgentHome,
+  claudeAgentIdleCloseMs,
+  lateAnswer,
+  routeSessionCommands,
+} from './claude-agent-sessions.js';
 import type { ClaudeAgentSessionsDeps } from './claude-agent-sessions.js';
 import type { MastraTools } from './claude-agent-tools.js';
 import { claudeAgentRequestContext } from './claude-agent-workspace.js';
@@ -123,6 +129,39 @@ describe('ClaudeAgentSessions', () => {
     expect(fake.options[0]!.env).not.toHaveProperty('DATABASE_URL');
     await vi.waitFor(() => expect(store.setRuntimeState).toHaveBeenCalledWith('s1', { claudeSessionId: 'claude-xyz' }));
     expect(store.setRuntimeState).toHaveBeenCalledTimes(1); // only when it changes
+  });
+
+  it("starts Claude Code with the sandbox's env as it is then, and stops it once idle", async () => {
+    const log = new InMemoryEventLog();
+    const fake = fakeQuery();
+    let token = 0;
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({
+        cwd: '/sandboxes/s1/repo',
+        env: { GH_TOKEN: 'ghs_at_open' },
+        freshEnv: async () => ({ GH_TOKEN: `ghs_fresh_${++token}` }),
+      }),
+      hostEnv: {},
+      query: fake.fn,
+      idleCloseMs: 20,
+    });
+    await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+    expect(fake.options[0]!.env).toMatchObject({ GH_TOKEN: 'ghs_fresh_1' });
+    // Idle past the timeout: the next turn starts a new Claude Code, resuming, with a fresh token.
+    await new Promise(resolve => setTimeout(resolve, 60));
+    await sessions.commands().send('s1', { text: 'again' }, { context: undefined });
+    await vi.waitFor(() => expect(fake.options).toHaveLength(2));
+    expect(fake.options[1]).toMatchObject({ env: { GH_TOKEN: 'ghs_fresh_2' }, resume: 'claude-xyz' });
+  });
+
+  it('reads the idle timeout from FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS', () => {
+    expect(claudeAgentIdleCloseMs({})).toBe(600_000);
+    expect(claudeAgentIdleCloseMs({ FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS: '120000' })).toBe(120_000);
+    expect(claudeAgentIdleCloseMs({ FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS: '0' })).toBe(0);
+    expect(claudeAgentIdleCloseMs({ FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS: 'soon' })).toBe(600_000);
   });
 
   it("runs Claude Code in a home of its own, created on first use (private to the server's user)", async () => {

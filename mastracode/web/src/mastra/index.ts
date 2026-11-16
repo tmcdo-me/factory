@@ -30,6 +30,7 @@ import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { OidcAuth } from '@factory/auth-oidc';
 // fork(claude-agent)
+import { ensureClaudeCode, runInProcesses } from '@factory/runtime-claude-agent';
 import { SpritesFactorySandbox } from '@factory/sandbox-sprites';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
@@ -435,6 +436,11 @@ const sandbox = useSpritesSandbox // fork(claude-agent)
       token: spritesToken,
       // One prefix per deployment: two sharing a token would otherwise reattach to each other's Sprites.
       namePrefix: process.env.FACTORY_SPRITES_PREFIX?.trim() || 'factory',
+      // Claude Code (pinned, checksum-verified) goes in before the clone and the repository's setup
+      // command run, so nothing of the repository shapes it. Each Claude Agent open verifies it again.
+      prepare: async processes => {
+        await ensureClaudeCode(runInProcesses(processes));
+      },
       ...(process.env.FACTORY_SPRITES_REGION?.trim()
         ? { spriteConfig: { region: process.env.FACTORY_SPRITES_REGION.trim() } }
         : {}),
