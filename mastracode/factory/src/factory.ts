@@ -1836,18 +1836,19 @@ export class MastraFactory {
         }),
       );
     };
+    // fork(claude-agent): a Claude Agent session's checkout, also started ahead of its first turn (`prepareWorkspace`).
+    const claudeAgentWorkspace = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: workspaceFactory,
+      getMastra: () => this.#prepared?.base.controller.getMastra(),
+      // The resource its run binding records, so Factory's tools find the session's card.
+      resourceIdOf: async sessionId =>
+        (await this.#prepared?.base.controller.queryThreadById({ threadId: sessionId }))?.resourceId,
+      modelIdOf: async sessionId => (await agentSessionsStorage.get(sessionId))?.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL,
+    });
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
-      workspace: createClaudeAgentWorkspaceResolver({
-        resolveWorkspace: workspaceFactory,
-        getMastra: () => this.#prepared?.base.controller.getMastra(),
-        // The resource its run binding records, so Factory's tools find the session's card.
-        resourceIdOf: async sessionId =>
-          (await this.#prepared?.base.controller.queryThreadById({ threadId: sessionId }))?.resourceId,
-        modelIdOf: async sessionId =>
-          (await agentSessionsStorage.get(sessionId))?.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL,
-      }),
+      workspace: claudeAgentWorkspace,
       home: claudeAgentHome(),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: agentInteractionsStorage, hub: agentEventHub }),
@@ -2347,6 +2348,8 @@ export class MastraFactory {
               },
               unscopedDefaults: () => !routeAuth.enabled(),
               ownConversation: [CLAUDE_AGENT_RUNTIME_ID],
+              // fork(claude-agent): a card's new Claude Agent session gets its checkout now, as a Mastra Code one does.
+              prepareWorkspace: (sessionId, requestContext) => claudeAgentWorkspace(sessionId, requestContext),
             }),
             runSlots: () => this.#dispatcher?.runSlots(),
             onFactoryRuntime: ({ transitionService: runtimeTransitionService, startCoordinator, prepareBinding }) => {

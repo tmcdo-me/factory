@@ -1,9 +1,10 @@
 import { InMemoryEventLog } from '@factory/agent-runtime';
 import { RequestContext } from '@mastra/core/request-context';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createBoardRegistry } from '../boards/index.js';
 import { createPolicyTestRegistry } from '../boards/test-utils.js';
+import { createClaudeAgentWorkspaceResolver } from '../session/claude-agent-workspace.js';
 import { DEFAULT_OBSERVATION_THRESHOLD, DEFAULT_REFLECTION_THRESHOLD } from '../session/memory-settings-hydration.js';
 import { createRunRuntimes } from '../session/run-runtime.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
@@ -972,6 +973,66 @@ describe('FactoryStartCoordinator agent runtime', () => {
     expect(session.permissions.setForTool).toHaveBeenCalled();
   });
 
+  it("starts a new Claude Agent session's sandbox in the background, without a turn", async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { controller } = makeController();
+    const events = new InMemoryEventLog();
+    // The sandbox's start runs the clone and stamps the row materialized, as GitHub's start hook does.
+    let finishStart!: () => void;
+    const materialized = vi.fn();
+    const sandbox = {
+      provider: 'local',
+      ensureRunning: vi.fn(
+        () =>
+          new Promise<void>(resolve => {
+            finishStart = () => {
+              materialized();
+              resolve();
+            };
+          }),
+      ),
+    };
+    const resolveWorkspace = vi.fn(async (_context: { requestContext: RequestContext }) => ({ sandbox }) as never);
+    const coordinator = new FactoryStartCoordinator(
+      controller as never,
+      storage,
+      undefined,
+      makeSourceControl() as never,
+      undefined,
+      undefined,
+      undefined,
+      createRunRuntimes({
+        sessions: {
+          get: vi.fn(async () => undefined),
+          assign: vi.fn(async () => true),
+          getProjectDefault: vi.fn(async () => 'claude-agent'),
+        },
+        events,
+        threadHasMessages: async () => false,
+        unscopedDefaults: () => false,
+        ownConversation: ['claude-agent'],
+        prepareWorkspace: createClaudeAgentWorkspaceResolver({ resolveWorkspace, getMastra: () => undefined }),
+      }),
+    );
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    onTestFinished(() => warn.mockRestore());
+
+    // The start answers while the sandbox is still starting.
+    await expect(coordinator.prepare(startRequest())).resolves.toMatchObject({ sessionId: 'session-1' });
+    await vi.waitFor(() => expect(sandbox.ensureRunning).toHaveBeenCalledTimes(1));
+    expect(materialized).not.toHaveBeenCalled();
+    // As the session's owner, in the session's own controller context.
+    const { requestContext } = resolveWorkspace.mock.calls[0]![0];
+    expect(requestContext.get('user')).toMatchObject({ workosId: 'user-1' });
+    expect(requestContext.get('controller')).toMatchObject({ sessionId: 'session-1', threadId: 'session-1' });
+
+    finishStart();
+    await vi.waitFor(() => expect(materialized).toHaveBeenCalledTimes(1));
+    // No Claude turn: nothing ran in the session (this stub has no checkout, so readying it logs and stops).
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('session-1'), expect.anything()));
+    expect(await events.list('session-1')).toEqual([]);
+  });
+
   it('sets a Mastra Code run up as before', async () => {
     primeTenant.mockClear();
     const { workItems: storage } = await createFactoryStorageForTests();
@@ -990,5 +1051,24 @@ describe('FactoryStartCoordinator agent runtime', () => {
     await expect(coordinator.prepare(startRequest())).resolves.toMatchObject({ resourceId: PROJECT_ID });
     expect(primeTenant).toHaveBeenCalled();
     expect(session.permissions.setForTool).toHaveBeenCalled();
+  });
+
+  it("leaves a Mastra Code session's sandbox to its own workspace", async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { controller } = makeController();
+    const chooser = { ...runtimes('mastra-code'), prepare: vi.fn() };
+    const coordinator = new FactoryStartCoordinator(
+      controller as never,
+      storage,
+      undefined,
+      makeSourceControl() as never,
+      undefined,
+      undefined,
+      undefined,
+      chooser,
+    );
+
+    await coordinator.prepare(startRequest());
+    expect(chooser.prepare).not.toHaveBeenCalled();
   });
 });
