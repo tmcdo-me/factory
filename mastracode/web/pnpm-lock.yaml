@@ -26,6 +26,9 @@ importers:
       '@factory/auth-oidc':
         specifier: link:../auth-oidc
         version: link:../auth-oidc
+      '@factory/sandbox-sprites':
+        specifier: link:../sandbox-sprites
+        version: link:../sandbox-sprites
       '@mastra/agent-browser':
         specifier: link:../../browser/agent-browser
         version: link:../../browser/agent-browser

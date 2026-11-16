@@ -52,6 +52,8 @@ describe('entry host sandbox (src/mastra/index.ts)', () => {
       'E2B_API_KEY',
       'SANDBOX_PROVIDER',
       'FACTORY_SANDBOX_PROVIDER',
+      'SPRITES_TOKEN',
+      'FACTORY_SPRITES_REGION',
     ]) {
       vi.stubEnv(name, '');
     }
@@ -166,6 +168,28 @@ describe('entry host sandbox (src/mastra/index.ts)', () => {
     const callback = await importSandboxCallback();
 
     expect(callback({ sessionId: 'session-local-e2b' })).toMatchObject({ provider: 'local' });
+  });
+
+  // fork(claude-agent)
+  it('gives each session its own Sprite when FACTORY_SANDBOX_PROVIDER=sprites', { timeout: 60_000 }, async () => {
+    vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+    vi.stubEnv('SPRITES_TOKEN', 'fly-sprites-token');
+    vi.stubEnv('FACTORY_SPRITES_REGION', 'ord');
+    vi.stubEnv('MASTRA_PLATFORM_SECRET_KEY', 'sk_secret');
+    vi.stubEnv('MASTRA_ENVIRONMENT_ID', 'environment-1');
+    vi.stubEnv('E2B_API_KEY', 'direct-e2b');
+    const callback = await importSandboxCallback();
+
+    const sandbox = callback({ sessionId: 'session-sprite', repoFullName: 'acme/widgets' });
+
+    expect(sandbox).toMatchObject({ provider: 'sprites', id: 'factory-session-sprite', status: 'pending' });
+    expect(sandbox).toMatchObject({ _spriteConfig: { region: 'ord' } });
+  });
+
+  // fork(claude-agent)
+  it('refuses to boot on Sprites without SPRITES_TOKEN', { timeout: 60_000 }, async () => {
+    vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+    await expect(import('./index.js')).rejects.toThrow(/SPRITES_TOKEN/);
   });
 
   it('selects direct E2BSandbox when only E2B_API_KEY is configured', { timeout: 60_000 }, async () => {

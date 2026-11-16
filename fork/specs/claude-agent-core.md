@@ -284,6 +284,7 @@ with today is the acceptance bar.
 | `mastracode/agent-runtime/`        | `@factory/agent-runtime`        | zod, `@mastra/core/workspace` (sandbox type)      |
 | `mastracode/runtime-mastra-code/`  | `@factory/runtime-mastra-code`  | agent-runtime, `@mastra/code-sdk`, `@mastra/core` |
 | `mastracode/runtime-claude-agent/` | `@factory/runtime-claude-agent` | agent-runtime, `@anthropic-ai/claude-agent-sdk`   |
+| `mastracode/sandbox-sprites/`      | `@factory/sandbox-sprites`      | agent-runtime, `@mastra/sprites`, `@fly/sprites`  |
 | `mastracode/factory/`              | `@mastra/factory` (modified)    | agent-runtime only for agent concerns             |
 
 Lint: `no-restricted-imports` in `mastracode/factory` and `factory-ui` for `@mastra/code-sdk*` and
@@ -384,6 +385,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via
    `sprite.spawn`, pinned Claude Code install, lifecycle (create/hibernate/destroy). Mastra Code on
    Sprites first (uses the sandbox API only), then Claude Agent on Sprites.
+   - **9a** ✅ `SpritesFactorySandbox` (`@factory/sandbox-sprites`), selected with
+     `FACTORY_SANDBOX_PROVIDER=sprites` + `SPRITES_TOKEN` (optional `FACTORY_SPRITES_REGION`): one
+     Sprite per session, named `factory-<session id>`, created on first start and found again by
+     name; Factory clones into it as for any remote sandbox, so Mastra Code runs on it unchanged.
+     Its sandboxes carry the seam's `SANDBOX_PROCESSES` (`spawn` + `files`): a long-lived stdio
+     process is a WebSocket exec (`sprite.spawn`) whose environment arrives over stdin, never in
+     the exec URL. Not yet checked against a live Sprite.
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored

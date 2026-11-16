@@ -29,6 +29,8 @@ import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
 import { OidcAuth } from '@factory/auth-oidc';
+// fork(claude-agent)
+import { SpritesFactorySandbox } from '@factory/sandbox-sprites';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -405,23 +407,37 @@ const hasPlatformSandboxEnv =
   ['MASTRA_PLATFORM_ACCESS_TOKEN', 'MASTRA_PLATFORM_SECRET_KEY'].some(key => Boolean(process.env[key]?.trim())) &&
   ['MASTRA_ENVIRONMENT_ID', 'MASTRA_PROJECT_ID'].every(key => Boolean(process.env[key]?.trim()));
 const useLocalSandbox = process.env.FACTORY_SANDBOX_PROVIDER?.trim() === 'local';
+// fork(claude-agent): Fly.io Sprites, one VM per session (fork/specs/claude-agent-core.md §3.6).
+const useSpritesSandbox = process.env.FACTORY_SANDBOX_PROVIDER?.trim() === 'sprites';
+const spritesToken = process.env.SPRITES_TOKEN?.trim();
+if (useSpritesSandbox && !spritesToken) {
+  throw new Error(
+    'FACTORY_SANDBOX_PROVIDER=sprites needs SPRITES_TOKEN (a Sprites API token for your Fly.io organization).',
+  );
+}
 const e2bApiKey = process.env.E2B_API_KEY?.trim();
-if (!useLocalSandbox && !hasPlatformSandboxEnv && !e2bApiKey && !localDevelopmentMode) {
+if (!useLocalSandbox && !useSpritesSandbox && !hasPlatformSandboxEnv && !e2bApiKey && !localDevelopmentMode) {
   throw new Error(
     'A sandbox provider is required outside local development and tests. Set MASTRA_PLATFORM_ACCESS_TOKEN or ' +
       'MASTRA_PLATFORM_SECRET_KEY with MASTRA_PROJECT_ID and MASTRA_ENVIRONMENT_ID for Mastra platform sandboxes, ' +
-      'or E2B_API_KEY for E2B. To run agent commands directly on this machine as the server user, set ' +
-      'FACTORY_SANDBOX_PROVIDER=local.',
+      'or E2B_API_KEY for E2B, or FACTORY_SANDBOX_PROVIDER=sprites with SPRITES_TOKEN for Fly.io Sprites. To run ' +
+      'agent commands directly on this machine as the server user, set FACTORY_SANDBOX_PROVIDER=local.',
   );
 }
 
 /**
- * The host sandbox, chosen once at boot: local when forced, else the platform
+ * The host sandbox, chosen once at boot: Sprites or local when forced, else the platform
  * (its client reads the MASTRA_PLATFORM_* env itself), else E2B, else local
  * (development and tests only; see the guard above).
  */
-const sandbox =
-  !useLocalSandbox && hasPlatformSandboxEnv
+const sandbox = useSpritesSandbox // fork(claude-agent)
+  ? new SpritesFactorySandbox({
+      token: spritesToken,
+      ...(process.env.FACTORY_SPRITES_REGION?.trim()
+        ? { spriteConfig: { region: process.env.FACTORY_SPRITES_REGION.trim() } }
+        : {}),
+    })
+  : !useLocalSandbox && hasPlatformSandboxEnv
     ? new PlatformFactorySandbox()
     : !useLocalSandbox && e2bApiKey
       ? new E2BFactorySandbox({ apiKey: e2bApiKey })

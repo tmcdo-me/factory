@@ -1,0 +1,50 @@
+{
+  "name": "@factory/sandbox-sprites",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Fly.io Sprites as Factory's session sandbox: one Sprite per session, with long-lived stdio processes for runtimes that launch their agent inside it.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown --silent --config tsdown.config.ts",
+    "build:lib": "pnpm build",
+    "check": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test": "vitest run",
+    "lint": "oxlint --type-aware ."
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@factory/agent-runtime": "workspace:*",
+    "@fly/sprites": "^0.2.4",
+    "@mastra/sprites": "workspace:*"
+  },
+  "devDependencies": {
+    "@internal/lint": "workspace:*",
+    "@internal/types-builder": "workspace:*",
+    "@mastra/core": "workspace:*",
+    "@types/node": "22.19.15",
+    "tsdown": "0.23.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@mastra/core": ">=1.68.0-0 <2.0.0-0"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

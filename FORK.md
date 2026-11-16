@@ -42,5 +42,5 @@ We are replacing Factory's hard-wired Mastra Code agent with a Factory-owned age
   definitions, storage domains. Expect conflicts in Factory's server core (`factory.ts`,
   dispatcher, workspace, session/tool wiring).
 - Fork-only code lives in new paths (`fork/`, `mastracode/agent-runtime`,
-  `mastracode/runtime-*`) so upstream never touches it.
+  `mastracode/runtime-*`, `mastracode/sandbox-*`) so upstream never touches it.
 - Specs and decisions: [`fork/specs/`](fork/specs/).
