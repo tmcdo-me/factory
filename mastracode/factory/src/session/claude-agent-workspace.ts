@@ -26,9 +26,7 @@ export function createClaudeAgentWorkspaceResolver(options: {
 }) {
   return async (sessionId: string, requestContext: unknown): Promise<{ cwd: string; env: Record<string, string> }> => {
     // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's request context, keys and all.
-    const context = new RequestContext<any>(
-      requestContext instanceof RequestContext ? ([...requestContext.entries()] as [string, unknown][]) : undefined,
-    );
+    const context = new RequestContext<any>(contextEntries(requestContext));
     // The resolver reads the session from the controller context and records the checkout in its state.
     const state: Record<string, unknown> = {};
     context.set('controller', {
@@ -62,4 +60,15 @@ export function createClaudeAgentWorkspaceResolver(options: {
       ),
     };
   };
+}
+
+/**
+ * The entries of the host's request context. Checked by shape, not `instanceof`: the host and this
+ * package can load different copies of `@mastra/core`, and a failed class check silently drops the
+ * caller's identity (the workspace then refuses the session).
+ */
+function contextEntries(requestContext: unknown): [string, unknown][] | undefined {
+  const entries = (requestContext as { entries?: unknown } | null | undefined)?.entries;
+  if (typeof entries !== 'function') return undefined;
+  return [...(entries.call(requestContext) as Iterable<[string, unknown]>)];
 }

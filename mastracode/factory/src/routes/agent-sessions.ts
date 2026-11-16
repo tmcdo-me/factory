@@ -12,12 +12,14 @@
  */
 import { buildTranscript } from '@factory/agent-runtime';
 import type { CommandResult, SessionCommands, SessionEventHub } from '@factory/agent-runtime';
+import { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
 
+import { getFactoryAuthUser } from '../auth.js';
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
 
@@ -84,6 +86,20 @@ function afterSeqOf(c: Context): number | 'invalid' {
   return Number.isInteger(value) && value >= 0 ? value : 'invalid';
 }
 
+/**
+ * The request context a command runs with: the host's, plus the signed-in user. These routes skip the
+ * server's auth layer (`requiresAuth: false`) and check the viewer themselves, so the server never
+ * writes `user` into the request context; the session workspace needs it to know who is asking.
+ */
+function commandContext(c: Context): RequestContext {
+  const host = c.get('requestContext' as never) as { entries?: () => Iterable<[string, unknown]> } | undefined;
+  // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's context, keys and all.
+  const context = new RequestContext<any>(typeof host?.entries === 'function' ? [...host.entries()] : undefined);
+  const user = getFactoryAuthUser(c);
+  if (user && !context.get('user')) context.set('user', user);
+  return context;
+}
+
 export function buildAgentSessionRoutes({ auth, events, commands }: AgentSessionRoutesDependencies): ApiRoute[] {
   const requireViewer = async (c: Context) => {
     if (!auth.enabled()) return true;
@@ -113,7 +129,7 @@ export function buildAgentSessionRoutes({ auth, events, commands }: AgentSession
           if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
           body = parsed.data;
         }
-        return respond(c, await run(commands, sessionId, body, c.get('requestContext' as never)));
+        return respond(c, await run(commands, sessionId, body, commandContext(c)));
       },
     });
 
