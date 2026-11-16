@@ -77,13 +77,27 @@ inside it, with the same isolation as on the host:
   `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS`, default 60 minutes), whichever comes first, with a
   `background-stopped` notice in the transcript. A run in flight is never cut short. The install and launch scripts run their checks with PATH pinned to the
   system's own directories.
-- **Claude's credential and its commands:** by default Claude Code's tool processes (Bash, a
-  repository's tests) inherit `CLAUDE_CODE_OAUTH_TOKEN`, here as on the host. `bashSandbox`
-  (Factory: `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1`, off by default) runs Bash in Claude Code's own
-  sandbox with Claude's credentials denied (`CLAUDE_AGENT_BASH_SANDBOX`); it needs bubblewrap and
-  socat on Linux and confines what commands may write and reach (spec §6, 9c).
-  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is not used: it drops `bypassPermissions` and scrubs
-  `GH_TOKEN` too (see `env.ts`).
+- **Claude's credential and its commands:** Claude Code leaves `CLAUDE_CODE_OAUTH_TOKEN` out of
+  its commands' environment, but without a sandbox a command (Bash, a repository's tests) can read
+  Claude Code's own (`ps eww` on macOS, `/proc/<pid>/environ` on Linux), and on this host the
+  file the operator keeps it in. `bashSandbox` (Factory: on by default; `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=0`
+  turns it off for trusted sessions, never for untrusted ones) runs every Bash command in Claude
+  Code's own sandbox (`claudeAgentBashSandbox`): Claude's credentials unset, other processes out of
+  sight (Seatbelt on macOS; on Linux bubblewrap's own PID namespace and `/proc`), Claude's saved
+  login and `denyRead` files (Factory: the server's env files) unreadable, no unsandboxed escape.
+  The network stays open (no allow-list under `bypassPermissions`; `gh` verifies TLS on macOS
+  through `enableWeakerNetworkIsolation`). Writes go to the checkout, the temp directory and the
+  package caches under Claude's home (`BASH_SANDBOX_WRITABLE_HOME_DIRS`); Claude Code keeps
+  `.git/config`, `.git/hooks` and `.claude/` settings read-only, so `git config` (and `git remote
+add`) fails in Claude's shell, while commits and pushes work. In a Sprite, `ensureBashSandbox`
+  installs bubblewrap and socat (apt), and the launch drops the Sprite user's ambient capabilities
+  and unmasks `/proc` so bubblewrap can mount a fresh one; without them Claude Code refuses to
+  start (`LAUNCH_BASH_SANDBOX_UNAVAILABLE`). On a Linux host it needs bubblewrap and socat
+  installed. Checked live on macOS and in a Sprite (`bashSandboxProbeScript`, spec §6 9c). Not
+  covered: Claude's own Read/Grep tools (they run in Claude Code's process, unsandboxed), hooks of a
+  trusted checkout's `.claude/settings.json`, and anything else on this host the operator keeps the
+  token in (the sandbox lets commands read everything else). `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is
+  not used: it drops `bypassPermissions` and scrubs `GH_TOKEN` too (see `env.ts`).
 - **Skills:** `writeSkillsPlugin(dir, skills, launch.files)` writes the plugin on the sandbox's
   filesystem, under its Claude home.
 - **Resume:** transcripts stay in the sandbox's Claude home (on the Sprite's disk), so a restarted
@@ -91,6 +105,8 @@ inside it, with the same isolation as on the host:
 
 ```sh
 pnpm --filter @factory/runtime-claude-agent test
-# one real turn against the bundled Claude Code, on this machine's Claude login:
+# one real turn against the bundled Claude Code, on this machine's Claude login; with
+# CLAUDE_CODE_OAUTH_TOKEN also one in the Bash sandbox, probed for the token (macOS: adds and
+# removes a throwaway keychain item):
 CLAUDE_AGENT_LIVE=1 pnpm --filter @factory/runtime-claude-agent exec vitest run src/session.live.test.ts
 ```

@@ -4,15 +4,10 @@ import type { EventEnvelope, FactoryEvent, FactoryToolContext } from '@factory/a
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
+import { claudeAgentBashSandbox } from './bash-sandbox';
 import { claudeProcessEnv } from './env';
 import type { FactoryToolCall } from './factory-tools';
-import {
-  CLAUDE_AGENT_BASH_SANDBOX,
-  ClaudeAgentSession,
-  SKILLS_INSTRUCTIONS,
-  instructionFilesAbove,
-  stoppedBySignal,
-} from './session';
+import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
 
@@ -247,7 +242,7 @@ describe('ClaudeAgentSession', () => {
   });
 
   it("runs Bash in Claude Code's sandbox when asked, keeping Claude's credentials from its commands", async () => {
-    const run = async (bashSandbox: boolean | undefined) => {
+    const run = async (bashSandbox: boolean | { denyRead: string[] } | undefined) => {
       const events: FactoryEvent[] = [];
       const fake = fakeQuery([[result()]]);
       const session = new ClaudeAgentSession({
@@ -263,8 +258,8 @@ describe('ClaudeAgentSession', () => {
       return (fake.calls[0]!.options as { settings: Record<string, unknown> }).settings;
     };
     const sandboxed = await run(true);
-    expect(sandboxed).toMatchObject({ disableClaudeAiConnectors: true, sandbox: CLAUDE_AGENT_BASH_SANDBOX });
-    expect(CLAUDE_AGENT_BASH_SANDBOX).toMatchObject({
+    expect(sandboxed).toMatchObject({ disableClaudeAiConnectors: true, sandbox: claudeAgentBashSandbox() });
+    expect(sandboxed.sandbox).toMatchObject({
       enabled: true,
       failIfUnavailable: true,
       allowUnsandboxedCommands: false,
@@ -274,9 +269,16 @@ describe('ClaudeAgentSession', () => {
           { name: 'ANTHROPIC_API_KEY', mode: 'deny' },
           { name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' },
         ],
+        files: [{ path: '~/.claude/.credentials.json', mode: 'deny' }],
       },
     });
-    expect(JSON.stringify(CLAUDE_AGENT_BASH_SANDBOX)).not.toContain('GH_TOKEN'); // git and gh need it
+    expect(JSON.stringify(sandboxed.sandbox)).not.toContain('GH_TOKEN'); // git and gh need it
+    // The host's own files holding the credential (its env file) are denied too.
+    const withHostFiles = await run({ denyRead: ['/srv/factory/.env'] });
+    expect((withHostFiles.sandbox as { credentials: { files: unknown[] } }).credentials.files).toEqual([
+      { path: '~/.claude/.credentials.json', mode: 'deny' },
+      { path: '/srv/factory/.env', mode: 'deny' },
+    ]);
     expect(await run(undefined)).not.toHaveProperty('sandbox');
     expect(await run(false)).not.toHaveProperty('sandbox');
   });

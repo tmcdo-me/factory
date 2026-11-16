@@ -1,7 +1,7 @@
 // fork(claude-agent)
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
@@ -27,6 +27,7 @@ import {
   claudeAgentBackgroundMaxMs,
   claudeAgentBashSandbox,
   claudeAgentHome,
+  claudeAgentHostSecretFiles,
   claudeAgentIdleCloseMs,
   lateAnswer,
   routeSessionCommands,
@@ -120,7 +121,7 @@ describe('ClaudeAgentSessions', () => {
     );
 
     expect(workspace).toHaveBeenCalledTimes(1);
-    expect(workspace).toHaveBeenCalledWith('s1', 'request-context');
+    expect(workspace).toHaveBeenCalledWith('s1', 'request-context', { bashSandbox: expect.any(Boolean) });
     expect(fake.options).toHaveLength(1);
     expect(fake.options[0]).toMatchObject({
       cwd: '/sandboxes/s1/repo',
@@ -159,25 +160,86 @@ describe('ClaudeAgentSessions', () => {
     expect(fake.options[1]).toMatchObject({ env: { GH_TOKEN: 'ghs_fresh_2' }, resume: 'claude-xyz' });
   });
 
-  it("runs Claude's Bash in Claude Code's sandbox only when FACTORY_CLAUDE_AGENT_BASH_SANDBOX says so", async () => {
-    expect(claudeAgentBashSandbox({})).toBe(false);
+  // 9c: Claude's Bash commands (a repository's tests) must not get at Claude's credential.
+  it("runs Claude's Bash in Claude Code's sandbox by default, unless FACTORY_CLAUDE_AGENT_BASH_SANDBOX=0", async () => {
+    expect(claudeAgentBashSandbox({})).toBe(true);
     expect(claudeAgentBashSandbox({ FACTORY_CLAUDE_AGENT_BASH_SANDBOX: '1' })).toBe(true);
-    expect(claudeAgentBashSandbox({ FACTORY_CLAUDE_AGENT_BASH_SANDBOX: 'off' })).toBe(false);
-    const log = new InMemoryEventLog();
-    const fake = fakeQuery();
-    const sessions = new ClaudeAgentSessions({
-      hub: new SessionEventHub(log),
-      sessions: memoryStore([claude('s1')]),
-      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
-      hostEnv: {},
-      query: fake.fn,
-      bashSandbox: true,
+    for (const off of ['0', 'off', 'false', 'NO']) {
+      expect(claudeAgentBashSandbox({ FACTORY_CLAUDE_AGENT_BASH_SANDBOX: off })).toBe(false);
+    }
+    const run = async (options: { bashSandbox?: boolean; posture?: 'trusted' | 'untrusted' }) => {
+      const fake = fakeQuery();
+      const opened: unknown[] = [];
+      const home = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'claude-home-'));
+      onTestFinished(() => rm(home, { recursive: true, force: true }));
+      const sessions = new ClaudeAgentSessions({
+        hub: new SessionEventHub(new InMemoryEventLog()),
+        sessions: memoryStore([claude('s1')]),
+        workspace: async (_id, _context, open) => {
+          opened.push(open);
+          return { cwd: '/sandboxes/s1/repo', env: {} };
+        },
+        home,
+        hostEnv: { FACTORY_CLAUDE_AGENT_BASH_DENY_READ: '/etc/factory/claude.env' },
+        query: fake.fn,
+        ...(options.posture ? { checkout: async () => options.posture! } : {}),
+        ...(options.bashSandbox !== undefined ? { bashSandbox: options.bashSandbox } : {}),
+      });
+      await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
+      await vi.waitFor(() => expect(fake.options).toHaveLength(1));
+      const settings = (fake.options[0] as { settings: { sandbox?: { credentials: { files: { path: string }[] } } } })
+        .settings;
+      return { sandbox: settings.sandbox, opened, home };
+    };
+
+    // On by default, on this host with its secret files denied and the cache directories made.
+    const byDefault = await run({ bashSandbox: true });
+    expect(byDefault.sandbox).toMatchObject({
+      enabled: true,
+      allowUnsandboxedCommands: false,
+      failIfUnavailable: true,
     });
-    await sessions.commands().send('s1', { text: 'hi' }, { context: undefined });
-    await vi.waitFor(() => expect(fake.options).toHaveLength(1));
-    expect(fake.options[0]).toMatchObject({
-      settings: { sandbox: { enabled: true, allowUnsandboxedCommands: false } },
-    });
+    expect(byDefault.sandbox!.credentials.files.map(file => file.path)).toContain('/etc/factory/claude.env');
+    expect(byDefault.opened).toEqual([{ bashSandbox: true }]);
+    expect((await stat(join(byDefault.home, '.npm'))).isDirectory()).toBe(true);
+
+    // Turned off, a trusted session runs without it; an untrusted checkout never does.
+    const off = await run({ bashSandbox: false, posture: 'trusted' });
+    expect(off.sandbox).toBeUndefined();
+    expect(off.opened).toEqual([{ bashSandbox: false }]);
+    const untrusted = await run({ bashSandbox: false, posture: 'untrusted' });
+    expect(untrusted.sandbox).toMatchObject({ enabled: true });
+    expect(untrusted.opened).toEqual([{ bashSandbox: true }]);
+  });
+
+  it("denies the commands the server's env files, wherever the server runs from", async () => {
+    // `mastracode/web/.mastra/output/index.mjs`, started from `mastracode/web/src/mastra/public`.
+    const root = await mkdtemp(join(process.env.TMPDIR ?? tmpdir(), 'factory-install-'));
+    onTestFinished(() => rm(root, { recursive: true, force: true }));
+    const web = join(root, 'mastracode', 'web');
+    await mkdir(join(web, '.mastra', 'output'), { recursive: true });
+    await mkdir(join(web, 'src', 'mastra', 'public'), { recursive: true });
+    for (const name of ['.env', '.env.local', '.env.schema', 'env.ts', '.envrc-not'])
+      await writeFile(join(web, name), '');
+    await writeFile(join(root, '.env'), '');
+    const files = claudeAgentHostSecretFiles(
+      { FACTORY_CLAUDE_AGENT_BASH_DENY_READ: ' /srv/secrets/claude.env ,relative/.env' },
+      [join(web, '.mastra', 'output'), join(web, 'src', 'mastra', 'public')],
+    );
+    expect(files).toEqual(
+      expect.arrayContaining([
+        join(web, '.env'),
+        join(web, '.env.local'),
+        join(web, '.env.schema'),
+        join(root, '.env'),
+        '/srv/secrets/claude.env',
+        join(homedir(), '.claude', '.credentials.json'),
+      ]),
+    );
+    expect(files).not.toContain(join(web, 'env.ts'));
+    expect(files).not.toContain(join(web, '.envrc-not'));
+    expect(files.some(file => file.includes('relative'))).toBe(false);
+    expect(new Set(files).size).toBe(files.length);
   });
 
   it('caps background work at FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS, and at the token deadline', async () => {

@@ -85,7 +85,9 @@ FACTORY_SPRITES_E2E=1 pnpm --filter @factory/sandbox-sprites exec vitest run src
 
 ## Live check
 
-Nothing here has run against a real Sprite yet. What it needs:
+`sprites.live.test.ts` passed against a real Sprite (Ubuntu 26.04, 2026-11-16), with the turn,
+the resume and the Bash-sandbox probe; the full Factory flow below has not been checked yet. What
+it needs:
 
 1. **In Fly.io:** an organization with Sprites enabled ([sprites.dev](https://sprites.dev)), and a
    Sprites API token for it. The token selects the organization; Sprites are created there as
@@ -98,10 +100,11 @@ Nothing here has run against a real Sprite yet. What it needs:
    - optionally `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS` (default 10 minutes; `0` keeps an idle Claude
      Code running);
    - the GitHub App as usual, so Factory can clone into the Sprite.
-3. **In the Sprite's image** (the Sprites default should have these): `sh`, `bash`, `curl`, `git`,
-   `base64` and `sha256sum` (coreutils), `readlink -f`; outbound HTTPS to `claude.ai` and
-   `downloads.claude.ai` (installer and release), `api.anthropic.com` and `github.com`; an ordinary
-   (non-root) user.
+3. **In the Sprite's image** (the Sprites default has these): `sh`, `bash`, `curl`, `git`,
+   `base64` and `sha256sum` (coreutils), `readlink -f`, `setpriv` (util-linux); outbound HTTPS to
+   `claude.ai` and `downloads.claude.ai` (installer and release), `api.anthropic.com` and
+   `github.com`; an ordinary (non-root) user with passwordless `sudo` and `apt-get`, which install
+   bubblewrap and socat for Claude Code's Bash sandbox (not in the default image).
 
 Then:
 
@@ -109,9 +112,9 @@ Then:
 # install (in prepare, before any setup), checksum, env over stdin, MCP + skills in the Sprite
 # (no turn; deletes its Sprite afterwards):
 FACTORY_SPRITES_LIVE=1 SPRITES_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
-# plus one turn and a resume in a new Claude Code process (a few cents); add
-# FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1 for a turn in Claude Code's Bash sandbox (needs bubblewrap
-# and socat in the Sprite) that checks Claude's token is absent from its commands:
+# plus one turn and a resume in a new Claude Code process, and one turn in Claude Code's Bash
+# sandbox whose probe checks that its commands can't get at Claude's token while git, gh, npm and
+# the network still work (a few cents):
 FACTORY_SPRITES_LIVE=1 FACTORY_SPRITES_LIVE_TURN=1 SPRITES_TOKEN=… CLAUDE_CODE_OAUTH_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
 ```
 
@@ -124,9 +127,9 @@ What only a live Sprite can show:
 
 - **The installed binary's checksum.** The release manifest on downloads.claude.ai and the SDK's
   `manifest.json` carry the same SHA-256 for every 2.1.325 build (checked), and the installer
-  verifies its download against it; that `claude install` leaves that same file in
-  `~/.local/share/claude/versions/` is expected but unconfirmed. If it does not, the install
-  fails closed, saying the binary does not match its published checksum.
+  verifies its download against it; `claude install` leaves that same file in
+  `~/.local/share/claude/versions/` (confirmed live). If it ever does not, the install fails
+  closed, saying the binary does not match its published checksum.
 - **The user.** Claude Code refuses `bypassPermissions` as root (`bypass_root`); the live test
   checks `id -u`.
 - **The preamble.** If Claude Code exits as soon as it starts, reporting a malformed first message,
@@ -134,3 +137,13 @@ What only a live Sprite can show:
 - **Root ownership.** The install makes the binary read-only, and root-owned where `sudo -n`
   works. A session user with `sudo` can undo both; the checksum at every launch is the check that
   holds.
+- **Claude Code's Bash sandbox** (on by default, spec §6 9c). The Sprite's user holds a container's
+  default capabilities as ambient ones, which bubblewrap refuses to run with, so the launch drops
+  them (`setpriv`) before `exec`ing Claude Code; and the container masks parts of `/proc`
+  (`/proc/kcore`, `/proc/keys`, `/proc/timer_list`, `/proc/scsi`), which stops bubblewrap from
+  mounting the fresh `/proc` that hides Claude Code's process (and the token in its environment)
+  from commands, so the launch unmounts those masks with `sudo` (again after a restart; the Sprite
+  is a VM of its own). `enableWeakerNestedSandbox` (bind-mounting the container's `/proc`) is not
+  used: it would show commands Claude Code's `/proc/<pid>/environ`. A launch whose trial sandbox
+  fails refuses to start (exit 97). Commands run with no capabilities and `no_new_privs`, so
+  `sudo` (and `sudo apt-get install`) doesn't work inside the sandbox.

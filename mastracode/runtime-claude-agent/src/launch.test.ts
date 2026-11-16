@@ -1,13 +1,15 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { describe, expect, it, vi } from 'vitest';
 
+import { BASH_SANDBOX_WRITABLE_HOME_DIRS } from './bash-sandbox';
 import { claudeProcessEnv } from './env';
 import {
+  LAUNCH_BASH_SANDBOX_UNAVAILABLE,
   LAUNCH_BINARY_MISMATCH,
   LAUNCH_MANAGED_SETTINGS,
   claudeCodeLaunchScript,
@@ -134,12 +136,12 @@ describe('claudeCodeLaunchScript', () => {
     const managedDir = join(root, 'etc-claude-code');
     const planted = join(root, 'planted');
     const userPath = `${planted}:/usr/bin:/bin:/usr/sbin:/sbin`;
-    const launch = (script: string) =>
+    const launch = (script: string, env: Record<string, string> = {}) =>
       new Promise<{ code: number; stdout: string; stderr: string }>(resolve => {
         execFile(
           'sh',
           ['-c', script, 'claude', '--print', 'x'],
-          { env: { PATH: userPath, CLAUDE_CODE_MANAGED_SETTINGS_PATH: '/tmp/evil.json' } },
+          { env: { PATH: userPath, CLAUDE_CODE_MANAGED_SETTINGS_PATH: '/tmp/evil.json', ...env } },
           (error, stdout, stderr) =>
             resolve({ code: error ? Number((error as { code?: number }).code ?? 1) : 0, stdout, stderr }),
         );
@@ -194,6 +196,56 @@ describe('claudeCodeLaunchScript', () => {
       const result = await launch(claudeCodeLaunchScript({ executable, checksum }, { managedDir }));
       expect(result.code).toBe(LAUNCH_MANAGED_SETTINGS);
       expect(result.stdout).toBe('');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  /** System tools standing in for bubblewrap, socat and sudo, first on the launch's system PATH. */
+  async function sandboxTools(root: string, tools: Record<string, string>) {
+    const dir = join(root, 'system-bin');
+    await mkdir(dir);
+    for (const [name, body] of Object.entries(tools)) {
+      await writeFile(join(dir, name), `#!/bin/sh\n${body}\n`);
+      await chmod(join(dir, name), 0o755);
+    }
+    return `${dir}:/usr/bin:/bin:/usr/sbin:/sbin`;
+  }
+
+  it("with Claude Code's Bash sandbox, starts once a trial sandbox runs, with the cache directories made", async () => {
+    const { root, executable, checksum, managedDir, launch, userPath } = await fixture();
+    try {
+      const trial = join(root, 'trial');
+      const systemPath = await sandboxTools(root, {
+        bwrap: `echo "$*" >> '${trial}'`,
+        socat: 'exit 0',
+        sudo: 'exit 1',
+      });
+      const home = join(root, 'home');
+      const script = claudeCodeLaunchScript({ executable, checksum }, { managedDir, bashSandbox: true, systemPath });
+      const result = await launch(script, { HOME: home });
+      expect(result).toMatchObject({ code: 0, stdout: `args:--print x|managed:unset|path:${userPath}\n` });
+      // The trial: its own PID namespace and a fresh /proc, as the sandbox's commands get.
+      expect(await readFile(trial, 'utf8')).toMatch(/--unshare-pid .*--proc \/proc true/);
+      for (const dir of BASH_SANDBOX_WRITABLE_HOME_DIRS) expect((await stat(join(home, dir))).isDirectory()).toBe(true);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses to start Claude Code when its Bash sandbox can't run, rather than run it unsandboxed", async () => {
+    const { root, executable, checksum, managedDir, launch } = await fixture();
+    try {
+      // bubblewrap is there but can't build a sandbox (say, a /proc it may not mount).
+      const failing = await sandboxTools(root, { bwrap: 'exit 1', socat: 'exit 0' });
+      const script = claudeCodeLaunchScript(
+        { executable, checksum },
+        { managedDir, bashSandbox: true, systemPath: failing },
+      );
+      const result = await launch(script, { HOME: join(root, 'home') });
+      expect(result.code).toBe(LAUNCH_BASH_SANDBOX_UNAVAILABLE);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toMatch(/Bash sandbox can't run in this sandbox/);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

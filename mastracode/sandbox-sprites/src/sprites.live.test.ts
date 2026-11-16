@@ -8,8 +8,9 @@
  * environment over stdin, and Factory's MCP server and skills reaching Claude Code in the Sprite,
  * with no turn. With `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) and
  * `FACTORY_SPRITES_LIVE_TURN=1` it also runs one small turn, closes Claude Code, and resumes the
- * conversation from the Sprite's disk in a new process (a few cents of ordinary usage); with
- * `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1` too, one turn in Claude Code's Bash sandbox.
+ * conversation from the Sprite's disk in a new process (a few cents of ordinary usage), and one
+ * turn in Claude Code's Bash sandbox, as Factory runs it by default, whose probe checks that no
+ * command gets at Claude's credential while ordinary work still goes.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -19,12 +20,15 @@ import type { InstalledClaudeCode } from '@factory/runtime-claude-agent';
 import {
   CLAUDE_AGENT_ISOLATION,
   ClaudeAgentSession,
+  bashSandboxProbeScript,
   bundledClaudeCodeChecksums,
   bundledClaudeCodeVersion,
   claudeProcessEnv,
   createFactoryMcpServer,
+  ensureBashSandbox,
   ensureClaudeCode,
   runInProcesses,
+  parseBashSandboxProbe,
   sandboxClaudeCodeLaunch,
   writeSkillsPlugin,
 } from '@factory/runtime-claude-agent';
@@ -49,6 +53,7 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
         // As the web host does: install before any setup would run.
         prepare: async processes => {
           prepared = await ensureClaudeCode(runInProcesses(processes));
+          await ensureBashSandbox(runInProcesses(processes));
         },
       }).create({ sessionId: Date.now().toString(36), getRepositoryAccess: undefined });
       try {
@@ -97,7 +102,12 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
         });
         const options = {
           cwd: checkout,
-          env: claudeProcessEnv(process.env, {}, { home: installed.home, remote: true }),
+          // A stand-in for the session's GitHub token: git and gh in the sandbox must still get it.
+          env: claudeProcessEnv(
+            process.env,
+            { GH_TOKEN: 'ghs_factorylive000000000000000000000000' },
+            { home: installed.home, remote: true },
+          ),
           pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable!,
           spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess!,
         };
@@ -147,9 +157,12 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
         // One turn, then a new Claude Code process resuming it from the Sprite's disk.
         const turn = async (resume: string | undefined, text: string, bashSandbox = false) => {
           const events: FactoryEvent[] = [];
+          const sandboxed = bashSandbox ? sandboxClaudeCodeLaunch(processes, installed, { bashSandbox }) : launch;
           const session = new ClaudeAgentSession({
             sessionId: 'live',
             ...options,
+            pathToClaudeCodeExecutable: sandboxed.pathToClaudeCodeExecutable!,
+            spawnClaudeCodeProcess: sandboxed.spawnClaudeCodeProcess!,
             ...(resume ? { resume } : {}),
             ...(bashSandbox ? { bashSandbox } : {}),
             model: process.env.CLAUDE_AGENT_LIVE_MODEL ?? 'claude-haiku-5-5',
@@ -169,24 +182,53 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
           const reply = events
             .flatMap(event => (event.type === 'message.delta' && assistant.has(event.messageId) ? [event.delta] : []))
             .join('');
-          return { reply, claudeSessionId: session.runtimeState().claudeSessionId };
+          const toolOutput = events.flatMap(event => (event.type === 'tool.output' ? [event.chunk] : [])).join('');
+          return { reply, toolOutput, claudeSessionId: session.runtimeState().claudeSessionId };
         };
         const first = await turn(undefined, 'Remember the word "heliotrope". Reply with only: ok');
         expect(first.claudeSessionId).toBeTruthy();
         const second = await turn(first.claudeSessionId, 'Which word did I ask you to remember? Reply with only it.');
         expect(second.reply.toLowerCase()).toContain('heliotrope');
 
-        // With Claude Code's Bash sandbox (needs bubblewrap and socat in the Sprite): Claude's own
-        // credential is not in its commands' environment, and git still reaches GitHub.
-        if (process.env.FACTORY_CLAUDE_AGENT_BASH_SANDBOX) {
-          const sandboxed = await turn(
-            undefined,
-            'Use your Bash tool to run exactly: [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo token-present || echo token-absent; git ls-remote https://github.com/octocat/Hello-World HEAD >/dev/null && echo git-ok. Then reply with only the lines it printed.',
-            true,
-          );
-          expect(sandboxed.reply).toContain('token-absent');
-          expect(sandboxed.reply).toContain('git-ok');
-        }
+        // 9c, in Claude Code's Bash sandbox: Claude's credential is out of its commands' reach (their
+        // environment, Claude Code's own through /proc, files), and ordinary work still goes.
+        // `prepare` installed bubblewrap and socat.
+        expect((await sandbox.executeCommand!('command -v bwrap && command -v socat')).exitCode).toBe(0);
+        // The container masks parts of /proc until a launch takes them off (they return on a restart).
+        const masks = await sandbox.executeCommand!(
+          `awk '$5 ~ "^/proc/" { n++ } END { print n + 0 }' /proc/self/mountinfo`,
+        );
+        console.log(`[live] /proc masks before the sandboxed launch: ${masks.stdout.trim()}`);
+        await processes.files.writeFile(`${checkout}/probe.sh`, bashSandboxProbeScript());
+        await sandbox.executeCommand!(`git init -q '${checkout}'`);
+        const sandboxed = await turn(
+          undefined,
+          'Use your Bash tool to run exactly `sh ./probe.sh` (one call), then reply with only: done',
+          true,
+        );
+        console.log(`[live] sandbox probe:\n${sandboxed.toolOutput}`);
+        expect(parseBashSandboxProbe(sandboxed.toolOutput)).toMatchObject({
+          'env.CLAUDE_CODE_OAUTH_TOKEN': 'absent',
+          'env.GH_TOKEN': 'present',
+          'ps.token_in_env': '0',
+          'proc.token_in_environ': '0',
+          'files.token_like': '0',
+          'net.npm_registry': '200',
+          'git.public': 'ok',
+          'git.credential_helper': 'sent',
+          'gh.api': 'reached',
+          'write.checkout': 'ok',
+          'write.tmpdir': 'ok',
+          'write.home_cache': 'ok',
+          'write.home_npm': 'ok',
+          'write.claude_config': 'denied',
+          'write.checkout_claude_settings': 'denied',
+          'write.git_hooks': 'denied',
+          'npm.install': 'ok',
+          'git.commit': 'ok',
+          'git.push': 'ok',
+          probe: 'done',
+        });
       } finally {
         if (!process.env.FACTORY_SPRITES_LIVE_KEEP) await sandbox.destroy();
         else await sandbox.stop();
