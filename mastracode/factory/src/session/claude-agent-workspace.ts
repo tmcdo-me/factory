@@ -25,6 +25,11 @@ export interface ClaudeAgentWorkspace {
   /** The sandbox the checkout lives in. */
   sandbox?: unknown;
   /**
+   * The session's Factory workspace. Factory's workspace-backed tools (`source_control_*` and the
+   * like) take the sandbox from it, as they do from a Mastra Code agent's workspace.
+   */
+  workspace?: Workspace;
+  /**
    * The request context Factory's tools run with for a turn the host sent with `hostContext`: the
    * host's entries (the signed-in caller) plus this session's controller context, as Mastra Code's
    * tools see it. The controller state is shared across turns, so what one tool heals stays healed.
@@ -91,6 +96,7 @@ export function createClaudeAgentWorkspaceResolver(options: {
       ),
       ...(workspace?.skills ? { skills: workspace.skills } : {}),
       sandbox,
+      ...(workspace ? { workspace } : {}),
       requestContext: contextFor,
     };
   };

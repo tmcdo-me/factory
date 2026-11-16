@@ -58,6 +58,11 @@ export interface ClaudeAgentToolCallContext {
   /** The session's checkout, where `submit_plan` reads plans from. */
   cwd: string;
   sessionId: string;
+  /**
+   * The session's Factory workspace, given to the tool as Mastra gives an agent's workspace: tools
+   * such as `source_control_push_branch` run git in its sandbox and fail without it.
+   */
+  workspace?: unknown;
 }
 
 /**
@@ -85,7 +90,12 @@ export async function runMastraTool(
       suspended = { payload };
     },
   };
-  const execution = { requestContext: call.requestContext, abortSignal: ctx.signal, agent };
+  const execution = {
+    requestContext: call.requestContext,
+    abortSignal: ctx.signal,
+    agent,
+    ...(call.workspace ? { workspace: call.workspace } : {}),
+  };
   let output: unknown = await tool.execute(input, execution as never);
   if (suspended) {
     const { request, resume } = await interactionFor(name, suspended.payload, call.cwd);
