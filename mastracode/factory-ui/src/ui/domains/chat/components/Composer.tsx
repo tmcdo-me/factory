@@ -42,9 +42,11 @@ import { useCreateUserSessionFromDraft } from '../hooks/useCreateUserSessionFrom
 import { clearPendingHandoff } from '../hooks/useHandoffPrompt';
 import { usePendingPlanFeedback } from '../hooks/usePendingPlanFeedback';
 import { usePreparingThreadId } from '../hooks/usePreparingThreadId';
+import { CLAUDE_AGENT_RUNTIME } from '../services/factoryRuntimes';
 import { commandRequiresReadySession, isSlashCommand } from '../services/commands';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { mergeDictation } from '../services/dictation';
+import { ClaudeModelPicker, RuntimePicker, useChatRuntime } from './RuntimePicker';
 import { ComposerConnectionNotice } from './ComposerConnectionNotice';
 import { ComposerImageAttachments } from './ComposerImageAttachments';
 import { ComposerPrimaryAction } from './ComposerPrimaryAction';
@@ -76,6 +78,7 @@ function sendTitleFor(state: {
 export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
   const { sessionId, sessionEnabled, baseUrl, factorySessionState } = useChatSessionContext();
   const { factoryId } = useParams<{ factoryId: string }>();
+  const chatRuntime = useChatRuntime(); // fork(claude-agent)
   const onDraftComposer = useMatch('/factories/:factoryId/new') !== null;
   const onUserDraft = useMatch('/factories/:factoryId/user/new/:draftSessionId') !== null;
   const navigate = useNavigate();
@@ -343,7 +346,9 @@ export function Composer({ variant = 'inline', statusLead }: ComposerProps) {
                 />
               </ComposerActionsStart>
               <ComposerActionsEnd role="group" aria-label="Composer actions">
-                <ModelPicker />
+                {/* fork(claude-agent): runtime choice, and Claude Agent's own model list. */}
+                <RuntimePicker />
+                {chatRuntime.runtimeId === CLAUDE_AGENT_RUNTIME ? <ClaudeModelPicker /> : <ModelPicker />}
                 {factoryId && (
                   <ComposerVoiceButton
                     factoryId={factoryId}

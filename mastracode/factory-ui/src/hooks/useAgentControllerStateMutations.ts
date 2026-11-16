@@ -9,7 +9,7 @@ import {
 } from '../ui/domains/chat/services/agentControllerClient';
 // fork(claude-agent): with the Factory transcript source, the model switch goes to Factory's session API.
 import { switchFactorySessionModel } from '../ui/domains/chat/services/factorySessionCommands';
-import { transcriptSource } from '../ui/domains/chat/services/transcript-source';
+import { resolveSessionRuntime, usesFactorySessionApi } from '../ui/domains/chat/hooks/useSessionRuntime';
 
 export function useSetAgentControllerStateMutation({
   agentControllerId,
@@ -48,8 +48,10 @@ export function useSwitchAgentControllerModelMutation(args: AgentControllerMutat
   const { session } = createAgentControllerClient(args);
 
   return useMutation({
-    mutationFn: ({ modelId, thinkingLevel }: ModelSwitch) =>
-      transcriptSource === 'factory'
+    mutationFn: async ({ modelId, thinkingLevel }: ModelSwitch) =>
+      usesFactorySessionApi(
+        await resolveSessionRuntime(queryClient, args.baseUrl ?? '', args.sessionId).catch(() => undefined),
+      )
         ? switchFactorySessionModel(args.baseUrl ?? '', args.sessionId, modelId, thinkingLevel)
         : requireAgentControllerSession(session).switchModel(modelId, { thinkingLevel }),
     onSuccess: () =>

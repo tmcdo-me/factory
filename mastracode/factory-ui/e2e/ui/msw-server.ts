@@ -29,6 +29,19 @@ export const server = setupServer(
   // Ambient activity poll (sidebar running dots); activity tests override it with `server.use(...)`.
   http.get('*/api/agent-controller/:controllerId/active-runs', () => HttpResponse.json({ runs: [] })),
   http.get('*/web/factory/projects/:id/boards', () => HttpResponse.json(builtinBoardCatalog)),
+  // fork(claude-agent): ambient agent runtimes: every session and project runs on Mastra Code unless
+  // a test says otherwise with `server.use(...)`.
+  http.get('*/web/factory/runtimes', () =>
+    HttpResponse.json({
+      runtimes: [
+        { id: 'mastra-code', label: 'Mastra Code' },
+        { id: 'claude-agent', label: 'Claude Agent', models: [{ id: 'claude-opus-5-5', label: 'Opus 5.5' }] },
+      ],
+      defaultRuntimeId: 'mastra-code',
+    }),
+  ),
+  http.get('*/web/factory/sessions/:id/runtime', () => HttpResponse.json({ runtimeId: 'mastra-code' })),
+  http.get('*/web/factory/projects/:id/runtime', () => HttpResponse.json({ runtimeId: 'mastra-code' })),
   // Ambient run queue: no automated run waits for a slot. Run-queue tests override it with `server.use(...)`.
   http.get('*/web/factory/projects/:id/run-queue', () =>
     HttpResponse.json({ slots: null, running: 0, claimed: [], queuedCount: 0, queued: [] }),

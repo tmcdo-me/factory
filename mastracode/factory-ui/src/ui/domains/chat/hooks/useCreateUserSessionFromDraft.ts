@@ -10,8 +10,11 @@ import { useChatModels } from '../context/useChatModels';
 import { useChatSessionContext } from '../context/useChatSessionContext';
 import { useChatThinking } from '../context/useChatThinking';
 import type { PendingImage } from '../context/ComposerImagesContext';
+import { MASTRA_CODE_RUNTIME, assignSessionRuntime, runtimeKeys } from '../services/factoryRuntimes';
+import type { SessionRuntime } from '../services/factoryRuntimes';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { stashHandoffFiles } from '../services/handoffFiles';
+import { draftRuntimeChoice } from './useSessionRuntime';
 import { startPromptHandoff } from './useHandoffPrompt';
 
 /**
@@ -38,8 +41,15 @@ export function useCreateUserSessionFromDraft() {
       throw new Error('Session configuration is not ready. Try again.');
     }
 
+    // fork(claude-agent): the draft's runtime; Claude Agent's model travels with it, not the handoff.
+    const runtime = draftRuntimeChoice(
+      draftSessionId,
+      queryClient.getQueryData<{ runtimeId: string }>(runtimeKeys.project(factoryId))?.runtimeId,
+    );
+    const onMastraCode = runtime.runtimeId === MASTRA_CODE_RUNTIME;
     const draftKeepsServerDefaults = activeModelId === defaultModelId && !thinkingLevelOverride;
-    const handoffModelId = draftKeepsServerDefaults ? undefined : activeModelId;
+    const handoffModelId = draftKeepsServerDefaults || !onMastraCode ? undefined : activeModelId;
+    const handoffThinkingLevel = onMastraCode ? thinkingLevelOverride : undefined;
     const draftPath = `/factories/${factoryId}/user/new/${draftSessionId}`;
     void queryClient
       .query({
@@ -53,11 +63,15 @@ export function useCreateUserSessionFromDraft() {
               // A session someone opens for themselves stays theirs until they share it.
               visibility: 'private',
             });
+            // fork(claude-agent): choose the runtime before the first message, and remember it so that
+            // message already goes to the right place.
+            if (!onMastraCode) await assignSessionRuntime(baseUrl, draftSessionId, runtime);
+            queryClient.setQueryData<SessionRuntime>(runtimeKeys.session(draftSessionId), runtime);
           } catch (error) {
             const message = error instanceof Error ? error.message : 'Session creation failed';
             throw new DraftSessionCreateError(
               `Could not create the session: ${message}. Try again.`,
-              { prompt, modelId: handoffModelId, thinkingLevel: thinkingLevelOverride },
+              { prompt, modelId: handoffModelId, thinkingLevel: handoffThinkingLevel },
               draftPath,
               { cause: error },
             );
@@ -83,7 +97,7 @@ export function useCreateUserSessionFromDraft() {
       replace: true,
       state: startPromptHandoff(draftSessionId, prompt, {
         modelId: handoffModelId,
-        thinkingLevel: thinkingLevelOverride,
+        thinkingLevel: handoffThinkingLevel,
       }),
     });
   };
