@@ -131,6 +131,74 @@ describe('transcript reducer', () => {
     expect(unknown.lastSeq).toBe(3);
   });
 
+  it('streams tool input, records exits and denials, and keeps the latest progress', () => {
+    const transcript = buildTranscript(
+      's',
+      envelopes(
+        { type: 'tool.started', callId: 'c1', name: 'execute_command', category: 'shell', executor: 'runtime' },
+        { type: 'tool.input.delta', callId: 'c1', delta: '{"command":' },
+        { type: 'tool.input.delta', callId: 'c1', delta: '"ls"}' },
+        { type: 'tool.input', callId: 'c1', input: { command: 'ls' } },
+        { type: 'tool.progress', callId: 'c1', partial: { lines: 1 } },
+        { type: 'tool.progress', callId: 'c1', partial: { lines: 2 } },
+        { type: 'tool.ended', callId: 'c1', result: 'x', exit: { code: 2, timedOut: true } },
+        { type: 'tool.started', callId: 'c2', name: 'push', category: 'factory', executor: 'factory', input: {} },
+        { type: 'tool.ended', callId: 'c2', denied: true },
+      ),
+    );
+    expect(transcript.items).toMatchObject([
+      {
+        callId: 'c1',
+        inputText: '{"command":"ls"}',
+        input: { command: 'ls' },
+        progress: { lines: 2 },
+        exit: { code: 2, timedOut: true },
+        status: 'done',
+      },
+      { callId: 'c2', status: 'error', denied: true },
+    ]);
+  });
+
+  it('merges late message metadata, keeps attachments, and records notices, subagents, tasks and usage', () => {
+    const transcript = buildTranscript(
+      's',
+      envelopes(
+        {
+          type: 'message.started',
+          messageId: 'u1',
+          role: 'user',
+          meta: { author: { id: 'u', name: 'Tim' }, steer: true },
+          attachments: [{ mediaType: 'image/png', url: 'data:x', name: 'a.png' }],
+        },
+        { type: 'message.started', messageId: 'a1', role: 'assistant' },
+        { type: 'message.meta', messageId: 'a1', meta: { modelId: 'anthropic/claude-opus-5-5' } },
+        { type: 'message.meta', messageId: 'a1', meta: { credentialLabel: 'Claude Pro/Max' } },
+        {
+          type: 'notice',
+          noticeId: 'n1',
+          kind: 'reactive',
+          tag: 'skill',
+          text: 'factory-plan',
+          attributes: { name: 'p' },
+        },
+        { type: 'subagent.started', callId: 't1', agentType: 'explore', task: 'find it', modelId: 'm' },
+        { type: 'subagent.ended', callId: 't1', result: 'found' },
+        { type: 'tasks.updated', tasks: [{ id: '1', title: 'Write tests', status: 'in_progress' }] },
+        { type: 'usage', inputTokens: 10, outputTokens: 2, reasoningTokens: 1 },
+        { type: 'error', message: 'No credentials', retryable: false, code: 'ProviderAuthRequiredError' },
+      ),
+    );
+    expect(transcript.items).toMatchObject([
+      { kind: 'message', meta: { author: { name: 'Tim' }, steer: true }, attachments: [{ name: 'a.png' }] },
+      { kind: 'message', meta: { modelId: 'anthropic/claude-opus-5-5', credentialLabel: 'Claude Pro/Max' } },
+      { kind: 'notice', noticeKind: 'reactive', tag: 'skill', text: 'factory-plan', attributes: { name: 'p' } },
+      { kind: 'subagent', agentType: 'explore', status: 'done', result: 'found' },
+      { kind: 'error', code: 'ProviderAuthRequiredError' },
+    ]);
+    expect(transcript.tasks).toEqual([{ id: '1', title: 'Write tests', status: 'in_progress' }]);
+    expect(transcript.usage).toEqual({ inputTokens: 10, outputTokens: 2, reasoningTokens: 1 });
+  });
+
   it('keeps identity of untouched items so UI memoization works', () => {
     const [m1, m2, d2] = envelopes(
       { type: 'message.started', messageId: 'm1', role: 'user' },

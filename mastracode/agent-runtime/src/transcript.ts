@@ -1,4 +1,14 @@
-import type { EventEnvelope, RunEndReason, ToolCategory, ToolExecutor } from './events';
+import type {
+  EventEnvelope,
+  FactoryEvent,
+  MessageAttachment,
+  MessageMeta,
+  RunEndReason,
+  TaskSnapshot,
+  ToolCategory,
+  ToolExecutor,
+  ToolExit,
+} from './events';
 import type { InteractionResponse, InteractionStatus, PendingInteraction } from './interactions';
 import type { TurnInput } from './runtime';
 
@@ -11,9 +21,13 @@ export interface Transcript {
   /** `seq` of the last applied event; 0 when empty. */
   lastSeq: number;
   items: TranscriptItem[];
+  /** The agent's current task list (latest `tasks.updated`). */
+  tasks: TaskSnapshot[];
+  /** The latest usage report. */
+  usage?: Omit<Extract<FactoryEvent, { type: 'usage' }>, 'type'>;
 }
 
-export type TranscriptItem = RunItem | MessageItem | ToolItem | InteractionItem | ErrorItem;
+export type TranscriptItem = RunItem | MessageItem | ToolItem | InteractionItem | NoticeItem | SubagentItem | ErrorItem;
 
 export interface RunItem {
   kind: 'run';
@@ -32,6 +46,8 @@ export interface MessageItem {
   runId?: string;
   /** Consecutive deltas of the same part type are merged into one part. */
   parts: { type: 'text' | 'reasoning'; text: string }[];
+  meta?: MessageMeta;
+  attachments?: MessageAttachment[];
   complete: boolean;
   startedAt: string;
 }
@@ -42,14 +58,22 @@ export interface ToolItem {
   name: string;
   category: ToolCategory;
   executor: ToolExecutor;
+  /** Parsed arguments; undefined while they are still streaming. */
   input: unknown;
+  /** Raw argument text as streamed. */
+  inputText: string;
   runId?: string;
   parentCallId?: string;
   status: 'running' | 'done' | 'error';
   stdout: string;
   stderr: string;
+  /** Latest partial result reported while running. */
+  progress?: unknown;
   result?: unknown;
   error?: string;
+  exit?: ToolExit;
+  /** The human declined it, so it never ran (status is `error`). */
+  denied?: boolean;
   startedAt: string;
   endedAt?: string;
   /** `seq` of the `tool.ended` event; lets callers process results incrementally. */
@@ -65,16 +89,42 @@ export interface InteractionItem {
   cancelReason?: string;
 }
 
+export interface NoticeItem {
+  kind: 'notice';
+  noticeId: string;
+  noticeKind: string;
+  tag?: string;
+  text: string;
+  attributes?: Record<string, unknown>;
+  runId?: string;
+  at: string;
+}
+
+export interface SubagentItem {
+  kind: 'subagent';
+  callId: string;
+  agentType: string;
+  task: string;
+  modelId?: string;
+  status: 'running' | 'done' | 'error';
+  result?: string;
+  error?: string;
+  startedAt: string;
+  endedAt?: string;
+}
+
 export interface ErrorItem {
   kind: 'error';
   message: string;
   retryable: boolean;
+  code?: string;
+  details?: Record<string, unknown>;
   runId?: string;
   at: string;
 }
 
 export function emptyTranscript(sessionId: string): Transcript {
-  return { sessionId, lastSeq: 0, items: [] };
+  return { sessionId, lastSeq: 0, items: [], tasks: [] };
 }
 
 export function buildTranscript(sessionId: string, envelopes: Iterable<EventEnvelope>): Transcript {
@@ -89,8 +139,17 @@ export function buildTranscript(sessionId: string, envelopes: Iterable<EventEnve
  */
 export function applyEvent(transcript: Transcript, envelope: EventEnvelope): Transcript {
   if (envelope.seq <= transcript.lastSeq) return transcript;
-  const items = apply(transcript.items, envelope);
-  return { sessionId: transcript.sessionId, lastSeq: envelope.seq, items };
+  const next: Transcript = { ...transcript, lastSeq: envelope.seq };
+  const { event } = envelope;
+  if (event.type === 'tasks.updated') {
+    next.tasks = event.tasks;
+  } else if (event.type === 'usage') {
+    const { type: _type, ...usage } = event;
+    next.usage = usage;
+  } else {
+    next.items = apply(transcript.items, envelope);
+  }
+  return next;
 }
 
 function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): TranscriptItem[] {
@@ -113,6 +172,8 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
           role: event.role,
           runId: event.runId,
           parts: [],
+          ...(event.meta ? { meta: event.meta } : {}),
+          ...(event.attachments?.length ? { attachments: event.attachments } : {}),
           complete: false,
           startedAt: at,
         },
@@ -126,6 +187,11 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
             : [...message.parts, { type: event.part, text: event.delta }];
         return { ...message, parts };
       });
+    case 'message.meta':
+      return update(items, isMessage(event.messageId), message => ({
+        ...message,
+        meta: { ...message.meta, ...event.meta },
+      }));
     case 'message.ended':
       return update(items, isMessage(event.messageId), message => ({ ...message, complete: true }));
     case 'tool.started':
@@ -138,6 +204,7 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
           category: event.category,
           executor: event.executor,
           input: event.input,
+          inputText: '',
           runId: event.runId,
           parentCallId: event.parentCallId,
           status: 'running',
@@ -146,18 +213,26 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
           startedAt: at,
         },
       ];
+    case 'tool.input.delta':
+      return update(items, isTool(event.callId), tool => ({ ...tool, inputText: tool.inputText + event.delta }));
+    case 'tool.input':
+      return update(items, isTool(event.callId), tool => ({ ...tool, input: event.input }));
     case 'tool.output':
       return update(items, isTool(event.callId), tool =>
         event.stream === 'stdout'
           ? { ...tool, stdout: tool.stdout + event.chunk }
           : { ...tool, stderr: tool.stderr + event.chunk },
       );
+    case 'tool.progress':
+      return update(items, isTool(event.callId), tool => ({ ...tool, progress: event.partial }));
     case 'tool.ended':
       return update(items, isTool(event.callId), tool => ({
         ...tool,
-        status: event.error === undefined ? 'done' : 'error',
+        status: event.error === undefined && !event.denied ? 'done' : 'error',
         result: event.result,
         error: event.error,
+        ...(event.exit ? { exit: event.exit } : {}),
+        ...(event.denied ? { denied: true } : {}),
         endedAt: at,
         endedSeq: seq,
       }));
@@ -176,8 +251,55 @@ function apply(items: TranscriptItem[], { event, at, seq }: EventEnvelope): Tran
         status: 'cancelled',
         cancelReason: event.reason,
       }));
+    case 'notice':
+      return [
+        ...items,
+        {
+          kind: 'notice',
+          noticeId: event.noticeId,
+          noticeKind: event.kind,
+          ...(event.tag !== undefined ? { tag: event.tag } : {}),
+          text: event.text,
+          ...(event.attributes ? { attributes: event.attributes } : {}),
+          ...(event.runId ? { runId: event.runId } : {}),
+          at,
+        },
+      ];
+    case 'subagent.started':
+      return [
+        ...items,
+        {
+          kind: 'subagent',
+          callId: event.callId,
+          agentType: event.agentType,
+          task: event.task,
+          ...(event.modelId ? { modelId: event.modelId } : {}),
+          status: 'running',
+          startedAt: at,
+        },
+      ];
+    case 'subagent.ended':
+      return update(items, isSubagent(event.callId), item => ({
+        ...item,
+        status: event.error === undefined ? 'done' : 'error',
+        result: event.result,
+        error: event.error,
+        endedAt: at,
+      }));
     case 'error':
-      return [...items, { kind: 'error', message: event.message, retryable: event.retryable, runId: event.runId, at }];
+      return [
+        ...items,
+        {
+          kind: 'error',
+          message: event.message,
+          retryable: event.retryable,
+          ...(event.code ? { code: event.code } : {}),
+          ...(event.details ? { details: event.details } : {}),
+          runId: event.runId,
+          at,
+        },
+      ];
+    case 'tasks.updated':
     case 'usage':
     case 'model.changed':
       return items;
@@ -217,6 +339,10 @@ const isInteraction =
   (interactionId: string) =>
   (item: TranscriptItem): item is InteractionItem =>
     item.kind === 'interaction' && item.interaction.id === interactionId;
+const isSubagent =
+  (callId: string) =>
+  (item: TranscriptItem): item is SubagentItem =>
+    item.kind === 'subagent' && item.callId === callId;
 
 /** Finished tool calls, e.g. Factory tool results for board rules. */
 export function finishedToolCalls(

@@ -136,7 +136,7 @@ describe('MastraCodeEventMapper', () => {
     );
     expect(transcript.items).toMatchObject([
       { kind: 'run', status: 'complete' },
-      { kind: 'tool', status: 'error', error: 'denied' },
+      { kind: 'tool', status: 'error', denied: true },
       { kind: 'interaction', status: 'resolved', response: { kind: 'tool_approval', approved: false } },
     ]);
   });
@@ -176,20 +176,46 @@ describe('MastraCodeEventMapper', () => {
     expect(events.at(-1)).toEqual({ type: 'interaction.cancelled', interactionId: 'question:q1', reason: 'aborted' });
   });
 
-  it('ignores Mastra-only events, signal messages, and updates for unknown messages or tools', () => {
+  it('maps system signals to notices, and never treats their updates as message text', () => {
     expect(
       mapAll([
         message('sig', 'signal', [
-          { type: 'data-signal', data: { tagName: 'factory-work-item', contents: '<card/>' } },
+          {
+            type: 'data-signal',
+            data: {
+              type: 'reactive',
+              tagName: 'skill',
+              contents: 'factory-plan',
+              attributes: { name: 'factory-plan' },
+            },
+          },
         ]),
         { type: 'message_update', id: 'sig', event: { type: 'text-delta', delta: 'x' } },
         { type: 'message_end', id: 'sig' },
-        message('rem', 'signal', [{ type: 'data-system-reminder', data: { contents: 'remember' } }]),
+        message('rem', 'signal', [
+          { type: 'data-system-reminder', data: { type: 'system-reminder', contents: ['remember'] } },
+        ]),
+      ]),
+    ).toEqual([
+      {
+        type: 'notice',
+        noticeId: 'sig',
+        kind: 'reactive',
+        tag: 'skill',
+        text: 'factory-plan',
+        attributes: { name: 'factory-plan' },
+      },
+      { type: 'notice', noticeId: 'rem', kind: 'system-reminder', text: 'remember' },
+    ]);
+  });
+
+  it('ignores Mastra-only events and updates for unknown messages or tools', () => {
+    expect(
+      mapAll([
         { type: 'message_update', id: 'nope', event: { type: 'text-delta', delta: 'x' } },
         { type: 'shell_output', toolCallId: 'nope', output: 'x', stream: 'stdout' },
         { type: 'tool_end', toolCallId: 'nope', result: 1, isError: false },
         { type: 'thread_title_updated', threadId: 't', title: 'x' },
-        { type: 'task_updated', tasks: [] },
         { type: 'om_observation_start', cycleId: 'c', operationType: 'observation', tokensToObserve: 1 },
         { type: 'agent_end', reason: 'complete' }, // no open run
       ]),
@@ -208,6 +234,116 @@ describe('MastraCodeEventMapper', () => {
       { type: 'run.ended', runId: 'run-1', reason: 'complete' },
       { type: 'run.started', runId: 'run-2' },
       { type: 'error', message: 'rate limited', retryable: true, runId: 'run-2' },
+    ]);
+  });
+});
+
+describe('richer Mastra events', () => {
+  it('streams tool input, attaches command exits, and forwards progress', () => {
+    const events = mapAll([
+      { type: 'tool_input_start', toolCallId: 'c1', toolName: 'execute_command' },
+      { type: 'tool_input_delta', toolCallId: 'c1', argsTextDelta: '{"command":"ls"}' },
+      { type: 'tool_input_end', toolCallId: 'c1' },
+      { type: 'tool_start', toolCallId: 'c1', toolName: 'execute_command', args: { command: 'ls' } },
+      { type: 'tool_update', toolCallId: 'c1', partialResult: { pid: 7 } },
+      { type: 'command_exit', toolCallId: 'c1', exitCode: 1, success: false, timedOut: true },
+      { type: 'tool_end', toolCallId: 'c1', result: 'boom', isError: false },
+    ]);
+    expect(events).toEqual([
+      { type: 'tool.started', callId: 'c1', name: 'execute_command', category: 'shell', executor: 'runtime' },
+      { type: 'tool.input.delta', callId: 'c1', delta: '{"command":"ls"}' },
+      { type: 'tool.input', callId: 'c1', input: { command: 'ls' } },
+      { type: 'tool.progress', callId: 'c1', partial: { pid: 7 } },
+      { type: 'tool.ended', callId: 'c1', result: 'boom', exit: { code: 1, timedOut: true } },
+    ]);
+  });
+
+  it('maps tasks, subagents, usage with reasoning tokens, and named errors', () => {
+    const events = mapAll([
+      {
+        type: 'task_updated',
+        tasks: [{ id: 't1', content: 'Write tests', status: 'in_progress', activeForm: 'Writing tests' }],
+      },
+      { type: 'subagent_start', toolCallId: 's1', agentType: 'explore', task: 'look', modelId: 'm' },
+      { type: 'subagent_end', toolCallId: 's1', agentType: 'explore', result: 'nope', isError: true, durationMs: 1 },
+      { type: 'usage_update', usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7, reasoningTokens: 1 } },
+      (() => {
+        const error = new Error('Sign in to continue');
+        error.name = 'ProviderAuthRequiredError';
+        return { type: 'error', error, errorType: 'auth' } as AgentControllerEvent;
+      })(),
+    ]);
+    expect(events).toEqual([
+      {
+        type: 'tasks.updated',
+        tasks: [{ id: 't1', title: 'Write tests', status: 'in_progress', activeTitle: 'Writing tests' }],
+      },
+      { type: 'subagent.started', callId: 's1', agentType: 'explore', task: 'look', modelId: 'm' },
+      { type: 'subagent.ended', callId: 's1', error: 'nope' },
+      { type: 'usage', inputTokens: 5, outputTokens: 2, reasoningTokens: 1 },
+      {
+        type: 'error',
+        message: 'Sign in to continue',
+        retryable: false,
+        code: 'ProviderAuthRequiredError',
+        details: { errorType: 'auth' },
+      },
+    ]);
+  });
+
+  it('reports author, channel and steering on user turns, and late model metadata once', () => {
+    const user = message('u1', 'signal', [
+      {
+        type: 'data-user-message',
+        data: {
+          type: 'user',
+          contents: 'hi',
+          attributes: { delivery: 'while-active' },
+          providerOptions: {
+            mastra: {
+              author: { id: 'u-1', name: 'Tim' },
+              channels: { slack: { author: { userId: 'U1', fullName: 'Tim M' } } },
+            },
+          },
+        },
+      },
+    ]);
+    // the live signal keeps its attributes on `metadata.signal`
+    (user.message.content as { metadata?: unknown }).metadata = {
+      signal: { type: 'user', contents: 'hi', attributes: { delivery: 'while-active' } },
+    };
+    const assistant = message('a1', 'assistant');
+    const snapshot = (metadata: Record<string, unknown>) =>
+      ({
+        type: 'display_state_changed',
+        displayState: { currentMessage: { ...assistant.message, content: { format: 2, parts: [], metadata } } },
+      }) as unknown as AgentControllerEvent;
+
+    const events = mapAll([
+      user,
+      assistant,
+      snapshot({}),
+      snapshot({ modelId: 'anthropic/claude-opus-5-5', credentialLabel: 'Claude Pro/Max' }),
+      snapshot({ modelId: 'anthropic/claude-opus-5-5', credentialLabel: 'Claude Pro/Max' }),
+    ]);
+    expect(events).toEqual([
+      {
+        type: 'message.started',
+        messageId: 'u1',
+        role: 'user',
+        meta: {
+          author: { id: 'u-1', name: 'Tim' },
+          channel: { platform: 'slack', userId: 'U1', authorName: 'Tim M' },
+          steer: true,
+        },
+      },
+      { type: 'message.delta', messageId: 'u1', part: 'text', delta: 'hi' },
+      { type: 'message.started', messageId: 'a1', role: 'assistant' },
+      {
+        type: 'message.meta',
+        messageId: 'a1',
+        meta: { modelId: 'anthropic/claude-opus-5-5', credentialLabel: 'Claude Pro/Max' },
+      },
     ]);
   });
 });
