@@ -120,7 +120,7 @@ export class ClaudeAgentSessions {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
     });
     const factoryTools = await this.#factoryTools(sessionId, workspace, requestContext);
-    const skills = await this.#skills(sessionId, workspace);
+    const skills = await this.#skills(sessionId, workspace, requestContext);
     let savedState = JSON.stringify(record.runtimeState ?? {});
     const resume = (record.runtimeState as { claudeSessionId?: string } | undefined)?.claudeSessionId;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
@@ -225,10 +225,11 @@ export class ClaudeAgentSessions {
   async #skills(
     sessionId: string,
     workspace: Awaited<ReturnType<ClaudeAgentSessionsDeps['workspace']>>,
+    hostContext: unknown,
   ): Promise<ClaudeAgentSkills | undefined> {
     const home = this.#deps.home;
     if (!home || !workspace.skills) return undefined;
-    const skills = await factorySkillsOf(workspace.skills);
+    const skills = await factorySkillsOf(workspace.skills, workspace.requestContext?.(hostContext));
     if (!skills.length) return undefined;
     // The folder is deleted and rewritten on every start, so its name must be one plain segment.
     if (!SAFE_SEGMENT.test(sessionId))

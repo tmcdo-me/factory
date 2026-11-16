@@ -2,6 +2,7 @@
 import path from 'node:path';
 
 import type { ClaudeAgentSkill } from '@factory/runtime-claude-agent';
+import type { RequestContext } from '@mastra/core/request-context';
 import type { WorkspaceSkills } from '@mastra/core/workspace';
 
 import { FACTORY_SKILLS_MOUNT } from '../workspace.js';
@@ -17,8 +18,16 @@ function isFactorySkill(skillPath: string): boolean {
  * edited SKILL.md files, the app's own skills over bundled ones. Repository skills (`.claude/skills`
  * in the checkout and the like) are left out: only Factory's skills reach Claude Agent.
  */
-export async function factorySkillsOf(skills: WorkspaceSkills | undefined): Promise<ClaudeAgentSkill[]> {
-  if (!skills) return [];
+export async function factorySkillsOf(
+  workspaceSkills: WorkspaceSkills | undefined,
+  requestContext?: RequestContext,
+): Promise<ClaudeAgentSkill[]> {
+  if (!workspaceSkills) return [];
+  // Read skills the way Mastra's own skill tools do: scoped to the request, revalidated first. A
+  // session workspace's index can have been built before its skills were readable (it lists nothing
+  // until revalidated), and Mastra Code always revalidates before reading.
+  const skills = workspaceSkills.getScoped ? await workspaceSkills.getScoped({ requestContext }) : workspaceSkills;
+  await skills.maybeRefresh({ requestContext });
   const out: ClaudeAgentSkill[] = [];
   for (const meta of await skills.list()) {
     if (!isFactorySkill(meta.path)) continue;

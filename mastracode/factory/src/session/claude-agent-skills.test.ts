@@ -3,7 +3,9 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
+import { RequestContext } from '@mastra/core/request-context';
 import { LocalSkillSource, Workspace } from '@mastra/core/workspace';
+import type { WorkspaceSkills } from '@mastra/core/workspace';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
@@ -57,6 +59,38 @@ describe('factorySkillsOf', () => {
     expect(review.files?.every(file => file.path.startsWith('references/') && String(file.content).length > 0)).toBe(
       true,
     );
+  });
+
+  it("revalidates a stale index, scoped to the request, before reading it (as Mastra's skill tools do)", async () => {
+    // Live: a session workspace's index listed nothing until revalidated; Mastra Code always revalidates.
+    const real = sessionSkills(false)!;
+    const requestContext = new RequestContext();
+    const calls: string[] = [];
+    let revalidated = false;
+    const stale = {
+      getScoped: async (context?: { requestContext?: unknown }) => {
+        calls.push(`getScoped:${context?.requestContext === requestContext}`);
+        return stale;
+      },
+      maybeRefresh: async (context?: { requestContext?: unknown }) => {
+        calls.push(`maybeRefresh:${context?.requestContext === requestContext}`);
+        revalidated = true;
+      },
+      list: async () => (revalidated ? real.list() : []),
+      get: (skillPath: string) => real.get(skillPath),
+      getReference: (skillPath: string, file: string) => real.getReference(skillPath, file),
+      getScript: (skillPath: string, file: string) => real.getScript(skillPath, file),
+      getAsset: (skillPath: string, file: string) => real.getAsset(skillPath, file),
+    } as unknown as WorkspaceSkills;
+
+    const skills = await factorySkillsOf(stale, requestContext);
+    expect(skills.map(skill => skill.name).sort()).toEqual([
+      'configure-factory-rules',
+      'factory-build',
+      'factory-plan',
+      'factory-triage',
+    ]);
+    expect(calls).toEqual(['getScoped:true', 'maybeRefresh:true']);
   });
 
   it('is empty for a workspace without skills', async () => {
