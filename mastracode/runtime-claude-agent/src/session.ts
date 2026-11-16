@@ -43,6 +43,12 @@ export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options?
 
 export interface ClaudeAgentSessionOptions {
   sessionId: string;
+  /**
+   * How long a Claude Code that was told to stop (SIGTERM, SIGINT, SIGHUP) waits for the host to close
+   * the session before its run counts as failed. The host's own shutdown signals Claude Code with it,
+   * often before it gets to close the session. Default 2 seconds.
+   */
+  signalGraceMs?: number;
   /** The session's working directory (its checkout). */
   cwd: string;
   emit(event: FactoryEvent): void;
@@ -210,12 +216,19 @@ export class ClaudeAgentSession {
     this.#options.model = modelId;
   }
 
-  async close(): Promise<void> {
+  /**
+   * Stop Claude Code; its open runs end as aborted. `notice`, when given, says why in the transcript
+   * (the host shutting down), on the run in flight.
+   */
+  async close(notice?: string): Promise<void> {
     if (this.#closed) return;
     this.#closed = true;
+    this.#closeNotice = notice;
+    this.#onClose?.();
     this.#input?.close();
     this.#query?.close();
     await this.#pump?.catch(() => undefined);
+    this.#noticeClose();
     this.#endOpenRuns('aborted', 'Session closed');
   }
 
@@ -290,20 +303,13 @@ export class ClaudeAgentSession {
       this.#endOpenRuns('error', 'Claude Code exited');
     } catch (error) {
       const text = error instanceof Error ? error.message : String(error);
+      // Told to stop: by the host's own shutdown (which signals Claude Code with it, often before it
+      // closes the session), or by something else (an out-of-memory killer, an evicted container). Only
+      // the host closing the session soon after makes it a stop; anything else is a failure.
+      if (!this.#closed && stoppedBySignal(text)) await this.#closedWithin(this.#options.signalGraceMs ?? 2_000);
       const runId = this.#runs[0];
-      if (this.#closed || stoppedBySignal(text)) {
-        // Stopped from outside, not failed: the host closed the session, or the process was told to
-        // stop (the server shutting down or restarting signals Claude Code with it).
-        if (!this.#closed && runId) {
-          this.#options.emit({
-            type: 'notice',
-            noticeId: this.#newId(),
-            kind: 'system-reminder',
-            tag: 'run-stopped',
-            text: 'Claude Code was stopped: the server running it shut down or restarted.',
-            runId,
-          });
-        }
+      if (this.#closed) {
+        this.#noticeClose();
         this.#endOpenRuns('aborted', text);
         return;
       }
@@ -337,6 +343,38 @@ export class ClaudeAgentSession {
       ...(reason === 'error' && message.subtype !== 'success'
         ? { error: message.errors?.join('\n') || message.subtype }
         : {}),
+    });
+  }
+
+  #closeNotice: string | undefined;
+  #closeNoticed = false;
+  #onClose: (() => void) | undefined;
+
+  /** Resolves once the session is closed, or after `ms`. */
+  #closedWithin(ms: number): Promise<void> {
+    return new Promise(resolve => {
+      const timer = setTimeout(done, ms);
+      timer.unref?.();
+      function done() {
+        clearTimeout(timer);
+        resolve();
+      }
+      this.#onClose = done;
+    });
+  }
+
+  /** Say, once, on the run in flight, why the host closed the session. */
+  #noticeClose(): void {
+    const runId = this.#runs[0];
+    if (!this.#closeNotice || !runId || this.#closeNoticed) return;
+    this.#closeNoticed = true;
+    this.#options.emit({
+      type: 'notice',
+      noticeId: this.#newId(),
+      kind: 'system-reminder',
+      tag: 'run-stopped',
+      text: this.#closeNotice,
+      runId,
     });
   }
 

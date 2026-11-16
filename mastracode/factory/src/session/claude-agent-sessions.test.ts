@@ -638,6 +638,46 @@ describe('ClaudeAgentSessions board runs', () => {
     );
   });
 
+  it('stops the runs in flight when the server shuts down, saying so', async () => {
+    // A turn that runs until Claude Code is closed; closing ends its process (a signal exit).
+    const query: QueryFn = ({ prompt }) => {
+      let kill!: () => void;
+      const killed = new Promise<void>(resolve => (kill = resolve));
+      return Object.assign(
+        (async function* () {
+          for await (const _message of prompt) {
+            await killed;
+            throw new Error('Claude Code process exited with code 143');
+          }
+        })(),
+        { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn(() => kill()) },
+      ) as never;
+    };
+    const log = new InMemoryEventLog();
+    const sessions = new ClaudeAgentSessions({
+      hub: new SessionEventHub(log),
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      query,
+    });
+    await sessions.commands().send('s1', { text: 'one' }, { context: undefined });
+
+    await sessions.shutdown();
+
+    await vi.waitFor(async () => {
+      const events = (await log.list('s1')).map(e => e.event);
+      expect(events).toContainEqual(expect.objectContaining({ type: 'run.ended', reason: 'aborted' }));
+      expect(events).toContainEqual(
+        expect.objectContaining({
+          type: 'notice',
+          tag: 'run-stopped',
+          text: expect.stringContaining('shut down or restarted'),
+        }),
+      );
+      expect(events.some(event => event.type === 'error')).toBe(false);
+    });
+  });
+
   it('holds at most 20 waiting messages, and says how many it dropped', async () => {
     const fake = toolCallingQuery(async () => {});
     const { sessions, log } = toolSetup(fake.fn);

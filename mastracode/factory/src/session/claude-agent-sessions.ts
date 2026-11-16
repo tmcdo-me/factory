@@ -681,15 +681,24 @@ export class ClaudeAgentSessions {
     };
   }
 
+  /**
+   * Stop every Claude Code this process runs. A run in flight ends as stopped and says the server shut
+   * down; a Claude Code the shutdown's signal reached first ends the same way (see `signalGraceMs`).
+   */
   async shutdown(): Promise<void> {
     const sessions = await Promise.allSettled(this.#live.values());
     this.#live.clear();
     this.#opened.clear();
     await Promise.allSettled(
-      sessions.flatMap(result => (result.status === 'fulfilled' && result.value ? [result.value.close()] : [])),
+      sessions.flatMap(result =>
+        result.status === 'fulfilled' && result.value ? [result.value.close(SHUTDOWN_NOTICE)] : [],
+      ),
     );
   }
 }
+
+/** Why a run in flight stopped when the server shut down. */
+const SHUTDOWN_NOTICE = 'This run was stopped because the Factory server shut down or restarted.';
 
 /** How many started runs this process remembers for the replay guard. */
 const MAX_STARTED_RUNS = 1000;
