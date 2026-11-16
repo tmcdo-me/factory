@@ -347,9 +347,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
      hands the decision back, and a dead process's entries are swept.
      **One process runs Claude Agent sessions** per database (`session/claude-agent-host.ts`): their
      Claude Code, in-memory run state and ledger writes (whole-value, no compare-and-set) live in
-     it. The first process to claim it holds it while it renews; another refuses to open Claude Agent
-     sessions until the holder is silent for 30s or released it (clean shutdown). The holder is named
-     by host and Claude Agent home, so a restart takes over from itself.
+     it. The holder is one process (host, Claude Agent home, pid, boot nonce), renewing every 10s;
+     another refuses to open Claude Agent sessions until the holder is silent for 30s or released
+     it (clean shutdown), except that this instance's own process that died (same host and home,
+     pid gone) is taken over at once. A claim is read back twice, 2s apart; the holder re-reads the
+     record before each open and on each renewal, and stops after 30s of failed renewals. A holder
+     that loses the lease stops its Claude Agent sessions (runs in flight end as aborted, saying
+     another process took over) and opens no more.
    - **6c** ✅ Messages reach Claude Agent sessions: session-to-session notifications
      (`factory_signal_session`, replies, follower reports; `tools/deliver.ts`) and GitHub
      pull request subscriptions go through the runtime instead of waking the controller

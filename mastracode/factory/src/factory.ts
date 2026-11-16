@@ -20,7 +20,6 @@
  */
 
 import { existsSync } from 'node:fs';
-import { hostname } from 'node:os';
 
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
@@ -158,7 +157,7 @@ import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
-import { claudeAgentHostLease } from './session/claude-agent-host.js';
+import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-agent-host.js';
 import type { ClaudeAgentHost } from './session/claude-agent-host.js';
 import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
 import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
@@ -1870,11 +1869,11 @@ export class MastraFactory {
       .ensureReady()
       .then(() => pendingInteractions.load())
       .catch(error => console.warn('[factory] Unable to read the questions Claude Agent sessions wait on.', error));
-    // fork(claude-agent): named by host and Claude Agent home, so a restart takes over from itself.
+    // fork(claude-agent): this process, by host, Claude Agent home, pid and boot.
     const claudeAgentHost = claudeAgentHostLease({
       store: async () =>
         (await resolveGoalStore(this.#prepared?.base.controller.getMastra())) as RuntimeThreadState | undefined,
-      ownerId: `${hostname()}:${claudeAgentHome()}`,
+      identity: claudeAgentHostIdentity(claudeAgentHome()),
     });
     this.#claudeAgentHost = claudeAgentHost;
     const claudeAgentSessions = new ClaudeAgentSessions({
