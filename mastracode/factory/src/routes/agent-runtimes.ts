@@ -41,6 +41,11 @@ const concurrencyBody = z.object({
   maxConcurrent: z.number().int().min(0).max(CLAUDE_AGENT_MAX_CONCURRENT_LIMIT).nullable(),
 });
 
+const ADMIN_REQUIRED = {
+  error: 'organization_admin_required',
+  message: 'Organization administrator access is required to see or change the Claude Agent limit.',
+};
+
 export interface AgentRuntimeRoutesDependencies {
   auth: RouteAuth;
   sessions: Pick<AgentSessionsStorage, 'get' | 'assign' | 'getProjectDefault' | 'setProjectDefault'>;
@@ -86,6 +91,8 @@ export function buildAgentRuntimeRoutes({
     if (!projectId || !(await projects.get({ orgId: who.orgId, id: projectId }))) return { status: 404 as const };
     return { status: 200 as const, scope: { orgId: who.orgId, projectId } };
   };
+  const isAdmin = async (c: ReturnType<typeof loose>, orgId: string | undefined) =>
+    !auth.enabled() || (orgId !== undefined && (await auth.isOrganizationAdmin(c, orgId)));
   const scopeError = (status: 401 | 403 | 404) =>
     status === 403
       ? { error: 'organization_required', message: 'Agent runtimes are set per organization.' }
@@ -177,8 +184,8 @@ export function buildAgentRuntimeRoutes({
         return c.json({ ok: true });
       },
     }),
-    // The cap is the server's (one Claude subscription), not a project's: anyone signed in with an
-    // organization may read and change it, as they may the project's default runtime.
+    // The cap is the server's (one Claude subscription), not a project's: only an organization
+    // administrator may read or change it (with auth off, the operator is the only caller).
     registerApiRoute('/web/factory/runtimes/claude-agent/concurrency', {
       method: 'GET',
       requiresAuth: false,
@@ -187,6 +194,7 @@ export function buildAgentRuntimeRoutes({
         const who = await viewer(c);
         if (!who.ok) return c.json({ error: 'unauthorized' }, 401);
         if (auth.enabled() && !who.orgId) return c.json(scopeError(403), 403);
+        if (!(await isAdmin(c, who.orgId))) return c.json(ADMIN_REQUIRED, 403);
         if (!claudeAgentConcurrency) return c.json({ error: 'not_found' }, 404);
         return c.json(claudeAgentConcurrency.state());
       },
@@ -199,6 +207,7 @@ export function buildAgentRuntimeRoutes({
         const who = await viewer(c);
         if (!who.ok) return c.json({ error: 'unauthorized' }, 401);
         if (auth.enabled() && !who.orgId) return c.json(scopeError(403), 403);
+        if (!(await isAdmin(c, who.orgId))) return c.json(ADMIN_REQUIRED, 403);
         if (!claudeAgentConcurrency) return c.json({ error: 'not_found' }, 404);
         const parsed = concurrencyBody.safeParse(await c.req.json().catch(() => undefined));
         if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);

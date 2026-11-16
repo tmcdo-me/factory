@@ -62,4 +62,22 @@ describe('Claude Agent concurrency setting', () => {
     expect(await screen.findByText('A whole number from 0 to 64, or empty.')).toBeInTheDocument();
     expect(puts).toBe(0);
   });
+
+  it('is not offered to someone who does not administer the organization', async () => {
+    server.use(
+      http.get(CONCURRENCY, () =>
+        HttpResponse.json(
+          {
+            error: 'organization_admin_required',
+            message: 'Organization administrator access is required to see or change the Claude Agent limit.',
+          },
+          { status: 403 },
+        ),
+      ),
+    );
+    renderWithProviders(<AgentRuntimeSection factoryId="factory-1" />);
+    await screen.findByRole('combobox', { name: 'Default agent runtime' });
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Runs at once' })).not.toBeInTheDocument());
+    expect(screen.queryByText(/administrator/)).not.toBeInTheDocument();
+  });
 });

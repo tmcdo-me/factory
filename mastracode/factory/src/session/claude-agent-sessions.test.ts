@@ -1848,6 +1848,19 @@ describe('ClaudeAgentSessions under a concurrency cap', () => {
     expect(concurrency.state()).toMatchObject({ running: 0, waiting: 0 });
   });
 
+  it('ends a board run still waiting for a slot as aborted when this process stops its sessions', async () => {
+    const { fake, concurrency, sessions } = capSetup('1');
+    await sessions.commands().send('busy', { text: 'a long task' }, { context: hostContext('user-a') });
+    await vi.waitFor(() => expect(fake.started).toHaveLength(1));
+    const { ended } = await sessions
+      .runtimeSessions()
+      .kickoff('board', { runId: 'decision-1', prompt: 'Build it.' }, owner());
+    await sessions.shutdown();
+    expect(await ended).toMatchObject({ reason: 'aborted' });
+    expect(fake.started).toEqual(['/sandboxes/busy/repo']);
+    expect(concurrency.state()).toMatchObject({ running: 0, waiting: 0 });
+  });
+
   it("puts a person's message to an idle session ahead of a waiting board run, with a notice in their session", async () => {
     const { fake, concurrency, sessions, queuedNotices } = capSetup('1');
     await sessions.commands().send('busy', { text: 'a long task' }, { context: hostContext('user-a') });

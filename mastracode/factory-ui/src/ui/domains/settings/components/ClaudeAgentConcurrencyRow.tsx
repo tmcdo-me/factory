@@ -60,6 +60,8 @@ export function ClaudeAgentConcurrencyRow() {
     save.mutate(next);
   };
 
+  // Only an organization administrator may see or change the server's limit.
+  if (current.error instanceof Error && /administrator/i.test(current.error.message)) return null;
   return (
     <SettingsRow
       label="Claude Agent runs at once"

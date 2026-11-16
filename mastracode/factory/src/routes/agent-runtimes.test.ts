@@ -17,6 +17,8 @@ async function setup(
     authEnabled?: boolean;
     historyPredatesLog?: (sessionId: string) => Promise<boolean>;
     env?: Record<string, string>;
+    /** Whether the caller administers their organization; members by default are. */
+    admin?: boolean;
   } = { user: alice },
 ) {
   const storage = new LibSQLFactoryStorage({ id: 'agent-runtimes-test', url: ':memory:' });
@@ -35,7 +37,10 @@ async function setup(
   mountApiRoutes(
     app as never,
     buildAgentRuntimeRoutes({
-      auth: fakeRouteAuth({ enabled: options.authEnabled }),
+      auth: fakeRouteAuth({
+        enabled: options.authEnabled,
+        isOrganizationAdmin: async () => options.admin ?? true,
+      }),
       sessions,
       events: log,
       projects: { get: async ({ orgId, id }) => (orgId === 'org-1' && id === 'p1' ? { id } : null) },
@@ -204,6 +209,15 @@ describe('agent runtime routes', () => {
       const restarted = new ClaudeAgentConcurrency({ settings: sessions, env: {} });
       await restarted.reload();
       expect(restarted.state()).toMatchObject({ maxConcurrent: 3, effective: 3 });
+    });
+
+    it('lets only an organization administrator see or change it', async () => {
+      const member = await setup({ user: alice, admin: false });
+      const read = await member.app.request(path);
+      expect(read.status).toBe(403);
+      expect(await read.json()).toMatchObject({ error: 'organization_admin_required' });
+      expect((await member.app.request(path, put({ maxConcurrent: 1 }))).status).toBe(403);
+      expect(member.concurrency.state().maxConcurrent).toBeNull();
     });
 
     it('refuses a cap that is not a whole number in range, and callers who are not signed in', async () => {

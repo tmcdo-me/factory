@@ -342,7 +342,9 @@ export class ClaudeAgentSession {
     if (this.#slot !== slot || !this.#held) return;
     const held = this.#held;
     this.#held = undefined;
-    for (const deliver of held) await deliver();
+    // All started now, in the order they were sent: each takes its place in Claude Code's input (or in
+    // the line for its start) before a turn sent from here on can, so results close the right runs.
+    await Promise.all(held.map(deliver => deliver()));
   }
 
   /** fork(claude-agent): no run is open any more: give the slot back. */

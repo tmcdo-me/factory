@@ -595,7 +595,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
     (`turn-queued` notice), a person's own turns go ahead of Factory's (board runs, notifications),
     the kickoff still returns at once so the dispatcher watches the run as usual, and the card shows
     "Queued (#n)" from the run queue (`claudeAgent` in `GET …/run-queue`). Stopping a waiting turn
-    ends it without starting Claude Code. The dispatcher's own `maxInFlight` still applies on top.
+    ends it without starting Claude Code, and so does the process stopping its sessions (shutdown,
+    host lease lost). Only an organization administrator may see or change the setting (the route
+    answers 403 `organization_admin_required`, and Settings leaves the row out). The dispatcher's
+    own `maxInFlight` (10) still applies on top, and a board run waiting for a Claude Agent slot
+    holds a dispatcher run slot while it waits. A turn that hangs holds its slot until it ends:
+    the dispatcher's overdue timeout stops watching such a run, it does not stop the turn, so a
+    person stops it from the session.
     The plain-text-question judge (6c) is a one-shot Claude Code of its own and is not counted.
 14. **Production service** ✅ (`fork/ops/`): `pnpm --dir mastracode/web build` bundles the server
     without installing its dependencies from npm (the fork's `@factory/*` packages are not

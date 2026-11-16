@@ -20,8 +20,11 @@ export interface ClaudeTurnWaiter {
 }
 
 interface Holder {
-  /** Waiting on a person (a question, a plan): Claude Code is idle until they answer, so it isn't counted. */
-  parked: boolean;
+  /**
+   * How many of its calls wait on a person (a question, a plan): while any does, Claude Code is idle
+   * until they answer, so it isn't counted.
+   */
+  parked: number;
 }
 
 interface Waiter {
@@ -77,15 +80,15 @@ export class ClaudeTurnLimiter {
   /** The session's turn now waits on a person: its slot is free for another meanwhile. */
   park(sessionId: string): void {
     const holder = this.#holders.get(sessionId);
-    if (!holder || holder.parked) return;
-    holder.parked = true;
-    this.#admitWaiting();
+    if (!holder) return;
+    holder.parked += 1;
+    if (holder.parked === 1) this.#admitWaiting();
   }
 
-  /** The person answered: the turn goes on, counted again. */
+  /** The person answered one of them: once none waits, the turn goes on, counted again. */
   unpark(sessionId: string): void {
     const holder = this.#holders.get(sessionId);
-    if (holder) holder.parked = false;
+    if (holder && holder.parked > 0) holder.parked -= 1;
   }
 
   /** Re-read the cap and let in whoever now fits. */
@@ -95,7 +98,7 @@ export class ClaudeTurnLimiter {
 
   #running(): number {
     let running = 0;
-    for (const holder of this.#holders.values()) if (!holder.parked) running += 1;
+    for (const holder of this.#holders.values()) if (holder.parked === 0) running += 1;
     return running;
   }
 
@@ -108,7 +111,7 @@ export class ClaudeTurnLimiter {
     let released = false;
     let holder: Holder | undefined;
     const hold = () => {
-      holder = { parked: false };
+      holder = { parked: 0 };
       this.#holders.set(sessionId, holder);
     };
     const release = () => {
