@@ -156,6 +156,7 @@ import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
+import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
 import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
 import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
@@ -1816,6 +1817,10 @@ export class MastraFactory {
       home: claudeAgentHome(),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
       interactions: new InteractionBroker({ store: agentInteractionsStorage, hub: agentEventHub }),
+      // A review session, or one on a pull request card, loads none of its checkout's own settings.
+      ...(workItemsReady
+        ? { checkout: claudeAgentCheckoutPosture({ sessions: sourceControlSessions, workItems: workItemsStorage }) }
+        : {}),
       // The card and phase each turn, as Mastra Code's state signals tell its sessions.
       context: stateSignalContext([factoryProcessor, workItemProcessor].filter(processor => processor !== undefined)),
     });
@@ -2265,6 +2270,18 @@ export class MastraFactory {
             startRuntimes: createRunRuntimes({
               sessions: agentSessionsStorage,
               events: agentEventHub.log,
+              threadHasMessages: async threadId => {
+                const memory = await storage.getMastraStorage().getStore('memory');
+                if (!memory) return false;
+                const { messages } = await memory.listMessages({
+                  threadId,
+                  page: 0,
+                  perPage: 1,
+                  orderBy: { field: 'createdAt', direction: 'ASC' },
+                });
+                return messages.length > 0;
+              },
+              unscopedDefaults: () => !routeAuth.enabled(),
               ownConversation: [CLAUDE_AGENT_RUNTIME_ID],
             }),
             runSlots: () => this.#dispatcher?.runSlots(),

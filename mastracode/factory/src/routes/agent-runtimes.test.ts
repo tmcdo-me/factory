@@ -10,7 +10,9 @@ import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 
 const alice = { workosId: 'user-alice', organizationId: 'org-1' };
 
-async function setup(options: { user?: typeof alice; authEnabled?: boolean } = { user: alice }) {
+async function setup(
+  options: { user?: { workosId: string; organizationId?: string }; authEnabled?: boolean } = { user: alice },
+) {
   const storage = new LibSQLFactoryStorage({ id: 'agent-runtimes-test', url: ':memory:' });
   const sessions = storage.registerDomain(new AgentSessionsStorage());
   await storage.init();
@@ -99,5 +101,23 @@ describe('agent runtime routes', () => {
     const { app } = await setup({});
     expect((await app.request('/web/factory/runtimes')).status).toBe(401);
     expect((await app.request('/web/factory/projects/p1/runtime')).status).toBe(401);
+  });
+
+  it("refuses a caller with no organization: nobody's project is theirs to set", async () => {
+    const { app, sessions } = await setup({ user: { workosId: 'user-mallory' } });
+    expect((await app.request('/web/factory/projects/p1/runtime')).status).toBe(403);
+    expect((await app.request('/web/factory/projects/p1/runtime', put({ runtimeId: 'claude-agent' }))).status).toBe(
+      403,
+    );
+    // Not filed under the unscoped `local` org either, where a run could read it.
+    expect(await sessions.getProjectDefault({ orgId: 'local', projectId: 'p1' })).toBeUndefined();
+  });
+
+  it('files defaults under the unscoped org when auth is off', async () => {
+    const { app, sessions } = await setup({ authEnabled: false });
+    expect((await app.request('/web/factory/projects/p9/runtime', put({ runtimeId: 'claude-agent' }))).status).toBe(
+      200,
+    );
+    expect(await sessions.getProjectDefault({ orgId: 'local', projectId: 'p9' })).toBe('claude-agent');
   });
 });

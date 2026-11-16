@@ -2935,7 +2935,17 @@ export class FactoryDecisionDispatcher {
 
   /** Whether the bound session runs on another runtime. */
   async #onRuntimeSeam(binding: FactoryRunBindingRecord): Promise<boolean> {
-    return this.#runtimeSessions ? this.#runtimeSessions.runs(binding.sessionId) : false;
+    if (!this.#runtimeSessions) return false;
+    try {
+      return await this.#runtimeSessions.runs(binding.sessionId);
+    } catch (error) {
+      // Unknown runtime: Mastra Code, the runtime of every session without a record.
+      console.warn(
+        `[factory] Session ${binding.sessionId}: reading its runtime failed; treating it as Mastra Code`,
+        error,
+      );
+      return false;
+    }
   }
 
   /** The request a seam run acts with: the session owner, as for any Factory-started run. */
@@ -2978,19 +2988,17 @@ export class FactoryDecisionDispatcher {
       (await this.#roleSuperseded(record, decision.role)) ||
       (await this.#findBinding(record, decision.role))?.id !== binding.id ||
       (await this.#decisionOvertaken(record, decision.role));
+    const requestContext = this.#seamRequestContext(startedBy, record.orgId);
+    const label = 'Factory skill run';
     // A kickoff that already landed is not sent again; a review waits for that run before it says it finished.
     if (await seam.hasRun(binding.sessionId, deliveryId)) {
       if (await this.#isReviewRun(record, decision)) {
-        await seam.idle(binding.sessionId);
+        await this.#seamIdle(binding, label);
         this.#reviewReplayed.add(record);
       }
       return;
     }
-    const requestContext = this.#seamRequestContext(startedBy, record.orgId);
-    if (decision.cancelInFlight && seam.isRunning(binding.sessionId))
-      await seam.abort(binding.sessionId, requestContext);
-    // Never overlap a run in flight (a person's turn, or the previous phase's).
-    await seam.idle(binding.sessionId);
+    await this.#clearSeamSession(binding, requestContext, label, decision.cancelInFlight === true);
     if (await this.#roleSuperseded(record, decision.role)) throw new FactoryDecisionSuperseded();
     const activeBinding = await this.#requireBinding(record, decision.role);
     if (activeBinding.id !== binding.id) {
@@ -3015,7 +3023,7 @@ export class FactoryDecisionDispatcher {
       startedBy,
       orgId: record.orgId,
       attempts: record.attempts,
-      label: 'Factory skill run',
+      label,
       kickoff: {
         runId: deliveryId,
         ...(decision.skillName !== undefined
@@ -3042,6 +3050,49 @@ export class FactoryDecisionDispatcher {
         await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
       },
     });
+  }
+
+  /**
+   * Make way for a kickoff: never overlap a run in flight (a person's turn, or the previous phase's).
+   *
+   * A run parked on a person (a question, a plan to approve) is dropped first, with its pending
+   * interaction: Claude answers turns in order, so a kickoff queued behind it would wait on that
+   * person, holding this run slot and the binding, however long they take. The interaction belongs
+   * to the work the card moved on from, and the Mastra Code run that asked it had already ended
+   * (suspended), so nothing is lost that a Mastra Code session would have kept running. `cancel`
+   * aborts any run in flight (`cancelInFlight`).
+   */
+  async #clearSeamSession(
+    binding: FactoryRunBindingRecord,
+    requestContext: RequestContext,
+    label: string,
+    cancel: boolean,
+  ): Promise<void> {
+    const seam = this.#runtimeSessions!;
+    if (seam.isRunning(binding.sessionId) && (cancel || (await seam.awaitsPerson(binding.sessionId)))) {
+      await seam.abort(binding.sessionId, requestContext);
+    }
+    await this.#seamIdle(binding, label);
+  }
+
+  /** Wait for the session's run in flight to end, as long as a run may take, then give the decision back. */
+  async #seamIdle(binding: FactoryRunBindingRecord, label: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = new Promise<'timeout'>(resolve => {
+      timer = setTimeout(() => resolve('timeout'), this.#skillCompletionObservationTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      const outcome = await Promise.race([this.#runtimeSessions!.idle(binding.sessionId), timedOut]);
+      if (outcome === 'timeout') {
+        throw new FactoryDispatchError(
+          'session_unavailable',
+          `${label} could not start: session ${binding.sessionId} still has a run in flight.`,
+        );
+      }
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /**
@@ -3193,15 +3244,27 @@ export class FactoryDecisionDispatcher {
           const item = await this.#storage.get({ orgId: record.orgId, id: binding.workItemId });
           const startedBy = item?.sessions[binding.role]?.startedBy;
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
-          // fork(claude-agent)
+          // fork(claude-agent): the same replay guard and wait as a skill kickoff on the seam.
           if (await this.#onRuntimeSeam(binding)) {
             const kickoffId = `factory-kickoff:${record.kickoffKey}:${record.attempts}`;
+            const label = 'Factory kickoff run';
+            // Any earlier attempt's kickoff counts, as the inbox dedupes Mastra Code's on the kickoff key.
+            for (let attempt = 1; attempt <= record.attempts; attempt += 1) {
+              if (
+                await this.#runtimeSessions!.hasRun(
+                  binding.sessionId,
+                  `factory-kickoff:${record.kickoffKey}:${attempt}`,
+                )
+              )
+                return;
+            }
+            await this.#clearSeamSession(binding, this.#seamRequestContext(startedBy, record.orgId), label, false);
             await this.#runOnSeam({
               binding,
               startedBy,
               orgId: record.orgId,
               attempts: record.attempts,
-              label: 'Factory kickoff run',
+              label,
               kickoff: { runId: kickoffId, prompt: record.message },
               autoApprovedTool: await this.#autoApprovedExitTool({ ...record, workItemId: binding.workItemId }),
             });

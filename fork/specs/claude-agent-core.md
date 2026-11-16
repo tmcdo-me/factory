@@ -325,8 +325,10 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Claude Agent sessions through `FactoryRuntimeSessions` (`rules/runtime-sessions.ts`), with
      the same supersession, staleness and "the run moved the card" rules; Claude Code restarts
      (resuming) at each kickoff so the phase's tools and skills apply; `factory-phase` and
-     `factory-work-item` reach Claude with each turn they changed; an untrusted checkout loads
-     none of its own settings. Project default runtime in Settings → Manage Factory. Phase goals
+     `factory-work-item` reach Claude with each turn they changed; a review session or one on a
+     pull request card (read from its binding, failing closed) loads none of its checkout's own
+     settings. Only a session minted by the start takes the default: one the card holds, or with
+     thread messages or events, stays on Mastra Code. Project default runtime in Settings → Manage Factory. Phase goals
      (`maxRuns` re-kicks) stay Mastra Code only for now.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at

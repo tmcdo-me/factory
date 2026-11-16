@@ -1,11 +1,13 @@
+import { InMemoryEventLog } from '@factory/agent-runtime';
 import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createBoardRegistry } from '../boards/index.js';
 import { createPolicyTestRegistry } from '../boards/test-utils.js';
 import { DEFAULT_OBSERVATION_THRESHOLD, DEFAULT_REFLECTION_THRESHOLD } from '../session/memory-settings-hydration.js';
+import { createRunRuntimes } from '../session/run-runtime.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { FactoryStartCoordinator } from './start-coordinator.js';
+import { FactoryStartCoordinator, UntrustedSharedSessionError } from './start-coordinator.js';
 import { FactoryTransitionService } from './transition-service.js';
 import type { FactoryRuleActor } from './types.js';
 
@@ -883,6 +885,7 @@ describe('FactoryStartCoordinator agent runtime', () => {
       orgId: 'org-1',
       factoryProjectId: PROJECT_ID,
       sessionId: 'session-1',
+      cardSession: false,
     });
     // Claude Agent keeps its own conversation: the thread is the session's own, not the Factory's memory.
     expect(prepared).toMatchObject({ sessionId: 'session-1', threadId: 'session-1', resourceId: 'session-1' });
@@ -903,10 +906,10 @@ describe('FactoryStartCoordinator agent runtime', () => {
     );
   });
 
-  it("keeps the resource of a thread that already exists, even one that shares the Factory's", async () => {
+  it("keeps an existing thread's resource, and refuses untrusted work on one sharing the Factory's", async () => {
     const { workItems: storage } = await createFactoryStorageForTests();
     const { controller } = makeController();
-    controller.queryThreadById.mockResolvedValue({ resourceId: 'user-1' } as never);
+    controller.queryThreadById.mockResolvedValue({ resourceId: PROJECT_ID } as never);
     const coordinator = new FactoryStartCoordinator(
       controller as never,
       storage,
@@ -917,11 +920,56 @@ describe('FactoryStartCoordinator agent runtime', () => {
       undefined,
       runtimes('claude-agent'),
     );
-    const request = startRequest();
-    // Untrusted content never refuses a Claude Agent session: there is no shared memory to protect.
-    request.workItem.input.metadata = { authorTrusted: false };
+    await expect(coordinator.prepare(startRequest())).resolves.toMatchObject({ resourceId: PROJECT_ID });
 
-    await expect(coordinator.prepare(request)).resolves.toMatchObject({ resourceId: 'user-1' });
+    const untrusted = startRequest({ kickoffKey: 'kickoff-2' });
+    untrusted.workItem.input.metadata = { authorTrusted: false };
+    await expect(coordinator.prepare(untrusted)).rejects.toBeInstanceOf(UntrustedSharedSessionError);
+  });
+
+  it("leaves a card's session that ran on Mastra Code before the event mirror on Mastra Code", async () => {
+    primeTenant.mockClear();
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const card = await storage.upsert({
+      orgId: 'org-1',
+      userId: 'user-1',
+      factoryProjectId: PROJECT_ID,
+      input: {
+        title: 'Fix issue 1',
+        stages: ['intake'],
+        sessions: { work: { sessionId: 'session-1', branch: 'factory/issue-1', threadId: 'session-1' } },
+        metadata: {},
+      },
+    });
+    const { controller, session } = makeController();
+    const sessions = {
+      get: vi.fn(async () => undefined),
+      assign: vi.fn(async () => true),
+      getProjectDefault: vi.fn(async () => 'claude-agent'),
+    };
+    const coordinator = new FactoryStartCoordinator(
+      controller as never,
+      storage,
+      undefined,
+      makeSourceControl() as never,
+      undefined,
+      undefined,
+      undefined,
+      createRunRuntimes({
+        sessions,
+        // No events: the mirror didn't exist when it ran.
+        events: new InMemoryEventLog(),
+        threadHasMessages: async () => false,
+        unscopedDefaults: () => false,
+        ownConversation: ['claude-agent'],
+      }),
+    );
+
+    await coordinator.prepare(startRequest({ id: card.item.id }));
+
+    expect(sessions.assign).not.toHaveBeenCalled();
+    expect(primeTenant).toHaveBeenCalled();
+    expect(session.permissions.setForTool).toHaveBeenCalled();
   });
 
   it('sets a Mastra Code run up as before', async () => {

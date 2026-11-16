@@ -24,6 +24,7 @@ import {
 } from '@factory/runtime-claude-agent';
 import type {
   ClaudeAgentFactoryTools,
+  ClaudeAgentRuntimeState,
   ClaudeAgentSkills,
   ClaudeTurnInput,
   ClaudeTurnNotice,
@@ -36,6 +37,7 @@ import type { FactoryRuntimeSessions, RuntimeRunEnd } from '../rules/runtime-ses
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { withWorkItemDescription } from '../work-items/description-context.js';
 import type { ClaudeAgentContext, ClaudeAgentContextBlock } from './claude-agent-context.js';
+import type { CheckoutPosture } from './claude-agent-posture.js';
 import { factorySkillsOf } from './claude-agent-skills.js';
 import {
   INTERACTIVE_TOOLS,
@@ -79,6 +81,12 @@ export interface ClaudeAgentSessionsDeps {
   instructions?: string;
   /** What each turn tells Claude about the session's card and phase, when that changed. */
   context?: ClaudeAgentContext;
+  /**
+   * Whether the session's checkout holds content nobody vetted (see `claudeAgentCheckoutPosture`).
+   * Read whenever Claude Code starts; an untrusted checkout loads none of its own settings. Without
+   * it every checkout is trusted.
+   */
+  checkout?(sessionId: string): Promise<CheckoutPosture>;
   /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
   home?: string;
   hostEnv?: Record<string, string | undefined>;
@@ -105,17 +113,25 @@ export class ClaudeAgentSessions {
   readonly #runContexts = new Map<string, unknown>();
   /** Per open session: what it was opened with, and what Factory told it last. */
   readonly #opened = new Map<string, OpenSession>();
-  /** Factory messages that wait for the session's next turn. */
+  /** Factory messages that wait for the session's next turn (in memory, at most `MAX_WAITING_MESSAGES`). */
   readonly #notes = new Map<string, ClaudeTurnNotice[]>();
+  /** How many waiting messages were dropped since the session last heard, by session. */
+  readonly #dropped = new Map<string, number>();
+  /** Resume state of a Claude Code just closed to restart, so the restart resumes it even before it is stored. */
+  readonly #resume = new Map<string, ClaudeAgentRuntimeState>();
   /** Context last told to each session, by context id. Kept across reopens: the conversation resumes. */
   readonly #told = new Map<string, Map<string, ClaudeAgentContextBlock>>();
   /** Who waits for a run to end, by run id. */
   readonly #runEnds = new Map<string, (end: RuntimeRunEnd) => void>();
   /** Who waits for a session to have no run in flight. */
   readonly #idle = new Map<string, (() => void)[]>();
-  /** Runs started in this process, as `sessionId run id`. */
+  /**
+   * Runs started in this process, as `sessionId run id`. A run lives and dies with this process's
+   * Claude Code, so this is the whole answer to "did this kickoff land in a run that may still be
+   * going": after a restart the run is gone, and the kickoff is owed again.
+   */
   readonly #started = new Set<string>();
-  /** Answers plan approvals for a board run on the board's behalf while it says so. */
+  /** Answers plan approvals on the board's behalf, by the board run's id, while it says so. */
   readonly #autoApprove = new Map<string, () => boolean>();
 
   constructor(deps: ClaudeAgentSessionsDeps) {
@@ -149,12 +165,16 @@ export class ClaudeAgentSessions {
     });
     const factoryTools = await this.#factoryTools(sessionId, workspace, requestContext);
     const skills = await this.#skills(sessionId, workspace, requestContext);
+    const untrusted = (await this.#posture(sessionId)) === 'untrusted';
+    // A restart carries the state of the Claude Code it replaces: saving it is fire-and-forget.
+    const runtimeState = this.#resume.get(sessionId) ?? (record.runtimeState as ClaudeAgentRuntimeState | undefined);
+    this.#resume.delete(sessionId);
     let savedState = JSON.stringify(record.runtimeState ?? {});
-    const resume = (record.runtimeState as { claudeSessionId?: string } | undefined)?.claudeSessionId;
+    const resume = runtimeState?.claudeSessionId;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
       sessionId,
       cwd,
-      ...(untrustedCheckout(workspace, requestContext) ? { untrustedCheckout: true } : {}),
+      ...(untrusted ? { untrustedCheckout: true } : {}),
       env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, home ? { home } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
@@ -185,6 +205,7 @@ export class ClaudeAgentSessions {
     });
     this.#opened.set(sessionId, {
       session,
+      untrusted,
       skills: skills?.names ?? [],
       ...(workspace.requestContext ? { requestContext: workspace.requestContext } : {}),
     });
@@ -251,7 +272,7 @@ export class ClaudeAgentSessions {
             interact: async request => {
               if (!broker) throw new Error('Nobody can answer questions in this session');
               // A board that approves this phase's plans answers for the person.
-              if (request.kind === 'plan_approval' && this.#autoApprove.get(sessionId)?.()) {
+              if (request.kind === 'plan_approval' && call.runId && this.#autoApprove.get(call.runId)?.()) {
                 return { kind: 'plan_approval', action: 'approved' } as never;
               }
               // A board run that waits on a person is parked, as a suspended Mastra Code run ends: the
@@ -289,8 +310,20 @@ export class ClaudeAgentSessions {
    */
   async #send(session: ClaudeAgentSession, input: SendInput | ClaudeTurnInput, context: unknown): Promise<string> {
     const told = await this.#context(session.id, context);
-    const notes = this.#notes.get(session.id) ?? [];
+    const dropped = this.#dropped.get(session.id) ?? 0;
+    const notes = [
+      ...(dropped
+        ? [
+            factoryMessage(
+              `${dropped} earlier Factory message${dropped === 1 ? ' was' : 's were'} dropped before this session read ${dropped === 1 ? 'it' : 'them'}. Check the card and its sources for anything you missed.`,
+              'factory',
+            ),
+          ]
+        : []),
+      ...(this.#notes.get(session.id) ?? []),
+    ];
     this.#notes.delete(session.id);
+    this.#dropped.delete(session.id);
     const extra = (input as ClaudeTurnInput).context ?? [];
     const turn: ClaudeTurnInput = { ...input, context: [...notes, ...told.map(contextNotice), ...extra] };
     // Set before Claude Code reads the turn: `send` queues it and returns without yielding to it.
@@ -322,30 +355,70 @@ export class ClaudeAgentSessions {
     }
   }
 
+  /** The session's checkout posture; unknown is untrusted. */
+  async #posture(sessionId: string): Promise<CheckoutPosture> {
+    if (!this.#deps.checkout) return 'trusted';
+    try {
+      return await this.#deps.checkout(sessionId);
+    } catch {
+      return 'untrusted';
+    }
+  }
+
   /**
-   * The session, freshly started when it is idle. Claude Code fixes its tools and skills when it
-   * starts, and a board run's phase decides both, so a run starts Claude Code again (resuming the
-   * conversation) rather than keep what an earlier phase was given.
+   * The session, ready for a turn. Claude Code fixes its tools, skills and settings when it starts,
+   * so it starts again (resuming the conversation) when its checkout's posture changed since, and,
+   * with `restartIdle`, whenever it is idle: a board run's phase decides its tools and skills. A
+   * Claude Code started trusted never takes a turn once its checkout is untrusted.
    */
-  async #fresh(sessionId: string, requestContext: unknown): Promise<ClaudeAgentSession | undefined> {
-    const current = this.#opened.get(sessionId)?.session;
-    if (current && current.status() === 'idle' && this.#live.has(sessionId)) {
-      this.#live.delete(sessionId);
-      this.#opened.delete(sessionId);
-      await current.close();
+  async #ready(
+    sessionId: string,
+    requestContext: unknown,
+    options: { restartIdle?: boolean } = {},
+  ): Promise<ClaudeAgentSession | undefined> {
+    const live = this.#opened.get(sessionId);
+    if (live && this.#live.has(sessionId)) {
+      const untrusted = (await this.#posture(sessionId)) === 'untrusted';
+      const idle = live.session.status() !== 'running';
+      if (idle && (options.restartIdle || untrusted !== live.untrusted)) {
+        this.#resume.set(sessionId, live.session.runtimeState());
+        this.#live.delete(sessionId);
+        this.#opened.delete(sessionId);
+        await live.session.close();
+      } else if (untrusted && !live.untrusted) {
+        throw new FactoryDispatchError(
+          'session_unavailable',
+          `Session ${sessionId} now works an untrusted checkout; it takes turns again once its run ends.`,
+        );
+      }
     }
     return this.open(sessionId, requestContext);
+  }
+
+  /** Hold a Factory message for the session's next turn, dropping the oldest past the cap. */
+  #hold(sessionId: string, notice: ClaudeTurnNotice): void {
+    const notes = [...(this.#notes.get(sessionId) ?? []), notice];
+    const over = notes.length - MAX_WAITING_MESSAGES;
+    if (over > 0) {
+      notes.splice(0, over);
+      this.#dropped.set(sessionId, (this.#dropped.get(sessionId) ?? 0) + over);
+    }
+    this.#notes.set(sessionId, notes);
   }
 
   /** Board runs on Claude Agent sessions, for the dispatcher. */
   runtimeSessions(): FactoryRuntimeSessions {
     return {
-      runs: async sessionId => (await this.#deps.sessions.get(sessionId))?.runtimeId === CLAUDE_AGENT_RUNTIME_ID,
-      hasRun: async (sessionId, runId) => {
-        if (this.#started.has(`${sessionId} ${runId}`)) return true;
-        const events = await this.#deps.hub.log.list(sessionId);
-        return events.some(({ event }) => event.type === 'run.started' && event.runId === runId);
+      runs: async sessionId => {
+        try {
+          return (await this.#deps.sessions.get(sessionId))?.runtimeId === CLAUDE_AGENT_RUNTIME_ID;
+        } catch (error) {
+          // Unknown runtime: Mastra Code, the runtime of every session without a record.
+          console.warn(`[factory] Session ${sessionId}: reading its runtime failed; treating it as Mastra Code`, error);
+          return false;
+        }
       },
+      hasRun: async (sessionId, runId) => this.#started.has(`${sessionId} ${runId}`),
       isRunning: sessionId => this.#opened.get(sessionId)?.session.status() === 'running',
       awaitsPerson: async sessionId => ((await this.#deps.interactions?.listPending({ sessionId })) ?? []).length > 0,
       idle: sessionId => {
@@ -357,7 +430,7 @@ export class ClaudeAgentSessions {
         });
       },
       kickoff: async (sessionId, kickoff, requestContext) => {
-        const session = await this.#fresh(sessionId, requestContext);
+        const session = await this.#ready(sessionId, requestContext, { restartIdle: true });
         if (!session) {
           throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
         }
@@ -373,10 +446,9 @@ export class ClaudeAgentSessions {
           kickoff.description,
         );
         const ended = new Promise<RuntimeRunEnd>(resolve => this.#runEnds.set(kickoff.runId, resolve));
-        if (kickoff.autoApprovePlan) this.#autoApprove.set(sessionId, kickoff.autoApprovePlan);
-        void ended.then(() => {
-          if (this.#autoApprove.get(sessionId) === kickoff.autoApprovePlan) this.#autoApprove.delete(sessionId);
-        });
+        // Only this run's plans: a person's own submit_plan in another turn always waits for them.
+        if (kickoff.autoApprovePlan) this.#autoApprove.set(kickoff.runId, kickoff.autoApprovePlan);
+        void ended.then(() => this.#autoApprove.delete(kickoff.runId));
         try {
           await this.#send(
             session,
@@ -390,7 +462,7 @@ export class ClaudeAgentSessions {
           );
         } catch (error) {
           this.#runEnds.delete(kickoff.runId);
-          this.#autoApprove.delete(sessionId);
+          this.#autoApprove.delete(kickoff.runId);
           throw error;
         }
         return { ended };
@@ -398,10 +470,10 @@ export class ClaudeAgentSessions {
       message: async (sessionId, message, requestContext) => {
         const notice = factoryMessage(message.text, message.source);
         if (!message.wake) {
-          this.#notes.set(sessionId, [...(this.#notes.get(sessionId) ?? []), notice]);
+          this.#hold(sessionId, notice);
           return;
         }
-        const session = await this.open(sessionId, requestContext);
+        const session = await this.#ready(sessionId, requestContext);
         if (!session) {
           throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
         }
@@ -419,7 +491,7 @@ export class ClaudeAgentSessions {
     const notPending: CommandResult = { ok: false, reason: 'not_pending', message: 'no_pending_interaction' };
     return {
       send: async (sessionId, input, request) => {
-        const session = await this.open(sessionId, request.context);
+        const session = await this.#ready(sessionId, request.context);
         if (!session) return notFound;
         await this.#send(session, input, request.context);
         return { ok: true };
@@ -474,23 +546,13 @@ export class ClaudeAgentSessions {
   }
 }
 
-/**
- * Whether the session works an untrusted checkout (a pull request under review). Building the
- * session's Factory tools found its card and recorded that on the session's controller state,
- * as it does for Mastra Code.
- */
-function untrustedCheckout(
-  workspace: Partial<Pick<ClaudeAgentWorkspace, 'requestContext'>>,
-  hostContext: unknown,
-): boolean {
-  const controller = workspace.requestContext?.(hostContext).get('controller') as
-    | { getState?(): { untrustedCheckout?: unknown } }
-    | undefined;
-  return controller?.getState?.().untrustedCheckout === true;
-}
+/** Factory messages a session holds for its next turn; past this the oldest are dropped. */
+const MAX_WAITING_MESSAGES = 20;
 
 interface OpenSession {
   session: ClaudeAgentSession;
+  /** Started for an untrusted checkout. */
+  untrusted: boolean;
   /** The skills it was started with (`factory:<name>`). */
   skills: readonly string[];
   /** Factory's request context for a turn sent with a host context. */
@@ -541,7 +603,12 @@ export function routeSessionCommands(options: {
   fallback: SessionCommands;
 }): SessionCommands {
   const target = async (sessionId: string) => {
-    const record = await options.sessions.get(sessionId);
+    let record: AgentSessionRecord | undefined;
+    try {
+      record = await options.sessions.get(sessionId);
+    } catch (error) {
+      console.warn(`[factory] Session ${sessionId}: reading its runtime failed; sending to Mastra Code`, error);
+    }
     return (record && options.runtimes[record.runtimeId]) || options.fallback;
   };
   return {

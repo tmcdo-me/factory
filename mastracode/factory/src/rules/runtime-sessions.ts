@@ -19,8 +19,8 @@ export interface RuntimeKickoff {
   /** Said to the session ahead of the kickoff (a rule's stage-transition message). */
   preface?: string;
   /**
-   * Asked whenever the run submits a plan for approval: `true` approves it on the board's behalf,
-   * `false` leaves it for a person. Without it every plan waits for a person.
+   * Asked whenever this run (and only this run) submits a plan for approval: `true` approves it on
+   * the board's behalf, `false` leaves it for a person. Without it every plan waits for a person.
    */
   autoApprovePlan?: () => boolean;
 }
@@ -33,13 +33,16 @@ export interface RuntimeKickoff {
 export interface FactoryRuntimeSessions {
   /** Whether this session runs on a runtime reached through here. */
   runs(sessionId: string): Promise<boolean>;
-  /** Whether a run with this id was ever started in the session. */
+  /**
+   * Whether a run with this id was started in the session and may still be going. A run lives only as
+   * long as the process running it, so a kickoff from before a restart is owed again.
+   */
   hasRun(sessionId: string, runId: string): Promise<boolean>;
   /** Whether a run is in flight in the session in this process. */
   isRunning(sessionId: string): boolean;
   /** Whether the session waits on a person (a question, a plan to approve). */
   awaitsPerson(sessionId: string): Promise<boolean>;
-  /** Resolves once the session has no run in flight (at once when it has none). */
+  /** Resolves once the session has no run in flight (at once when it has none). Unbounded: callers time it. */
   idle(sessionId: string): Promise<void>;
   /** Start a board run. Resolves once the runtime has the turn; `ended` once the run ends. */
   kickoff(

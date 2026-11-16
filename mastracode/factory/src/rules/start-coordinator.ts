@@ -68,10 +68,9 @@ async function runMemoryResource(
 ): Promise<string> {
   const existing = await controller.queryThreadById({ threadId: input.sessionId });
   if (existing?.resourceId === input.sessionId) return input.sessionId;
-  // fork(claude-agent): a runtime with its own conversation shares no Mastra memory, so its thread
-  // keeps the resource it has, and a new one gets its own.
-  if (input.ownMemory) return existing?.resourceId ?? input.sessionId;
-  if (!input.untrusted) return existing?.resourceId ?? input.factoryProjectId;
+  // fork(claude-agent): a runtime with its own conversation shares no Mastra memory, so a new thread
+  // gets its own resource. An existing thread is judged as for Mastra Code.
+  if (!input.untrusted) return existing?.resourceId ?? (input.ownMemory ? input.sessionId : input.factoryProjectId);
   if (existing) throw new UntrustedSharedSessionError(input.sessionId);
   return input.sessionId;
 }
@@ -103,7 +102,13 @@ export class FactoryStartTransitionError extends Error {
  */
 export interface FactoryStartRuntimes {
   /** The session's runtime id, recording it for a session that had none. */
-  sessionRuntime(input: { orgId: string; factoryProjectId: string; sessionId: string }): Promise<string>;
+  sessionRuntime(input: {
+    orgId: string;
+    factoryProjectId: string;
+    sessionId: string;
+    /** The card already holds this session for one of its roles: it is not new to this start. */
+    cardSession: boolean;
+  }): Promise<string>;
   /** Runtimes that keep their own conversation rather than Mastra Code's model, memory and permissions. */
   ownsConversation(runtimeId: string): boolean;
 }
@@ -305,6 +310,9 @@ export class FactoryStartCoordinator {
       orgId: request.orgId,
       factoryProjectId: request.factoryProjectId,
       sessionId: sourceSession.sessionId,
+      cardSession: Object.values(storedItem?.sessions ?? {}).some(
+        session => session?.sessionId === sourceSession.sessionId,
+      ),
     });
     const ownConversation = runtimeId !== undefined && this.#runtimes!.ownsConversation(runtimeId);
     const memoryResourceId = await runMemoryResource(this.#controller, {

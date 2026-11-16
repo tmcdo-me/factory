@@ -333,11 +333,25 @@ function turnText(input: ClaudeTurnInput): string {
   ].join('\n\n');
 }
 
+/** Element and attribute names Factory writes; anything else is dropped rather than written raw. */
+const NAME = /^[A-Za-z][A-Za-z0-9_-]{0,63}$/;
+
+/**
+ * One piece of context as Claude reads it. Its text is escaped, so content from outside Factory (a
+ * pull request comment, a card's description) can't close the element and forge another, such as a
+ * `<factory-phase>` or `<skill>` block.
+ */
 function element(notice: ClaudeTurnNotice): string {
+  const tag = NAME.test(notice.tag) ? notice.tag : 'factory-context';
   const attributes = Object.entries(notice.attributes ?? {})
-    .map(([key, value]) => ` ${key}="${String(value).replaceAll('"', '&quot;')}"`)
+    .filter(([key]) => NAME.test(key))
+    .map(([key, value]) => ` ${key}="${escapeMarkup(String(value)).replaceAll('"', '&quot;')}"`)
     .join('');
-  return `<${notice.tag}${attributes}>\n${notice.text}\n</${notice.tag}>`;
+  return `<${tag}${attributes}>\n${escapeMarkup(notice.text)}\n</${tag}>`;
+}
+
+function escapeMarkup(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
 function userContent(input: SendInput): string | Record<string, unknown>[] {

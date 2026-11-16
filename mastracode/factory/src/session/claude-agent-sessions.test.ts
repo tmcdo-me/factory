@@ -522,7 +522,8 @@ describe('ClaudeAgentSessions board runs', () => {
       );
       expect(kickoff).toContain('<skill name="factory-plan">\nRun the `factory:factory-plan` skill now');
       expect(kickoff).toContain('ARGUMENTS: card 42');
-      expect(kickoff).toContain('<work-item-description>');
+      // The card's description is data, and arrives escaped with the rest of the kickoff.
+      expect(kickoff).toContain('&lt;work-item-description&gt;');
       expect(await runs.hasRun('s1', 'decision-1')).toBe(true);
       expect(await runs.hasRun('s1', 'decision-2')).toBe(false);
       const events = (await log.list('s1')).map(e => e.event);
@@ -549,11 +550,59 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(fake.seen).toHaveLength(0);
   });
 
-  it("finds a run started before a restart in the session's event log", async () => {
+  it('knows only the runs this process started: a run never outlives its Claude Code', async () => {
     const fake = toolCallingQuery(async () => {});
     const { sessions, log } = toolSetup(fake.fn);
+    // Before a restart the kickoff landed; its Claude Code died with that process, so it is owed again.
     await log.append('s1', [{ type: 'run.started', runId: 'decision-1' }]);
-    expect(await sessions.runtimeSessions().hasRun('s1', 'decision-1')).toBe(true);
+    const runs = sessions.runtimeSessions();
+    expect(await runs.hasRun('s1', 'decision-1')).toBe(false);
+    const { ended } = await runs.kickoff('s1', { runId: 'decision-1', prompt: 'Go.' }, owner());
+    await ended;
+    expect(await runs.hasRun('s1', 'decision-1')).toBe(true);
+  });
+
+  it('resumes the conversation across a restart even before its resume state is stored', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const store = memoryStore([claude('s1')]);
+    // Saving the resume state is fire-and-forget; here it never lands.
+    store.setRuntimeState.mockImplementation(() => new Promise<void>(() => {}));
+    const { sessions } = toolSetup(fake.fn, { sessions: store });
+    const runs = sessions.runtimeSessions();
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'One.' }, owner())
+    ).ended;
+    await (
+      await runs.kickoff('s1', { runId: 'd2', prompt: 'Two.' }, owner())
+    ).ended;
+    expect(fake.options).toHaveLength(2);
+    expect(fake.options[0]).not.toHaveProperty('resume');
+    expect(fake.options[1]).toMatchObject({ resume: 'claude-xyz' });
+  });
+
+  it('holds at most 20 waiting messages, and says how many it dropped', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, log } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    for (let n = 1; n <= 25; n += 1) {
+      await runs.message('s1', { text: `news ${n}`, source: 'source-activity', wake: false }, owner());
+    }
+    await runs.message('s1', { text: 'now', source: 'rule-message', wake: true }, owner());
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    const told = userText(fake.seen[0]);
+    expect(told).toContain('5 earlier Factory messages were dropped');
+    expect(told).not.toContain('news 5\n');
+    expect(told).toContain('news 6');
+    expect(told).toContain('news 25');
+  });
+
+  it('reads a session whose runtime cannot be looked up as a Mastra Code one', async () => {
+    const store = memoryStore([]);
+    const { sessions } = toolSetup(toolCallingQuery(async () => {}).fn, {
+      sessions: { ...store, get: async () => Promise.reject(new Error('db down')) },
+    });
+    expect(await sessions.runtimeSessions().runs('s1')).toBe(false);
   });
 
   it("tells the session Factory's messages: waking it with a turn, or with its next one", async () => {
@@ -647,6 +696,31 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(runs.isRunning('s1')).toBe(true);
   });
 
+  it("never approves a person's own plan, even one queued behind a board run that may approve its own", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => {
+      release = resolve;
+    });
+    const replies: string[] = [];
+    const fake = toolCallingQuery(async (client, index) => {
+      if (index === 0) return gate; // the board's run
+      replies.push((await client.call('submit_plan', { path: 'plan.md' }, 'toolu_person')).content[0]!.text);
+    });
+    const { sessions, store } = toolSetup(fake.fn);
+    const runs = sessions.runtimeSessions();
+    const board = await runs.kickoff(
+      's1',
+      { runId: 'board-1', prompt: 'Plan it.', autoApprovePlan: () => true },
+      owner(),
+    );
+    await sessions.commands().send('s1', { text: 'here is my plan' }, { context: hostContext('user-a') });
+    release();
+    await board.ended;
+
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    expect(replies).toEqual([]);
+  });
+
   it('waits for the run in flight before saying the session is idle', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => {
@@ -666,19 +740,6 @@ describe('ClaudeAgentSessions board runs', () => {
     expect(idle).toBe(false);
     release();
     await vi.waitFor(() => expect(idle).toBe(true));
-  });
-
-  it("loads none of a checkout's own settings when the session reviews untrusted content", async () => {
-    const fake = toolCallingQuery(async () => {});
-    const contextFor = claudeAgentRequestContext('s1');
-    const controller = contextFor(undefined).get('controller') as { setState(u: object): Promise<void> };
-    await controller.setState({ untrustedCheckout: true });
-    const { sessions } = toolSetup(fake.fn, {
-      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {}, requestContext: contextFor }),
-    });
-    await sessions.commands().send('s1', { text: 'review' }, { context: owner() });
-    await vi.waitFor(() => expect(fake.options).toHaveLength(1));
-    expect(fake.options[0]).toMatchObject({ settingSources: [] });
   });
 });
 
