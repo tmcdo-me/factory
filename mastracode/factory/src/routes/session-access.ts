@@ -47,7 +47,8 @@ type Viewer = { orgId?: string; userId: string };
 
 const FACTORY_PROJECT_ID = new RegExp(UUID_PATTERN);
 
-const SESSION_PATH = /\/agent-controller\/[^/]+\/sessions\/([^/]+)/;
+// fork(claude-agent): also guards Factory's own session API (`/web/factory/sessions/:sessionId/...`).
+const SESSION_PATH = /\/agent-controller\/[^/]+\/sessions\/([^/]+)|^\/web\/factory\/sessions\/([^/]+)/;
 const CREATE_SESSION_PATH = /\/agent-controller\/[^/]+\/sessions\/?$/;
 const SET_RESOURCE_PATH = /\/agent-controller\/[^/]+\/sessions\/[^/]+\/resource\/?$/;
 const OM_CONFIG_PATH = /^\/web\/config\/om(\/|$)/;
@@ -118,7 +119,7 @@ async function addressed(c: Context): Promise<{ sessionIds: string[]; resourceId
   const method = c.req.method;
   const sessionMatch = SESSION_PATH.exec(path);
   if (sessionMatch) {
-    const sessionId = decodeSegment(sessionMatch[1]!);
+    const sessionId = decodeSegment((sessionMatch[1] ?? sessionMatch[2])!);
     // Re-keying moves the session onto `newResourceId`, so that resource must be reachable too.
     const target = method === 'POST' && SET_RESOURCE_PATH.test(path) ? await bodyField(c, 'newResourceId') : undefined;
     return { sessionIds: [sessionId], resourceIds: target ? [target] : [] };

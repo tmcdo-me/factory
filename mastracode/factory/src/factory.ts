@@ -105,6 +105,7 @@ import {
   startFactoryMetrics,
 } from './metrics/index.js';
 import type { FactoryMetricsOptions } from './metrics/index.js';
+import { buildAgentSessionRoutes } from './routes/agent-sessions.js';
 import { resolveDeploymentModelProviders } from './routes/config.js';
 import {
   createCustomProvidersPrimer,
@@ -2290,6 +2291,7 @@ export class MastraFactory {
             ...(environmentBuilds ? { onEnvironmentSaved: environmentBuilds.onEnvironmentSaved } : {}),
           }).routes(),
           ...buildFeedEventsRoutes({ auth: routeAuth, projects: factoryProjectsStorage, pubsub: eventBus }),
+          ...buildAgentSessionRoutes({ auth: routeAuth, events: agentEventHub }), // fork(claude-agent)
           ...auditDomain.routes(),
           // Connect/reconnect session minting for Platform-managed providers.
           // Server-side because only the deploy holds Platform machine
