@@ -61,7 +61,7 @@ export function WorkItemListRow({
   const repository = useBoardRepository(item.githubProjectId);
   const verdict = columnReviewVerdict(item, columnStage, board);
   // fork(claude-agent)
-  const ci = pullRequestCiBadge({ ...item.metadata, ...item.workItem?.metadata });
+  const ci = pullRequestCiBadge(item);
   return (
     <BoardListRow
       testId="work-item-card"

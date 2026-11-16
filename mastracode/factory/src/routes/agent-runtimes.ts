@@ -237,7 +237,11 @@ export function buildAgentRuntimeRoutes({
         if (found.status !== 200) return c.json(scopeError(found.status), found.status);
         if (!ciFollow) return c.json({ error: 'not_found' }, 404);
         const project = { orgId: found.scope.orgId, factoryProjectId: found.scope.projectId };
-        return c.json({ mode: await ciFollow.mode(project), maxAttempts: ciFollow.maxAttempts });
+        return c.json({
+          mode: await ciFollow.mode(project),
+          maxAttempts: ciFollow.maxAttempts,
+          canChange: await isAdmin(c, found.scope.orgId),
+        });
       },
     }),
     registerApiRoute('/web/factory/projects/:projectId/ci-follow', {
@@ -262,7 +266,7 @@ export function buildAgentRuntimeRoutes({
         if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
         const project = { orgId: found.scope.orgId, factoryProjectId: found.scope.projectId };
         await ciFollow.setMode(project, parsed.data.mode);
-        return c.json({ mode: parsed.data.mode, maxAttempts: ciFollow.maxAttempts });
+        return c.json({ mode: parsed.data.mode, maxAttempts: ciFollow.maxAttempts, canChange: true });
       },
     }),
   ];

@@ -354,6 +354,11 @@ export interface FactoryGithubRuleContext extends FactoryRuleContextBase {
     /** Lowercase head commit SHA, when the delivery carries one. */
     headSha?: string;
     baseBranch: string;
+    /**
+     * fork(claude-agent): the rule's card owns it: its head lives in the repository itself (not a
+     * fork) on the card's own branch (its build or a session's, or the run binding's provenance names).
+     */
+    ownedByCard?: boolean;
   };
   /** Present on `pullRequestReviewRequested`: who review was (re-)requested from. */
   reviewRequest?: { reviewer: string; factoryReviewer: boolean };
@@ -384,6 +389,8 @@ export interface FactoryGithubRuleContext extends FactoryRuleContextBase {
     attempts: number;
     /** Failures already sent back to the run (their signatures), oldest first. */
     signatures: string[];
+    /** The attempts could not be read: a fix waits for a person rather than risk passing the cap. */
+    unreadable?: boolean;
   };
 }
 

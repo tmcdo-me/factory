@@ -58,9 +58,13 @@ export function PullRequestCiSection({ factoryId }: { factoryId: string }) {
       <SettingsContainer>
         <SettingsRow
           label="Follow checks"
-          description={`Fixing tries ${current.data.maxAttempts} times per pull request, and stops early when a check fails the same way twice. Only feedback from people with write access counts, and never on someone else's pull request.`}
+          description={`Fixing tries ${current.data.maxAttempts} times per pull request, and stops early when a check fails the same way twice. Only feedback from people with write access counts, and never on someone else's pull request.${current.data.canChange === false ? ' Only an organization administrator can change this.' : ''}`}
         >
-          <Select value={selected} onValueChange={mode => save.mutate(mode)} disabled={save.isPending}>
+          <Select
+            value={selected}
+            onValueChange={mode => save.mutate(mode)}
+            disabled={save.isPending || current.data.canChange === false}
+          >
             <SelectTrigger size="sm" aria-label="Follow pull request checks">
               {MODES[selected]}
             </SelectTrigger>

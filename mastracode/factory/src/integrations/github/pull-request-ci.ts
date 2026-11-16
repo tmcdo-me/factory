@@ -26,7 +26,11 @@ export interface PullRequestCiMetadata {
 /** A check run or commit status as GitHub's REST API lists it, the fields read here. */
 type Json = Record<string, unknown>;
 
-const FAILED = new Set(['failure', 'timed_out', 'cancelled', 'action_required', 'startup_failure', 'stale']);
+// A cancelled run is someone stopping it (a newer push supersedes it), not a failure.
+const FAILED = new Set(['failure', 'timed_out', 'action_required', 'startup_failure']);
+
+/** The `external_id` Factory gives the check runs it publishes (its review checks): not the repository's CI. */
+export const FACTORY_CHECK_EXTERNAL_ID = 'factory-review';
 const STATUS_FAILED = new Set(['failure', 'error']);
 
 /**
@@ -40,12 +44,17 @@ export function pullRequestCiStatus(input: {
   open: boolean;
   checkRuns: readonly Json[];
   statuses: readonly Json[];
-  /** Each reviewer's latest review state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`). */
+  /**
+   * Each reviewer's latest review state (`APPROVED`, `CHANGES_REQUESTED`, `COMMENTED`, `DISMISSED`),
+   * of the reviewers whose review counts (people with write access).
+   */
   reviewStates: Readonly<Record<string, string>>;
   ownApp?: string;
-}): { status: PullRequestCiStatus; failing: PullRequestCiFailure[] } | undefined {
+}): { status: PullRequestCiStatus; failing: PullRequestCiFailure[]; running: boolean } | undefined {
   if (!input.open) return undefined;
+  // Factory's own check runs, by its app or by the id it gives them (another app may publish them).
   const runs = input.checkRuns.filter(run => {
+    if (run.external_id === FACTORY_CHECK_EXTERNAL_ID) return false;
     const slug = (run.app as Json | undefined)?.slug;
     return !input.ownApp || typeof slug !== 'string' || slug.toLowerCase() !== input.ownApp.toLowerCase();
   });
@@ -92,11 +101,11 @@ export function pullRequestCiStatus(input: {
   const changesRequested = states.includes('CHANGES_REQUESTED');
   const approved = states.includes('APPROVED');
   const hasChecks = runs.length > 0 || latestStatuses.size > 0;
-  if (failing.length) return { status: 'checks_failing', failing };
-  if (changesRequested) return { status: 'changes_requested', failing };
-  if (running) return { status: 'checks_running', failing };
-  if (approved) return { status: 'ready_to_merge', failing };
-  return hasChecks ? { status: 'checks_passed', failing } : undefined;
+  if (failing.length) return { status: 'checks_failing', failing, running };
+  if (changesRequested) return { status: 'changes_requested', failing, running };
+  if (running) return { status: 'checks_running', failing, running };
+  if (approved) return { status: 'ready_to_merge', failing, running };
+  return hasChecks ? { status: 'checks_passed', failing, running } : undefined;
 }
 
 /** A failure named the same way on every push that fails alike: the failing checks and how. */

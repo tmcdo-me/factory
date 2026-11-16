@@ -19,6 +19,8 @@ export function ciAutoFixMaxAttempts(env: Record<string, string | undefined> = p
 export interface CiFollowStore {
   getSetting<T = unknown>(key: string): Promise<T | undefined>;
   setSetting(key: string, value: unknown): Promise<void>;
+  /** Read, change and write one setting atomically (no other write lands between). */
+  updateSetting<T = unknown>(key: string, change: (current: T | undefined) => T): Promise<T>;
 }
 
 const modeKey = (project: { orgId: string; factoryProjectId: string }) =>
@@ -36,26 +38,53 @@ export function ciFollowSettings(
 ): CiFollowSettings & {
   setMode(project: { orgId: string; factoryProjectId: string }, mode: CiFollowMode): Promise<void>;
 } {
+  const maxAttempts = ciAutoFixMaxAttempts(env);
   return {
-    maxAttempts: ciAutoFixMaxAttempts(env),
+    maxAttempts,
     mode: async project => {
       const value = await store.getSetting<unknown>(modeKey(project)).catch(() => undefined);
       return CI_FOLLOW_MODES.includes(value as CiFollowMode) ? (value as CiFollowMode) : DEFAULT_CI_FOLLOW_MODE;
     },
     setMode: (project, mode) => store.setSetting(modeKey(project), mode),
     attempts: async key => {
-      const value = (await store.getSetting<{ attempts?: unknown; signatures?: unknown }>(attemptsKey(key)).catch(
-        () => undefined,
-      )) ?? { attempts: 0, signatures: [] };
+      let value: { attempts?: unknown; signatures?: unknown } | undefined;
+      try {
+        value = await store.getSetting<{ attempts?: unknown; signatures?: unknown }>(attemptsKey(key));
+      } catch {
+        // Fail closed: a fix waits for a person rather than risk passing the cap.
+        return { attempts: 0, signatures: [], unreadable: true };
+      }
       return {
-        attempts: typeof value.attempts === 'number' ? value.attempts : 0,
-        signatures: Array.isArray(value.signatures) ? value.signatures.filter(s => typeof s === 'string') : [],
+        attempts: typeof value?.attempts === 'number' ? value.attempts : 0,
+        signatures: Array.isArray(value?.signatures)
+          ? value.signatures.filter((entry): entry is string => typeof entry === 'string')
+          : [],
       };
     },
-    recordAttempt: async (key, signature) => {
-      const value = (await store.getSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key))) ?? {};
-      const signatures = [...(value.signatures ?? []), ...(signature ? [signature] : [])].slice(-KEPT_SIGNATURES);
-      await store.setSetting(attemptsKey(key), { attempts: (value.attempts ?? 0) + 1, signatures });
+    reserveAttempt: async (key, signature) => {
+      let reserved = false;
+      await store.updateSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key), current => {
+        const attempts = current?.attempts ?? 0;
+        const signatures = current?.signatures ?? [];
+        if (attempts >= maxAttempts || (signature !== undefined && signatures.includes(signature))) {
+          reserved = false;
+          return current ?? { attempts: 0, signatures: [] };
+        }
+        reserved = true;
+        return {
+          attempts: attempts + 1,
+          signatures: [...signatures, ...(signature ? [signature] : [])].slice(-KEPT_SIGNATURES),
+        };
+      });
+      return { reserved };
+    },
+    releaseAttempt: async (key, signature) => {
+      await store.updateSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key), current => {
+        const signatures = [...(current?.signatures ?? [])];
+        const at = signature === undefined ? -1 : signatures.lastIndexOf(signature);
+        if (at >= 0) signatures.splice(at, 1);
+        return { attempts: Math.max(0, (current?.attempts ?? 0) - 1), signatures };
+      });
     },
   };
 }

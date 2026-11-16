@@ -61,6 +61,7 @@ import type { ConditionalGithubGet } from './active-pull-request-poll.js';
 import type { GithubEventRules, GithubRuleOverrides } from './default-rules.js';
 import { resolveGithubRules } from './default-rules.js';
 import { attachGithubIssueReconciler } from './issue-reconciler.js';
+import { FACTORY_CHECK_EXTERNAL_ID } from './pull-request-ci.js';
 import { GithubReconcileWorker } from './reconcile-worker.js';
 import { reconcileInterval, reconciliationEnabled } from './reconciliation-config.js';
 import { buildGithubRoutes, ingestLinkedRepositoryBacklog } from './routes.js';
@@ -1156,6 +1157,8 @@ export class GithubIntegration implements FactoryIntegration {
         ...parts,
         name: input.name,
         head_sha: input.headSha,
+        // fork(claude-agent): Factory's own check, which the CI follow-up must not read as the repository's CI.
+        external_id: FACTORY_CHECK_EXTERNAL_ID,
         ...(status === 'in-progress'
           ? { status: 'in_progress' as const }
           : { status: 'completed' as const, conclusion: status, completed_at: new Date().toISOString() }),

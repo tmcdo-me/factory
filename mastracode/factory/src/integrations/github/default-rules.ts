@@ -333,15 +333,18 @@ function addressReviewFeedback(context: FactoryGithubRuleContext) {
     requestsChangesVerdict(context.review.body);
   if (state !== 'changes_requested' && !factoryVerdict) return;
   // fork(claude-agent): with auto-fix on, a person's change request on the card's own pull request
-  // sends the card back to Build with the review, as a CI failure does.
-  if (autoFixing(context)) {
-    if (factoryVerdict || !trustedFeedback(context)) return;
-    return autoFix(context, {
-      intro: `Changes were requested on pull request #${context.pullRequest.number} (${context.review.url}) by ${context.review.author ?? 'a reviewer'}.`,
-      body: untrusted('review', { author: context.review.author ?? 'unknown' }, context.review.body ?? ''),
-      ask: 'Read the review comments on the pull request, address the ones you agree with, and push the fixes to the pull request branch. Reply on GitHub to anything you are deliberately not changing, explaining why.',
-    });
-  }
+  // sends the card back to Build with the review, as a CI failure does. Anything auto-fix leaves
+  // (Factory's own verdict, someone without write access, a phase it doesn't move from, a held fix
+  // while building) gets upstream's message below.
+  const fix =
+    autoFixing(context) && !factoryVerdict && trustedFeedback(context)
+      ? autoFix(context, {
+          intro: `Changes were requested on pull request #${context.pullRequest.number} (${context.review.url}).`,
+          body: untrusted('review', { author: context.review.author ?? 'unknown' }, context.review.body ?? ''),
+          ask: 'Read the review comments on the pull request, address the ones you agree with, and push the fixes to the pull request branch. Reply on GitHub to anything you are deliberately not changing, explaining why.',
+        })
+      : undefined;
+  if (fix) return fix;
   // The authoring thread is already subscribed to this PR (`gh pr create`
   // subscribes automatically), so it can read the individual line comments
   // from its own notification inbox — the message only has to wake it and
@@ -409,17 +412,17 @@ function addressPullRequestComment(context: FactoryGithubRuleContext) {
   ) {
     return;
   }
-  // fork(claude-agent): with auto-fix on, only someone with write access is acted on, and their
-  // comment on the card's own pull request sends the card back to Build with it.
-  if (autoFixing(context)) {
-    if (context.actor.type === 'github' && context.actor.factoryAuthored) return;
-    if (!trustedFeedback(context)) return;
-    return autoFix(context, {
-      intro: `${context.issueComment.author ?? 'Someone'} commented on pull request #${context.pullRequest.number} (${context.issueComment.url ?? context.pullRequest.url}).`,
-      body: untrusted('comment', { author: context.issueComment.author ?? 'unknown' }, context.issueComment.body ?? ''),
-      ask: 'Read the comment, address it if you agree, and push the fixes to the pull request branch. Reply on GitHub to anything you are deliberately not changing, explaining why.',
-    });
-  }
+  // fork(claude-agent): with auto-fix on, a comment from someone with write access on the card's own
+  // pull request sends the card back to Build with it; anything else gets upstream's message below.
+  const fix =
+    autoFixing(context) && !(context.actor.type === 'github' && context.actor.factoryAuthored) && trustedFeedback(context)
+      ? autoFix(context, {
+          intro: `A comment was left on pull request #${context.pullRequest.number} (${context.issueComment.url ?? context.pullRequest.url}).`,
+          body: untrusted('comment', { author: context.issueComment.author ?? 'unknown' }, context.issueComment.body ?? ''),
+          ask: 'Read the comment, address it if you agree, and push the fixes to the pull request branch. Reply on GitHub to anything you are deliberately not changing, explaining why.',
+        })
+      : undefined;
+  if (fix) return fix;
   return {
     type: 'sendMessage',
     idempotencyKey: `${context.ingress.id}:address-pull-request-comment`,
@@ -441,17 +444,17 @@ function autoFixing(context: FactoryGithubRuleContext): boolean {
 
 /**
  * Feedback auto-fix may act on: from someone with write access, on the card's own pull request (its
- * run opened it), still open. A pull request someone else opened never sends a card back to Build.
+ * head in the repository itself, on the card's own branch), still open. A pull request someone else
+ * opened, or one from a fork, never sends a card back to Build.
  */
 function trustedFeedback(context: FactoryGithubRuleContext): boolean {
+  return trustedGithubActor(context) && ownOpenPullRequest(context);
+}
+
+/** The card's own pull request, still open. */
+function ownOpenPullRequest(context: FactoryGithubRuleContext): boolean {
   const { pullRequest } = context;
-  return (
-    trustedGithubActor(context) &&
-    pullRequest !== undefined &&
-    pullRequest.factoryAuthored &&
-    pullRequest.state === 'open' &&
-    !pullRequest.merged
-  );
+  return pullRequest?.ownedByCard === true && pullRequest.state === 'open' && !pullRequest.merged;
 }
 
 const UNTRUSTED_NOTE =
@@ -480,10 +483,12 @@ function autoFix(
   if (!flow?.build || !flow.buildRole || !board || !item || !ciFollow) return;
   const repeated = feedback.signature !== undefined && ciFollow.signatures.includes(feedback.signature);
   const spent = ciFollow.attempts >= ciFollow.maxAttempts;
-  const held = repeated || spent;
-  const why = repeated
-    ? 'It failed the same way after the last fix, so this attempt waits for a person.'
-    : `${ciFollow.attempts} of ${ciFollow.maxAttempts} fix attempts on this pull request are spent, so this one waits for a person.`;
+  const held = repeated || spent || ciFollow.unreadable === true;
+  const why = ciFollow.unreadable
+    ? 'Factory could not read how many fix attempts this pull request had, so this attempt waits for a person.'
+    : repeated
+      ? 'It failed the same way after an earlier fix, so this attempt waits for a person.'
+      : `${ciFollow.attempts} of ${ciFollow.maxAttempts} fix attempts on this pull request are spent, so this one waits for a person.`;
   const text = [
     feedback.intro,
     UNTRUSTED_NOTE,
@@ -511,12 +516,13 @@ function autoFix(
 function fixFailingChecks(context: FactoryGithubRuleContext) {
   const { checks, pullRequest, item } = context;
   if (!autoFixing(context) || !checks || !pullRequest || !item || !authoringCard(context)) return;
-  if (!pullRequest.factoryAuthored || pullRequest.state !== 'open' || pullRequest.merged) return;
+  if (!ownOpenPullRequest(context)) return;
   // A failure on a head the pull request moved past is the last push's, already superseded.
   if (pullRequest.headSha && pullRequest.headSha !== checks.headSha) return;
-  const names = checks.failing.map(check => `"${check.name}"`).join(', ');
+  // The checks' names are the CI's (anyone can name a commit status): they appear only escaped, below.
+  const count = checks.failing.length === 1 ? 'One check' : `${checks.failing.length} checks`;
   return autoFix(context, {
-    intro: `CI failed on pull request #${pullRequest.number} (${pullRequest.url}) at ${checks.headSha.slice(0, 7)}: ${names}.`,
+    intro: `CI failed on pull request #${pullRequest.number} (${pullRequest.url}) at ${checks.headSha.slice(0, 7)}: ${count} failed.`,
     body: checks.failing
       .map(check =>
         untrusted(

@@ -164,4 +164,21 @@ export class AgentSessionsStorage extends FactoryStorageDomain {
   async setSetting(key: string, value: unknown): Promise<void> {
     await this.ops.upsertOne<SettingRow>(SETTINGS, ['key'], { key, value, updated_at: new Date() });
   }
+
+  /** fork(claude-agent): read, change and write one setting atomically; resolves with what was written. */
+  async updateSetting<T = unknown>(key: string, change: (current: T | undefined) => T): Promise<T> {
+    try {
+      const value = change(undefined);
+      await this.ops.insertOne<SettingRow>(SETTINGS, { key, value, updated_at: new Date() });
+      return value;
+    } catch (error) {
+      if (!(error instanceof UniqueViolationError)) throw error;
+    }
+    let written: T | undefined;
+    await this.ops.updateAtomic<SettingRow>(SETTINGS, { key }, current => {
+      written = change((current.value ?? undefined) as T | undefined);
+      return { value: written, updated_at: new Date() };
+    });
+    return written as T;
+  }
 }

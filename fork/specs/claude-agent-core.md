@@ -464,26 +464,36 @@ Each slice: implement → focused tests → manual check where noted → commit.
      repository whose cards can't be read keeps what was seen of it. The full sweeps keep their
      cadence. Check runs and statuses are not polled here (`active-pull-request-poll.ts`).
    - **6g** ✅ A card follows its pull request's CI and reviews (Settings → Manage Factory → "Pull
-     request checks": off, show status (the default), or show status and fix; changing it takes an
-     organization admin). The active pull request poll (6f) also reads the head's check runs and
-     commit statuses, conditionally, for same-repository heads; Factory's own check runs (its
-     review checks) don't count, and `check_suite`, `check_run` and `status` webhooks only make the
-     poll read again within seconds. The card's `pullRequestCi` metadata, shown as a badge on the
-     card and in list rows: "Checks failing" (any failed check or status) before "Changes requested"
-     (a reviewer's latest standing review) before "Checks running" before "Ready to merge" (an
-     approval and every check green); green and not approved shows nothing, merged and closed as
-     before. With fixing on, a failure on the card's own pull request (its run opened it) goes to
-     the board's rules as `pullRequestChecksFailed` once per head and failure, and so do a change
-     request or a comment from someone with write access (Factory's own verdicts and anyone else's
-     feedback keep upstream's behaviour): the card goes from pull request review back to its
-     board's Build with a message to its own run naming the failing checks, their links and a short
-     excerpt (or the review or comment), each inside an `<untrusted-…>` element, escaped, and said
-     to be data, never instructions; the run fixes and pushes, CI runs again and the card follows.
-     Already in Build, the run gets the message. At most `FACTORY_CI_AUTOFIX_MAX_ATTEMPTS` (default 3) attempts per pull request, counted when one is committed (agent-sessions runtime settings);
-     past them, or when a check fails the same way it did on an earlier attempt, the move waits for
-     a person (`consent: 'required'`: a proposal in the inbox, "Waiting for approval to move to
-     execute", with the summary in its message). Factory never merges. Build runs start as any
-     board run does, so the Claude Agent cap (slice 13) applies.
+     request checks": off, show status (the default), or show status and fix; only an organization
+     admin changes it, others see it disabled). The active pull request poll (6f) also reads the
+     head's check runs (every page) and commit statuses, conditionally, for same-repository heads;
+     Factory's own check runs don't count (its app, or the `external_id` `factory-review` it gives
+     the ones it publishes), and `check_suite`, `check_run` and `status` webhooks only make the poll
+     read again: within 5 seconds of the first, never later than the tick already due, a steady
+     stream never postponing it, one arriving during a tick polling again after it. The status is
+     kept on the card's record of the pull request (its source row, `pullRequestCi`), so the
+     card's revision, which runs and moves check, doesn't change for it; it shows as a badge on the
+     card and in list rows: "Checks failing" (a failed check or status; a cancelled run is not a
+     failure) before "Changes requested" before "Checks running" before "Ready to merge" (an
+     approval and every check green); reviews count only from people with write access; green and
+     not approved shows nothing; a card that leaves its working column, or a project turned off,
+     clears it. With fixing on, the card's own pull request (its head in the repository itself, on
+     the card's own branch or the one its run's provenance names; never a fork's, never one only a
+     tool result named, which records no provenance either) is followed: a failure goes to the
+     board's rules as `pullRequestChecksFailed` once per head and failure, and only once nothing on
+     the head still runs; a change request or a comment from someone with write access does too.
+     The card goes from pull request review back to Build with a message to its own run: the
+     failing checks' names, links and excerpts (or the review or comment) only inside escaped
+     `<untrusted-…>` elements said to be data, never instructions; the run fixes and pushes, CI
+     runs again and the card follows. What fixing doesn't act on keeps upstream's notice to the run
+     (Factory's own verdict, feedback from anyone else, a phase it doesn't move from, a held fix
+     while building). At most `FACTORY_CI_AUTOFIX_MAX_ATTEMPTS` (default 3) moves per pull request,
+     each taken atomically before the move commits (and given back if it doesn't); a new pull
+     request starts its own count. Past them, for a failure an earlier attempt already sent back,
+     or when the count can't be read, the move waits for a person (`consent: 'required'`: a
+     proposal in the inbox that only an organization admin may approve; `factory_resolve_proposal`
+     refuses it). Factory never merges, and Claude Agent sessions can't either (`Bash(gh pr merge:*)`
+     is denied, which holds under `bypassPermissions`). Build runs respect the Claude Agent cap.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

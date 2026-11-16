@@ -63,7 +63,7 @@ export function WorkItemCardRows({
   const otherStages = item.stages.filter(stage => stage !== columnStage);
   const verdict = columnReviewVerdict(item, columnStage, board);
   // fork(claude-agent): the card's pull request's CI and reviews, as the active poll reads them.
-  const ci = pullRequestCiBadge({ ...item.metadata, ...item.workItem?.metadata });
+  const ci = pullRequestCiBadge(item);
 
   return (
     <>

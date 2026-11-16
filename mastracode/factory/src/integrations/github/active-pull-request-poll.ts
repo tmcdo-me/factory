@@ -259,7 +259,17 @@ async function activePullRequests(
       orgId: project.orgId,
       factoryProjectId: project.factoryProjectId,
     })) {
-      if (workItemPhaseSemantics(boards.forProject(item), item)?.kind !== 'working') continue;
+      const working = workItemPhaseSemantics(boards.forProject(item), item)?.kind === 'working';
+      if (!working || mode === 'off') {
+        // fork(claude-agent): a card that left its active column (or whose project stopped following
+        // CI) shows no CI status any more.
+        for (const source of pullRequestSources(item)) {
+          const number = attachedPullRequestNumber(source, repository) ?? reconcilablePullRequestNumber(item, repository);
+          if (number === undefined || !source.metadata?.[PULL_REQUEST_CI_METADATA_KEY]) continue;
+          await writeCiStatus(options, repository, number, item, null).catch(() => undefined);
+        }
+      }
+      if (!working) continue;
       const enteredAt = enteredCurrentPhaseAt(item);
       for (const number of boundPullRequests(item, repository)) {
         const known = active.get(number);
@@ -457,11 +467,13 @@ async function pollPullRequest(
 }
 
 /**
- * fork(claude-agent): the head's CI for the pull request's cards. Its check runs and commit statuses are
- * read conditionally, as the rest; the status (with the reviews' standing) is written on each card
- * when it changed; with auto-fix, a failure not yet sent back for this head goes to the board's rules
- * as `pullRequestChecksFailed`, once. Only a same-repository head's checks count: a fork's CI is
- * not the repository's own.
+ * fork(claude-agent): the head's CI for the pull request's cards. Its check runs (every page) and
+ * commit statuses are read conditionally, as the rest; the status, with the standing reviews of
+ * people with write access, is kept on the pull request's own record on each card (its source row:
+ * the card's revision, which runs and moves check, doesn't change for it) when it changed. With
+ * auto-fix, a failure not yet sent back for this head goes to the board's rules as
+ * `pullRequestChecksFailed`, once, and only once nothing on the head still runs. Only a
+ * same-repository head's checks count: a fork's CI is not the repository's own.
  */
 async function followCi(
   options: GithubRulesOptions,
@@ -487,11 +499,26 @@ async function followCi(
   if (pull.state === 'open' && sameRepository) {
     const known = entry.checks?.sha === sha ? entry.checks : undefined;
     const base = `/repos/${repository.fullName}/commits/${sha}`;
-    const runs = await read(`${base}/check-runs?per_page=100`, known?.runsEtag);
+    // Every page of check runs; a list of several pages is read whole (a later page can change alone).
+    const first = await read(`${base}/check-runs?per_page=100`, known?.runsEtag);
+    let runs = known?.runs ?? [];
+    let runsEtag = known?.runsEtag;
+    if (first.status === 200) {
+      runs = list(record(first.data).check_runs);
+      let next = nextPage(first.link);
+      let pages = 1;
+      for (; next && pages < MAX_PAGES; pages++) {
+        const more = await read(next, undefined);
+        if (more.status === 304) break;
+        runs.push(...list(record(more.data).check_runs));
+        next = nextPage(more.link);
+      }
+      runsEtag = pages === 1 ? first.etag : undefined;
+    }
     const statuses = await read(`${base}/status`, known?.statusEtag);
     entry.checks = {
       sha,
-      ...(runs.status === 200 ? (runs.etag ? { runsEtag: runs.etag } : {}) : known?.runsEtag ? { runsEtag: known.runsEtag } : {}),
+      ...(runsEtag ? { runsEtag } : {}),
       ...(statuses.status === 200
         ? statuses.etag
           ? { statusEtag: statuses.etag }
@@ -499,15 +526,20 @@ async function followCi(
         : known?.statusEtag
           ? { statusEtag: known.statusEtag }
           : {}),
-      runs: runs.status === 200 ? list(record(runs.data).check_runs) : (known?.runs ?? []),
+      runs,
       statuses: statuses.status === 200 ? list(record(statuses.data).statuses) : (known?.statuses ?? []),
     };
+  }
+  // Only reviews from people with write access stand (an approval or a change request).
+  const reviewStates: Record<string, string> = {};
+  for (const [login, state] of Object.entries(entry.reviewStates ?? {})) {
+    if (await writeAccess(options, repository, login)) reviewStates[login] = state;
   }
   const computed = pullRequestCiStatus({
     open: pull.state === 'open' && sameRepository,
     checkRuns: entry.checks?.sha === sha ? entry.checks.runs : [],
     statuses: entry.checks?.sha === sha ? entry.checks.statuses : [],
-    reviewStates: entry.reviewStates ?? {},
+    reviewStates,
     ...(deps.ci?.ownApp ? { ownApp: deps.ci.ownApp } : {}),
   });
   const metadata: PullRequestCiMetadata | null = computed
@@ -519,25 +551,8 @@ async function followCi(
         updatedAt: new Date().toISOString(),
       }
     : null;
-  for (const card of cards) {
-    const current = card.metadata?.[PULL_REQUEST_CI_METADATA_KEY] as PullRequestCiMetadata | undefined;
-    const same =
-      (current ?? null) === null
-        ? metadata === null
-        : metadata !== null &&
-          current!.status === metadata.status &&
-          current!.headSha === metadata.headSha &&
-          current!.pullRequestNumber === metadata.pullRequestNumber &&
-          JSON.stringify(current!.failing) === JSON.stringify(metadata.failing);
-    if (same) continue;
-    await options.storage.syncCard({
-      orgId: card.orgId,
-      id: card.id,
-      userId: 'factory-ci',
-      patch: { metadata: { [PULL_REQUEST_CI_METADATA_KEY]: metadata } },
-    });
-  }
-  if (mode !== 'autofix' || computed?.status !== 'checks_failing') return;
+  for (const card of cards) await writeCiStatus(options, repository, number, card, metadata);
+  if (mode !== 'autofix' || computed?.status !== 'checks_failing' || computed.running) return;
   const signature = failureSignature(computed.failing);
   const sent = (entry.sentFailures ??= new Set());
   const key = `${sha} ${signature}`;
@@ -557,6 +572,58 @@ async function followCi(
   });
   sent.add(key);
   summary.delivered += 1;
+}
+
+/** Whether a login has write access to the repository (looked up through GitHub, cached there). */
+async function writeAccess(options: GithubRulesOptions, repository: ReconcileRepository, login: string) {
+  try {
+    const permission = await options.github.getRepositoryCollaboratorPermission(
+      repository.installationId,
+      repository.fullName,
+      login,
+    );
+    return permission === 'admin' || permission === 'write' || permission === 'maintain';
+  } catch {
+    return false;
+  }
+}
+
+/** The card's record of this pull request: its own source (a PR card), or the one attached to it. */
+function pullRequestSourceOf(card: Card, repository: ReconcileRepository, number: number) {
+  return (card.workItem.sources ?? []).find(
+    source =>
+      source.sourceType === 'pull-request' &&
+      (attachedPullRequestNumber(source, repository) === number ||
+        (reconcilablePullRequestNumber(card, repository) === number && source.role !== 'attached')),
+  );
+}
+
+/** Keep `metadata` on the card's record of the pull request, when it changed (`null` clears it). */
+async function writeCiStatus(
+  options: GithubRulesOptions,
+  repository: ReconcileRepository,
+  number: number,
+  card: Card,
+  metadata: PullRequestCiMetadata | null,
+): Promise<void> {
+  const source = pullRequestSourceOf(card, repository, number);
+  if (!source) return;
+  const current = (source.metadata?.[PULL_REQUEST_CI_METADATA_KEY] as PullRequestCiMetadata | null | undefined) ?? null;
+  const same =
+    current === null
+      ? metadata === null
+      : metadata !== null &&
+        current.status === metadata.status &&
+        current.headSha === metadata.headSha &&
+        JSON.stringify(current.failing) === JSON.stringify(metadata.failing);
+  if (same) return;
+  await options.storage.syncWorkItemSource({
+    orgId: card.orgId,
+    factoryProjectId: card.factoryProjectId,
+    provider: source.provider,
+    externalId: source.externalId,
+    patch: { metadata: { [PULL_REQUEST_CI_METADATA_KEY]: metadata } },
+  });
 }
 
 function senderOf(user: unknown): Record<string, unknown> {
@@ -646,11 +713,19 @@ export class GithubActivePullRequestPollWorker extends MastraWorker {
     return this.#running;
   }
 
-  /** fork(claude-agent): poll again in a few seconds (a check webhook said something changed). */
+  /**
+   * fork(claude-agent): poll within a few seconds (a check webhook said something changed). Never later
+   * than the tick already due, and never pushed back by more nudges: steady check traffic polls at
+   * most every few seconds, never starves the poll. One arriving during a tick polls again after it.
+   */
   nudge(): void {
-    if (!this.#running || this.#inFlight) return;
-    if (this.#timer) clearTimeout(this.#timer);
-    this.#timer = undefined;
+    if (!this.#running) return;
+    if (this.#inFlight) {
+      this.#nudged = true;
+      return;
+    }
+    const at = Date.now() + NUDGE_DELAY_MS;
+    if (this.#dueAt !== undefined && this.#dueAt <= at) return;
     this.#schedule(NUDGE_DELAY_MS);
   }
 
@@ -694,18 +769,25 @@ export class GithubActivePullRequestPollWorker extends MastraWorker {
 
   #schedule(delayMs: number): void {
     if (!this.#running) return;
+    if (this.#timer) clearTimeout(this.#timer);
+    this.#dueAt = Date.now() + delayMs;
     this.#timer = setTimeout(() => {
       this.#timer = undefined;
+      this.#dueAt = undefined;
+      this.#nudged = false;
       const run = this.tick()
         .then(() => undefined)
         .finally(() => {
           this.#inFlight = undefined;
-          this.#schedule(this.#intervalMs);
+          this.#schedule(this.#nudged ? NUDGE_DELAY_MS : this.#intervalMs);
         });
       this.#inFlight = run;
     }, delayMs);
     this.#timer.unref?.();
   }
+
+  #dueAt: number | undefined;
+  #nudged = false;
 }
 
 const LEASE_KEY = 'github:active-pull-request-poll';

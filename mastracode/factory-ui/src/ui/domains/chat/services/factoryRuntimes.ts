@@ -120,7 +120,7 @@ export const setClaudeAgentConcurrency = async (baseUrl: string, maxConcurrent: 
 export type CiFollowMode = 'off' | 'status' | 'autofix';
 
 export const fetchCiFollow = async (baseUrl: string, projectId: string) =>
-  json<{ mode: CiFollowMode; maxAttempts: number }>(
+  json<{ mode: CiFollowMode; maxAttempts: number; canChange?: boolean }>(
     await fetch(`${baseUrl}/web/factory/projects/${encodeURIComponent(projectId)}/ci-follow`, {
       credentials: 'include',
     }),
@@ -128,7 +128,7 @@ export const fetchCiFollow = async (baseUrl: string, projectId: string) =>
   );
 
 export const setCiFollow = async (baseUrl: string, projectId: string, mode: CiFollowMode) =>
-  json<{ mode: CiFollowMode; maxAttempts: number }>(
+  json<{ mode: CiFollowMode; maxAttempts: number; canChange?: boolean }>(
     await fetch(`${baseUrl}/web/factory/projects/${encodeURIComponent(projectId)}/ci-follow`, {
       method: 'PUT',
       credentials: 'include',

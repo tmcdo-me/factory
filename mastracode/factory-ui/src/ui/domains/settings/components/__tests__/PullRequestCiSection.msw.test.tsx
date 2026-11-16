@@ -55,4 +55,13 @@ describe('Pull request checks setting', () => {
     );
     expect(screen.getByRole('combobox', { name: 'Follow pull request checks' })).toBeEnabled();
   });
+
+  it('lets someone who is not an organization administrator see the setting but not change it', async () => {
+    server.use(http.get(CI_FOLLOW, () => HttpResponse.json({ mode: 'autofix', maxAttempts: 3, canChange: false })));
+    renderWithProviders(<PullRequestCiSection factoryId="factory-1" />);
+    const picker = await screen.findByRole('combobox', { name: 'Follow pull request checks' });
+    expect(picker).toHaveTextContent('Show status and fix');
+    expect(picker).toBeDisabled();
+    expect(screen.getByText(/Only an organization administrator can change this/)).toBeInTheDocument();
+  });
 });

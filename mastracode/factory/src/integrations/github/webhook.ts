@@ -760,14 +760,14 @@ export async function handleGithubWebhook(
     return { status: 202, body: { ok: true, ignored: true } };
   }
 
-  const metadata = normalizeGithubWebhookMetadata(parsed);
-  console.info('[GitHub Webhook]', metadata);
 
-  // fork(claude-agent): CI on some head changed; the active pull request poll reads it, soon.
+  // fork(claude-agent): CI on some head changed; the active pull request poll reads it, soon. Check
+  // events come many to a push, so they aren't logged one by one.
   if (CHECK_EVENTS.has(parsed.event)) {
     options.onChecksChanged?.();
     return { status: 202, body: { ok: true } };
   }
+  console.info('[GitHub Webhook]', normalizeGithubWebhookMetadata(parsed));
   // fork(claude-agent): once per event, also when the active pull request poll saw it first.
   let ignored = false;
   const controller = options.controller;

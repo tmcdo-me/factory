@@ -240,10 +240,11 @@ describe('agent runtime routes', () => {
 
     it('shows the status only by default, and lets an organization administrator turn on fixing', async () => {
       const { app } = await setup();
-      expect(await (await app.request(path)).json()).toEqual({ mode: 'status', maxAttempts: 3 });
+      expect(await (await app.request(path)).json()).toEqual({ mode: 'status', maxAttempts: 3, canChange: true });
       expect(await (await app.request(path, put({ mode: 'autofix' }))).json()).toEqual({
         mode: 'autofix',
         maxAttempts: 3,
+        canChange: true,
       });
       expect(await (await app.request(path)).json()).toMatchObject({ mode: 'autofix' });
       expect((await app.request(path, put({ mode: 'always' }))).status).toBe(400);
@@ -251,7 +252,7 @@ describe('agent runtime routes', () => {
 
     it("lets a member read it but not change it, and no one change another organization's project", async () => {
       const member = await setup({ user: alice, admin: false });
-      expect((await member.app.request(path)).status).toBe(200);
+      expect(await (await member.app.request(path)).json()).toMatchObject({ canChange: false });
       expect((await member.app.request(path, put({ mode: 'autofix' }))).status).toBe(403);
       expect((await member.app.request('/web/factory/projects/other/ci-follow')).status).toBe(404);
     });

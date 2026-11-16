@@ -432,8 +432,13 @@ export class WorkItemRoutes extends Route<WorkItemRoutesDeps> {
           userId: resolved.userId,
           decisionId,
           action: verb,
+          // fork(claude-agent): a move held for a person (an auto-fix past its attempts) takes the role
+          // that turns auto-fix on.
+          approvesHeld:
+            verb === 'approve' &&
+            (!this.deps.auth.enabled() || (await this.deps.auth.isOrganizationAdmin(context, resolved.orgId))),
         });
-        if (!settled.ok) return c.json({ error: settled.code }, 409);
+        if (!settled.ok) return c.json({ error: settled.code, message: settled.message }, 409);
         const { decision } = settled;
         return c.json({ decision: decisionSummary(await this.#boards.load(resolved), decision) });
       },

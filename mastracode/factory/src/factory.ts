@@ -1910,6 +1910,10 @@ export class MastraFactory {
         await agentSessionsStorage.ensureReady();
         await agentSessionsStorage.setSetting(key, value);
       },
+      updateSetting: async (key, change) => {
+        await agentSessionsStorage.ensureReady();
+        return agentSessionsStorage.updateSetting(key, change);
+      },
     });
     this.#ciFollow = ciFollow;
     // fork(claude-agent): a GitHub event is handled once, whether the webhook or the active pull request
