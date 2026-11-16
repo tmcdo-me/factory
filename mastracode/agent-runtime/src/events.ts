@@ -99,7 +99,16 @@ export type FactoryEvent =
   /** A partial result a long-running tool reports before it ends. Replaces the previous one. */
   | { type: 'tool.progress'; callId: string; partial: unknown }
   /** `denied`: the human declined it, so it never ran. */
-  | { type: 'tool.ended'; callId: string; result?: unknown; error?: string; exit?: ToolExit; denied?: boolean }
+  | {
+      type: 'tool.ended';
+      callId: string;
+      result?: unknown;
+      error?: string;
+      exit?: ToolExit;
+      denied?: boolean;
+      /** The person stopped the run while the tool was in flight: not a failure. */
+      stopped?: boolean;
+    }
   | { type: 'interaction.requested'; interaction: PendingInteraction }
   | { type: 'interaction.resolved'; interactionId: string; response: InteractionResponse; resolvedBy?: string }
   | { type: 'interaction.cancelled'; interactionId: string; reason: string }

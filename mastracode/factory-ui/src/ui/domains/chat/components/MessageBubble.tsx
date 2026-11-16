@@ -243,6 +243,7 @@ export function MessageBubble({
             replyFooter={replyFooter}
             output={tool.result}
             status={suspension ? 'running' : tool.status}
+            stopped={!suspension && tool.stopped === true}
             isSubmitting={isSubmitting}
             onRespond={suspension ? response => onRespond(tool.toolCallId, response, suspension.id) : undefined}
             fallback={() => <ToolCard tool={tool} />}

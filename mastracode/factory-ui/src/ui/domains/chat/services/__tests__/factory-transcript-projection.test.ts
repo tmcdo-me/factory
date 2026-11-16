@@ -121,6 +121,25 @@ describe('projectTranscript', () => {
     ]);
   });
 
+  // fork(claude-agent)
+  it('shows a tool the person stopped as stopped, not as a failure', () => {
+    const { entries } = projectTranscript(
+      transcriptOf(
+        { type: 'message.started', messageId: 'a1', role: 'assistant' },
+        { type: 'tool.started', callId: 'q', name: 'ask_user', category: 'factory', executor: 'factory', input: {} },
+        { type: 'tool.ended', callId: 'q', error: 'Stopped', stopped: true },
+      ),
+    );
+    const message = (entries[0] as MessageEntry).message;
+    const parts = message.content.parts as { toolInvocation: { state: string; result?: unknown } }[];
+    expect(parts.map(p => [p.toolInvocation.state, p.toolInvocation.result])).toEqual([['result', 'Stopped']]);
+    // What the tool cards (the question card included) read: done, not an error.
+    const runtimeTools = (
+      entries[0] as MessageEntry & { runtimeTools?: Record<string, { status: string; result?: unknown }> }
+    ).runtimeTools;
+    expect(runtimeTools?.q).toMatchObject({ status: 'done', result: 'Stopped' });
+  });
+
   it('turns pending interactions into prompt cards and drops settled ones', () => {
     const interaction = (id: string, callId: string, request: never) => ({
       type: 'interaction.requested' as const,

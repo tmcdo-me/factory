@@ -397,7 +397,7 @@ describe('ClaudeAgentSession', () => {
     ]);
   });
 
-  it('reports an interrupted turn as aborted', async () => {
+  it('reports a turn the person stopped as aborted: the tool in flight is stopped, nothing is an error', async () => {
     let release!: () => void;
     const gate = new Promise<void>(resolve => {
       release = resolve;
@@ -411,7 +411,10 @@ describe('ClaudeAgentSession', () => {
       Object.assign(
         (async function* () {
           for await (const _message of prompt) {
+            yield assistant('m1', [{ type: 'tool_use', id: 'call-q', name: 'mcp__factory__ask_user', input: {} }]);
             await gate;
+            // What Claude Code reports for the interrupted tool and turn.
+            yield toolResult('call-q', "The user doesn't want to proceed with this tool use.", undefined, true);
             yield result('error_during_execution');
           }
         })(),
@@ -431,6 +434,21 @@ describe('ClaudeAgentSession', () => {
     await settled(events);
     expect(interrupt).toHaveBeenCalled();
     expect(events.find(e => e.type === 'run.ended')).toMatchObject({ reason: 'aborted' });
+    expect(events.find(e => e.type === 'tool.ended')).toEqual({
+      type: 'tool.ended',
+      callId: 'call-q',
+      error: 'Stopped',
+      stopped: true,
+    });
+    expect(events.filter(e => e.type === 'error')).toEqual([]);
+  });
+
+  it('still reports a turn that fails on its own as an error', async () => {
+    const { session, events } = setup([[result('error_during_execution')]]);
+    await session.send({ text: 'hi' });
+    await settled(events);
+    expect(events.find(e => e.type === 'error')).toMatchObject({ code: 'error_during_execution' });
+    expect(events.find(e => e.type === 'run.ended')).toMatchObject({ reason: 'error' });
   });
 
   it('closes open runs with an error when Claude Code exits mid-turn, and restarts on the next send', async () => {

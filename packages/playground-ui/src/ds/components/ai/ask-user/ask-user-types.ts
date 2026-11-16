@@ -15,4 +15,6 @@ export interface AskUserPayload {
 export interface AskUserResult {
   content: string;
   isError?: boolean;
+  // fork(claude-agent): the run was stopped before anyone answered; neither answered nor failed.
+  stopped?: boolean;
 }
