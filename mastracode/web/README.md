@@ -219,8 +219,17 @@ UI tests live in `factory-ui`; backend tests live in `factory`.
 
 ```shell
 pnpm --dir mastracode/web build
-pnpm --dir mastracode/web start
+PORT=5873 pnpm --dir mastracode/web start
 ```
+
+`build` (fork) builds the linked workspace packages (`prebuild`), then bundles the server into
+`.mastra/output` without installing its dependencies from npm: the bundle loads the monorepo's
+packages through this package's `link:` dependencies, so it runs inside this checkout. `start` runs
+it with `NODE_ENV=production`, loading `.env` with varlock, on `PORT` (default `5873`), with
+`MASTRACODE_PUBLIC_URL` defaulting to `http://localhost:$PORT`. Production refuses to start without
+a database (`DATABASE_URL`, or `FACTORY_DATABASE=libsql` for the local libSQL file), credential
+encryption and a sandbox provider; see `.env.schema`. Running it as a service, deploys, rollback and
+backups: [`fork/ops/README.md`](../../fork/ops/README.md).
 
 ## Deploy
 
@@ -228,3 +237,6 @@ pnpm --dir mastracode/web start
 mastra auth login
 pnpm --dir mastracode/web deploy
 ```
+
+`deploy` uses `build:platform`, which pins the linked packages to their npm versions. The fork's
+`@factory/*` packages are not published, so a platform deploy of the fork fails at install.
