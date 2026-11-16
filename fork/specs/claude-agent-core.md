@@ -411,8 +411,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS` (default 10 minutes), and one that ran 20 minutes restarts
      after its run, so a stale `GH_TOKEN` never outlives it (Factory re-mints tokens older than 10
      minutes before a command); neither stop happens while Claude Code reports background shells or
-     subagents running (`background_tasks_changed`), and a new process starts only once the stopped
-     one exited; the next turn resumes from the transcript. Factory's skills plugin is written on the Sprite's filesystem; the in-process MCP
+     subagents running (`background_tasks_changed`), except that background work alone keeps it
+     at most until 45 minutes after it started (its token's deadline) or
+     `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` (default 60 minutes), never mid-run, with a notice in
+     the transcript; a new process starts only once the stopped one exited; the next turn resumes
+     from the transcript. Factory's skills plugin is written on the Sprite's filesystem; the in-process MCP
      server needs nothing, as its traffic rides Claude Code's stdio (checked with the real binary
      through a fake Sprite exec). Isolation is unchanged (`settingSources`, `CLAUDE_AGENT_ISOLATION`,
      `strictMcpConfig`). Transcripts stay on the Sprite's disk, so `resume` works after a restart.
@@ -465,18 +468,19 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 
 ## 8. Config
 
-| Setting                               | Default        | Meaning                                                                       |
-| ------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
-| `FACTORY_RUNTIMES`                    | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                             |
-| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT` | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
-| `FACTORY_CLAUDE_AGENT_EXECUTABLE`     | bundled        | Path to an installed `claude`                                                 |
-| `CLAUDE_CODE_OAUTH_TOKEN`             | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
-| `FACTORY_SANDBOX_PROVIDER`            | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |
-| `SPRITES_TOKEN`                       | unset          | Sprites API token of the Fly.io organization, for `sprites`                   |
-| `FACTORY_SPRITES_REGION`              | unset          | Region new session Sprites are created in (Sprites default when unset)        |
-| `FACTORY_SPRITES_PREFIX`              | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)    |
-| `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`  | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
-| `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`   | off            | Run Claude's Bash in Claude Code's sandbox, without Claude's credential (9c)  |
+| Setting                                  | Default        | Meaning                                                                       |
+| ---------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| `FACTORY_RUNTIMES`                       | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                             |
+| `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT`    | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
+| `FACTORY_CLAUDE_AGENT_EXECUTABLE`        | bundled        | Path to an installed `claude`                                                 |
+| `CLAUDE_CODE_OAUTH_TOKEN`                | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
+| `FACTORY_SANDBOX_PROVIDER`               | auto           | `local` or `sprites` (fork); unset keeps upstream's selection                 |
+| `SPRITES_TOKEN`                          | unset          | Sprites API token of the Fly.io organization, for `sprites`                   |
+| `FACTORY_SPRITES_REGION`                 | unset          | Region new session Sprites are created in (Sprites default when unset)        |
+| `FACTORY_SPRITES_PREFIX`                 | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)    |
+| `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`     | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
+| `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS` | 60 minutes     | Stop a Claude Code kept running only by background work after this long       |
+| `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | off            | Run Claude's Bash in Claude Code's sandbox, without Claude's credential (9c)  |
 
 ## 9. Upstream
 

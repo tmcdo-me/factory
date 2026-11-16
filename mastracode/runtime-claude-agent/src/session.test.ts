@@ -934,3 +934,95 @@ describe('ClaudeAgentSession background work', () => {
     await session.close();
   });
 });
+
+describe('ClaudeAgentSession background work cap', () => {
+  function capSetup(
+    options: { processDeadlineMs?: number; backgroundMaxMs?: number },
+    turns: SDKMessage[][] = [[init, backgroundTasks([{ task_id: 'dev-server' }]), result()]],
+  ) {
+    const events: FactoryEvent[] = [];
+    const fake = drivenQuery(turns);
+    let n = 0;
+    const session = new ClaudeAgentSession({
+      sessionId: 's1',
+      cwd: '/work/s1',
+      env: { HOME: '/home/u' },
+      emit: event => events.push(event),
+      query: fake.fn,
+      idleCloseMs: 10,
+      recycleAfterMs: 0,
+      newId: () => `id-${++n}`,
+      ...options,
+    });
+    const notices = () =>
+      events.filter(
+        (event): event is Extract<FactoryEvent, { type: 'notice' }> =>
+          event.type === 'notice' && event.tag === 'background-stopped',
+      );
+    return { session, events, fake, notices };
+  }
+
+  it('stops a Claude Code whose background task never ends, once it kept it idle too long, and says so', async () => {
+    const { session, events, fake, notices } = capSetup({ backgroundMaxMs: 400, processDeadlineMs: 60_000 });
+    await session.send({ text: 'start the dev server in the background' });
+    await settled(events);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    expect(fake.exits).toHaveLength(0); // held by the task, as before
+
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    expect(notices()).toHaveLength(1);
+    expect(notices()[0]).toMatchObject({
+      kind: 'system-reminder',
+      attributes: { reason: 'background', tasks: 1 },
+    });
+    expect(notices()[0]!.text).toMatch(/^Stopped one background task \(dev-server\): background work kept it running/);
+    expect(notices()[0]!.text).not.toContain('Claude Code');
+    await session.close();
+  });
+
+  it("stops it at the credentials' deadline when that comes first", async () => {
+    const { session, events, fake, notices } = capSetup({ backgroundMaxMs: 60_000, processDeadlineMs: 200 });
+    await session.send({ text: 'start the dev server in the background' });
+    await settled(events);
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    expect(notices()[0]).toMatchObject({ attributes: { reason: 'deadline' } });
+    expect(notices()[0]!.text).toMatch(/as long as the credentials it started with last/);
+    await session.close();
+  });
+
+  it('never stops it mid-run: the cap waits for the run to end', async () => {
+    const { session, events, fake, notices } = capSetup({ processDeadlineMs: 300, backgroundMaxMs: 300 }, [
+      [init, backgroundTasks([{ task_id: 'dev-server' }]), result()],
+      [init], // a long run: no result until the test sends it
+    ]);
+    await session.send({ text: 'start the dev server in the background' });
+    await settled(events);
+    await session.send({ text: 'now a long task' });
+    await new Promise(resolve => setTimeout(resolve, 500)); // past both caps
+    expect(fake.exits).toHaveLength(0);
+    expect(notices()).toHaveLength(0);
+
+    fake.emit(result());
+    await settled(events, 2);
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    expect(notices()).toHaveLength(1);
+    await session.close();
+  });
+
+  it('lets a turn restart the clock for background work alone', async () => {
+    const { session, events, fake, notices } = capSetup({ backgroundMaxMs: 500, processDeadlineMs: 60_000 }, [
+      [init, backgroundTasks([{ task_id: 'watch' }]), result()],
+      [init, result()],
+    ]);
+    await session.send({ text: 'start the watcher' });
+    await settled(events);
+    await new Promise(resolve => setTimeout(resolve, 300));
+    await session.send({ text: 'another turn' });
+    await settled(events, 2);
+    await new Promise(resolve => setTimeout(resolve, 300)); // 600+ ms since the first turn, ~300 since the second
+    expect(fake.exits).toHaveLength(0);
+    await vi.waitFor(() => expect(fake.exits).toHaveLength(1), { timeout: 2_000 });
+    expect(notices()).toHaveLength(1);
+    await session.close();
+  });
+});

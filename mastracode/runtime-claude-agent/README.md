@@ -71,7 +71,11 @@ inside it, with the same isolation as on the host:
   exited (two processes never share a transcript). Neither stop happens while Claude Code reports
   background work (its `background_tasks_changed` level signal: background shells, subagents,
   monitors; ambient watchers don't count), since stopping would kill it; the stop is armed again
-  when the work ends. The install and launch scripts run their checks with PATH pinned to the
+  when the work ends. Work that never ends (a dev server, a `--watch`) holds it only so long: with
+  no run open, Claude Code is stopped anyway at `processDeadlineMs` (Factory: 45 minutes, before its
+  `GH_TOKEN` expires) or once background work alone kept it running `backgroundMaxMs` (Factory:
+  `FACTORY_CLAUDE_AGENT_BACKGROUND_MAX_MS`, default 60 minutes), whichever comes first, with a
+  `background-stopped` notice in the transcript. A run in flight is never cut short. The install and launch scripts run their checks with PATH pinned to the
   system's own directories.
 - **Claude's credential and its commands:** by default Claude Code's tool processes (Bash, a
   repository's tests) inherit `CLAUDE_CODE_OAUTH_TOKEN`, here as on the host. `bashSandbox`
