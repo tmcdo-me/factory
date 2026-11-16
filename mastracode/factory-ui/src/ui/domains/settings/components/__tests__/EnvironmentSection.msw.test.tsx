@@ -59,7 +59,14 @@ describe('Environment settings', () => {
     await screen.findByRole('textbox', { name: 'Working directory' });
     const headings = screen.getAllByRole('heading').map(heading => heading.textContent);
     // fork(claude-agent): the Factory's agent runtime sits above the danger zone.
-    expect(headings).toEqual(['Environment', 'Environment variables', 'Builds', 'Agent runtime', 'Danger zone']);
+    expect(headings).toEqual([
+      'Environment',
+      'Environment variables',
+      'Builds',
+      'Agent runtime',
+      'Pull request checks', // fork(claude-agent)
+      'Danger zone',
+    ]);
     const workdir = screen.getByRole('textbox', { name: 'Working directory' });
     const command = screen.getByRole('textbox', { name: 'Setup command' });
     expect(workdir.closest('section')).toBe(command.closest('section'));
