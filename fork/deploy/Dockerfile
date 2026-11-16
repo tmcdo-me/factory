@@ -17,7 +17,7 @@ ARG NODE_IMAGE=node:24.22.2-trixie-slim@sha256:0820eaa85e07d0490446dd01d14707e17
 
 # ---------------------------------------------------------------------------------------------------
 # build: install the workspace packages the server links, build them and the server bundle (the same
-# `pnpm --dir mastracode/web build` as fork/ops/deploy.sh), then keep only what the server loads.
+# steps as `pnpm --dir mastracode/web build` in fork/ops/deploy.sh), then keep only what the server loads.
 # ---------------------------------------------------------------------------------------------------
 FROM ${NODE_IMAGE} AS build
 
@@ -70,13 +70,13 @@ RUN --mount=type=bind,target=/context \
     store=/src/.pnpm-store; \
     pnpm install --frozen-lockfile --store-dir "$store" --package-import-method hardlink ${WORKSPACE_FILTER}; \
     pnpm --dir mastracode/web install --frozen-lockfile --store-dir "$store" --package-import-method hardlink; \
-    TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web run prebuild; \
-    # Again, now that the workspace packages are built: pnpm links a package's bin only when the file
-    # exists, and `mastra` (packages/cli's dist) did not before the build.
-    pnpm --dir mastracode/web install --frozen-lockfile --store-dir "$store" --package-import-method hardlink; \
     rm -rf "$store" /root/.cache /root/.local/share/pnpm; \
-    test -x mastracode/web/node_modules/.bin/mastra; \
-    TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web build; \
+    # mastracode/web's `build`: its `prebuild` (the workspace packages, through turbo), then its
+    # `mastra build`, run through node: pnpm links a package's bin only when the file exists, and the
+    # CLI's dist/index.js does not until `prebuild` has built it, so a fresh install has no `mastra`.
+    TURBO_CACHE_DIR=/turbo-cache pnpm --dir mastracode/web run prebuild; \
+    (cd mastracode/web && MASTRA_BUILD_SKIP_INSTALL=1 MASTRA_SKIP_PEERDEP_CHECK=1 \
+      node node_modules/mastra/dist/index.js build --dir src/mastra); \
     test -f mastracode/web/.mastra/output/index.mjs; \
     test -f mastracode/web/.mastra/output/factory/index.html; \
     node fork/deploy/stage-runtime.mjs /src /app --skip @anthropic-ai/claude-agent-sdk- --optional @mastra/mcp; \

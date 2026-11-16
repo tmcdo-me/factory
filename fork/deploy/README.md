@@ -38,7 +38,8 @@ credential; otherwise the VM needs `docker login ghcr.io` with a token that can 
 
 The build stage installs only the workspace packages the server links and their dependencies (the
 filter of `mastracode/web`'s `prebuild`, about 70 of the monorepo's 200 projects), runs the same
-`pnpm --dir mastracode/web build` as `fork/ops/deploy.sh`, then `stage-runtime.mjs` walks the bundle's
+steps as `pnpm --dir mastracode/web build` in `fork/ops/deploy.sh` (its `prebuild`, then `mastra build`
+through node, since a fresh install has no `mastra` bin until the CLI is built), then `stage-runtime.mjs` walks the bundle's
 imports through `node_modules` (dependencies, optional and peer dependencies, never dev dependencies)
 and hard-links each package it reaches into `/app`. The build tree is deleted in the same step, so the
 layer holds only `/app`. Left out on purpose: the Agent SDK's own Claude Code binaries (Claude Code
