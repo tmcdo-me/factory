@@ -1962,3 +1962,75 @@ describe('FactoryPhaseStateProcessor', () => {
     expect(reader.listMessages).toHaveBeenCalledTimes(1);
   });
 });
+
+// fork(claude-agent)
+describe('FactoryPhaseStateProcessor.ingestRuntimeToolResult', () => {
+  it("counts a Claude Agent session's approved plan as proof the card may leave Planning", async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const prepared = await prepare(storage, 'plan');
+    const boards = createTriageWorkRegistry();
+    const transitionService = new FactoryTransitionService({ configVersion: 'rules-v1', boards, storage });
+    const processor = new FactoryPhaseStateProcessor({ configVersion: 'rules-v1', boards, storage, transitionService });
+    const transition = (expectedRevision: number) =>
+      transitionService.transition({
+        orgId: 'org-1',
+        factoryProjectId: PROJECT_ID,
+        workItemId: prepared.item.id,
+        board: 'work',
+        stage: 'execute',
+        expectedRevision,
+        actor: { type: 'agent', bindingId: prepared.binding.id, role: 'plan' },
+        ingress: { type: 'agent', identity: `${prepared.binding.id}:toolu_move-${expectedRevision}` },
+        cause: 'Plan approved; building.',
+      });
+
+    // Without the proof, the planner cannot move the card on.
+    expect(await transition(1)).toMatchObject({ status: 'rejected' });
+
+    await processor.ingestRuntimeToolResult(requestContext(), {
+      callId: 'toolu_plan',
+      toolName: 'submit_plan',
+      input: { path: 'plan.md' },
+      status: 'success',
+      value: 'Plan approved. Proceed with implementation following the approved plan.',
+    });
+
+    const stamped = await storage.get({ orgId: 'org-1', id: prepared.item.id });
+    expect(stamped).toMatchObject({
+      stages: ['planning'],
+      metadata: { planApprovedAt: expect.any(String), phaseExit: { phase: 'planning', toolCallId: 'toolu_plan' } },
+    });
+    expect(await transition(stamped!.revision)).toMatchObject({ status: 'accepted' });
+  });
+
+  it('leaves the card alone for a rejected plan, a failed call or an unbound session', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const prepared = await prepare(storage, 'plan');
+    const boards = createTriageWorkRegistry();
+    const processor = new FactoryPhaseStateProcessor({ configVersion: 'rules-v1', boards, storage });
+
+    await processor.ingestRuntimeToolResult(requestContext(), {
+      callId: 'toolu_1',
+      toolName: 'submit_plan',
+      input: {},
+      status: 'success',
+      value: 'Plan was not approved. Feedback: smaller steps.',
+    });
+    await processor.ingestRuntimeToolResult(requestContext(), {
+      callId: 'toolu_2',
+      toolName: 'submit_plan',
+      input: {},
+      status: 'error',
+      error: new Error('aborted'),
+    });
+    await processor.ingestRuntimeToolResult(requestContext({ threadId: 'some-other-session' }), {
+      callId: 'toolu_3',
+      toolName: 'submit_plan',
+      input: {},
+      status: 'success',
+      value: 'Plan approved. Proceed.',
+    });
+
+    expect(await storage.get({ orgId: 'org-1', id: prepared.item.id })).toMatchObject({ revision: 1 });
+  });
+});

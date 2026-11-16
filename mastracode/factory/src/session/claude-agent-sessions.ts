@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { SessionPublisher } from '@factory/agent-runtime';
 import type {
   CommandResult,
+  FactoryEvent,
   FactoryToolContext,
   InteractionBroker,
   InteractionRecord,
@@ -87,6 +88,17 @@ export interface ClaudeAgentSessionsDeps {
    * it every checkout is trusted.
    */
   checkout?(sessionId: string): Promise<CheckoutPosture>;
+  /**
+   * Told each Factory tool call's result before Claude gets it, as Mastra Code's processors and
+   * post-tool observers see a finished call: board rules, plan approvals, audits. Never blocks the
+   * result: a failure is logged.
+   */
+  onToolResult?(result: ClaudeAgentToolResult): Promise<void>;
+  /**
+   * Told each of Claude Code's own shell commands once it finished (`Bash`), as Mastra Code's
+   * post-tool observers see `execute_command`: git audits, pull requests a command opened.
+   */
+  onShellResult?(result: ClaudeAgentShellResult): Promise<void>;
   /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
   home?: string;
   hostEnv?: Record<string, string | undefined>;
@@ -166,6 +178,7 @@ export class ClaudeAgentSessions {
     const { cwd, env } = workspace;
     const home = this.#deps.home;
     if (home) await mkdir(home, { recursive: true, mode: 0o700 });
+    const watchShell = this.#shellWatcher(sessionId, workspace);
     const publisher = new SessionPublisher(this.#deps.hub, sessionId, {
       onError: error => console.warn(`[factory] Claude Agent session ${sessionId}: storing events failed`, error),
     });
@@ -190,6 +203,7 @@ export class ClaudeAgentSessions {
       ...(skills ? { skills } : {}),
       emit: event => {
         publisher.emit(event);
+        watchShell(event);
         if (event.type === 'run.ended') {
           this.#runContexts.delete(event.runId);
           factoryTools?.endRun(event.runId);
@@ -260,11 +274,20 @@ export class ClaudeAgentSessions {
       const current = await turn(runId);
       const tool = current.tools[name];
       if (!tool) throw new Error(`Factory tool ${name} is not available in this turn`);
-      return runMastraTool(name, tool, input, ctx, {
-        requestContext: current.requestContext,
-        cwd: workspace.cwd,
-        sessionId,
-      });
+      const observed = { sessionId, callId: ctx.callId, toolName: name, input, requestContext: current.requestContext };
+      let output: unknown;
+      try {
+        output = await runMastraTool(name, tool, input, ctx, {
+          requestContext: current.requestContext,
+          cwd: workspace.cwd,
+          sessionId,
+        });
+      } catch (error) {
+        await this.#observe({ ...observed, status: 'error', error });
+        throw error;
+      }
+      await this.#observe({ ...observed, status: 'success', value: output });
+      return output;
     });
     return {
       tools: {
@@ -355,6 +378,53 @@ export class ClaudeAgentSessions {
     for (const block of told) known.set(block.id, block);
     this.#told.set(session.id, known);
     return runId;
+  }
+
+  async #observe(result: ClaudeAgentToolResult): Promise<void> {
+    try {
+      await this.#deps.onToolResult?.(result);
+    } catch (error) {
+      console.warn(`[factory] Claude Agent session ${result.sessionId}: observing ${result.toolName} failed`, error);
+    }
+  }
+
+  /** Follow Claude Code's own shell commands from its event stream, and report each one that finished. */
+  #shellWatcher(sessionId: string, workspace: { requestContext?: (hostContext: unknown) => RequestContext }) {
+    const report = this.#deps.onShellResult;
+    const contextFor = workspace.requestContext;
+    if (!report || !contextFor) return () => {};
+    const calls = new Map<string, { command?: string; runId?: string; stdout: string }>();
+    return (event: FactoryEvent) => {
+      if (event.type === 'tool.started') {
+        if (event.category !== 'shell' || event.executor !== 'runtime') return;
+        calls.set(event.callId, {
+          command: commandOf(event.input),
+          ...(event.runId ? { runId: event.runId } : {}),
+          stdout: '',
+        });
+        return;
+      }
+      const call = calls.get((event as { callId?: string }).callId ?? '');
+      if (!call) return;
+      if (event.type === 'tool.input') call.command = commandOf(event.input) ?? call.command;
+      else if (event.type === 'tool.output' && event.stream === 'stdout') call.stdout += event.chunk;
+      else if (event.type === 'tool.ended') {
+        calls.delete(event.callId);
+        if (!call.command) return;
+        const hostContext = call.runId ? this.#runContexts.get(call.runId) : undefined;
+        const output = call.stdout || (typeof event.result === 'string' ? event.result : '');
+        void report({
+          sessionId,
+          callId: event.callId,
+          command: call.command,
+          output,
+          ...(event.error ? { error: event.error } : {}),
+          requestContext: contextFor(hostContext),
+        }).catch(error =>
+          console.warn(`[factory] Claude Agent session ${sessionId}: observing a command failed`, error),
+        );
+      }
+    };
   }
 
   /** Tell whoever waits on a run how it ended (or that it waits on a person). */
@@ -603,6 +673,36 @@ const MAX_STARTED_RUNS = 1000;
 
 /** Factory messages a session holds for its next turn; past this the oldest are dropped. */
 const MAX_WAITING_MESSAGES = 20;
+
+/** A Factory tool call that finished in a Claude Agent session. */
+export interface ClaudeAgentToolResult {
+  sessionId: string;
+  /** Claude's `tool_use` id. */
+  callId: string;
+  toolName: string;
+  input: unknown;
+  status: 'success' | 'error';
+  value?: unknown;
+  error?: unknown;
+  /** The request context the call ran with (the turn's caller, the session's controller context). */
+  requestContext: RequestContext;
+}
+
+/** One of Claude Code's own shell commands, finished. */
+export interface ClaudeAgentShellResult {
+  sessionId: string;
+  callId: string;
+  command: string;
+  /** What the command printed on stdout. */
+  output: string;
+  error?: string;
+  requestContext: RequestContext;
+}
+
+function commandOf(input: unknown): string | undefined {
+  const command = (input as { command?: unknown } | undefined)?.command;
+  return typeof command === 'string' ? command : undefined;
+}
 
 interface OpenSession {
   session: ClaudeAgentSession;

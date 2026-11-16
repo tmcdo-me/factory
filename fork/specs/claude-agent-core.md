@@ -330,6 +330,10 @@ Each slice: implement → focused tests → manual check where noted → commit.
      settings. Only a session minted by the start takes the default: one the card holds, or with
      thread messages or events, stays on Mastra Code. Project default runtime in Settings → Manage Factory. Phase goals
      (`maxRuns` re-kicks) stay Mastra Code only for now.
+   - **6b** ✅ Claude Agent tool results count: each Factory tool call's result goes through the
+     phase processor before Claude gets it (`ingestRuntimeToolResult`), so an approved
+     `submit_plan` stamps the proof that lets the card leave Planning and the board's tool-result
+     rules run; Claude Code's own `Bash` commands reach the git audit as `execute_command`.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
