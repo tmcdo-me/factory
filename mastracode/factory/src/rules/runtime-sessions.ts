@@ -71,6 +71,23 @@ export interface FactoryRuntimeSessions {
   parkedBoardRun(sessionId: string): Promise<boolean>;
   /** Whether the session waits on a person (a question, a plan to approve). */
   awaitsPerson(sessionId: string): Promise<boolean>;
+  /**
+   * fork(claude-agent): whether the session's last turn ended waiting on a person, having asked them
+   * something in plain text (not with `ask_user`) that the run's `goal` needs answered: the question,
+   * or `undefined` (it asked nothing, it can go on by itself, or nobody could tell).
+   */
+  askedPerson?(sessionId: string, goal: { objective: string }): Promise<string | undefined>;
+  /**
+   * fork(claude-agent): park the session's board run on that question, as `ask_user` parks it: it
+   * waits in the inbox and attention lists until the person answers there or replies in the session.
+   * `resumed` is how their reply's turn ends; it ends as aborted when the wait is dropped (the run
+   * stopped, another kickoff). `undefined` when nobody can be asked here.
+   */
+  awaitReply?(
+    sessionId: string,
+    wait: { question: string },
+    requestContext: RequestContext,
+  ): Promise<{ resumed: Promise<RuntimeRunEnd> } | undefined>;
   /** Resolves once the session has no run in flight (at once when it has none). Unbounded: callers time it. */
   idle(sessionId: string): Promise<void>;
   /** Start a board run. Resolves once the runtime has the turn; `ended` once the run ends. */

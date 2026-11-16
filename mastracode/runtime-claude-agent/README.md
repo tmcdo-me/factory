@@ -16,6 +16,7 @@ through the Claude Agent SDK. Design and compliance constraints:
 | `env.ts`           | Subprocess environment allow-list: Claude's own credential passes through untouched; server secrets never do                                                                             |
 | `install.ts`       | `ensureClaudeCode`: the official installer in a sandbox, pinned to the SDK's bundled CLI version and its release checksums; `runInProcesses` runs it with no environment                 |
 | `launch.ts`        | `sandboxClaudeCodeLaunch`: Claude Code inside a sandbox, started through its `spawn` behind a checksum and managed-settings check                                                        |
+| `waiting-judge.ts` | `judgeWaitingOnPerson`: whether a turn short of its goal waits on a person, asked of Claude Code itself (one turn, small model, no tools); `plainTextQuestion` is the cheap check first  |
 
 Credentials: Factory never handles Claude credentials. The binary uses its own saved login
 (`claude /login`) or `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY` set by the operator in the

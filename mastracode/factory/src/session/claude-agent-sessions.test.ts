@@ -1581,3 +1581,127 @@ describe('ClaudeAgentSessions messages that wait', () => {
     warn.mockRestore();
   });
 });
+
+// fork(claude-agent): a board run whose turn ends asking the person something in plain text.
+describe('ClaudeAgentSessions: a turn that ends asking the person in plain text', () => {
+  /** Claude Code answering each turn with the next of `replies` as its last message. */
+  function replyingQuery(replies: string[]) {
+    const seen: string[] = [];
+    const fn: QueryFn = ({ prompt }) => {
+      const iterator = (async function* () {
+        let turn = 0;
+        for await (const message of prompt) {
+          seen.push(String((message as { message: { content: unknown } }).message.content));
+          const text = replies[turn] ?? 'Done.';
+          turn += 1;
+          yield { type: 'system', subtype: 'init', session_id: 'claude-q', uuid: 'u' } as never;
+          yield {
+            type: 'assistant',
+            session_id: 'claude-q',
+            uuid: 'u',
+            parent_tool_use_id: null,
+            message: { id: `msg-${turn}`, role: 'assistant', content: [{ type: 'text', text }] },
+          } as never;
+          yield { type: 'result', subtype: 'success', session_id: 'claude-q', uuid: 'u', usage: {} } as never;
+        }
+      })();
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as never;
+    };
+    return { fn, seen };
+  }
+
+  function questionSetup(replies: string[], verdict = { waiting: true as const, question: 'Staging or production?' }) {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    const store = new InMemoryInteractionStore();
+    const broker = new InteractionBroker({ store, hub });
+    const fake = replyingQuery(replies);
+    // The judge is Claude Code itself (`judgeWaitingOnPerson`); here, what it would decide.
+    const waitingJudge = vi.fn(async () => verdict);
+    const sessions = new ClaudeAgentSessions({
+      hub,
+      sessions: memoryStore([claude('s1')]),
+      workspace: async () => ({ cwd: '/sandboxes/s1/repo', env: {} }),
+      query: fake.fn,
+      interactions: broker,
+      waitingJudge,
+    });
+    onTestFinished(() => sessions.shutdown());
+    return { sessions, broker, fake, waitingJudge, runs: sessions.runtimeSessions() };
+  }
+
+  const owner = () => hostContext('user-a', false);
+  const goal = { objective: 'Import the CSV into the right database.' };
+
+  it('parks the run on the question, in the inbox like ask_user, and follows the answer given there', async () => {
+    const { sessions, broker, fake, waitingJudge, runs } = questionSetup([
+      'I found two databases.\n\nWhich one should the importer write to: staging or production?',
+      'Imported into staging.',
+    ]);
+    const { ended } = await runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner());
+    expect(await ended).toMatchObject({ reason: 'complete' });
+
+    expect(await runs.askedPerson!('s1', goal)).toBe('Staging or production?');
+    expect(waitingJudge).toHaveBeenCalledWith({
+      objective: goal.objective,
+      text: 'I found two databases.\n\nWhich one should the importer write to: staging or production?',
+    });
+    const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
+    const [pending] = await broker.listPending({ sessionId: 's1' });
+    expect(pending?.request).toEqual({ kind: 'question', question: 'Staging or production?' });
+    expect(await runs.awaitsPerson('s1')).toBe(true);
+
+    expect(
+      await sessions
+        .commands()
+        .answer('s1', { interactionId: pending!.id }, { kind: 'question', answer: 'Staging' }, { context: owner() }),
+    ).toEqual({ ok: true });
+    // The answer is the person's reply in the session; the run follows its turn.
+    expect(await parked!.resumed).toMatchObject({ reason: 'complete' });
+    expect(fake.seen.at(-1)).toBe('Staging');
+    expect(await broker.listPending({ sessionId: 's1' })).toEqual([]);
+  });
+
+  it('takes a message the person types in the session as the reply, and drops the question', async () => {
+    const { sessions, broker, fake, runs } = questionSetup(['Should the importer write to staging or production?']);
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
+    expect(await broker.listPending({ sessionId: 's1' })).toHaveLength(1);
+
+    await sessions.commands().send('s1', { text: 'production, carefully' }, { context: hostContext('user-a') });
+    expect(await parked!.resumed).toMatchObject({ reason: 'complete' });
+    expect(fake.seen.at(-1)).toBe('production, carefully');
+    await vi.waitFor(async () => expect(await broker.listPending({ sessionId: 's1' })).toEqual([]));
+  });
+
+  it('asks no judge about a turn that asked nothing, and none when it can go on by itself', async () => {
+    const done = questionSetup(['Imported everything; the tests pass.']);
+    await (
+      await done.runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    expect(await done.runs.askedPerson!('s1', goal)).toBeUndefined();
+    expect(done.waitingJudge).not.toHaveBeenCalled();
+
+    const permission = questionSetup(['Half of it is in. Shall I continue with the rest?'], {
+      waiting: false,
+    } as never);
+    await (
+      await permission.runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    expect(await permission.runs.askedPerson!('s1', goal)).toBeUndefined();
+    expect(permission.waitingJudge).toHaveBeenCalledTimes(1);
+  });
+
+  it("ends the parked run as aborted when the card's next kickoff comes first", async () => {
+    const { broker, runs } = questionSetup(['Staging or production?']);
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
+    await runs.kickoff('s1', { runId: 'd2', prompt: 'Review it.' }, owner());
+    expect(await parked!.resumed).toEqual({ reason: 'aborted' });
+    await vi.waitFor(async () => expect(await broker.listPending({ sessionId: 's1' })).toEqual([]));
+  });
+});
