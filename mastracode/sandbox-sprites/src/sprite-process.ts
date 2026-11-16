@@ -1,34 +1,15 @@
 import { EventEmitter } from 'node:events';
-import { PassThrough } from 'node:stream';
 import type { Readable, Writable } from 'node:stream';
 
 import type { SandboxProcess, SpawnInSandboxOptions } from '@factory/agent-runtime';
 
-import { stdinEnv } from './stdin-env';
-
-/**
- * The part of `@fly/sprites`' `SpriteCommand` (a WebSocket exec session) a stdio process needs. It
- * emits `spawn` once the exec is connected (stdin written before then is lost), `exit` with the
- * remote exit status (`-1` when the connection closed without one), and `error`.
- */
-export interface SpriteCommandLike {
-  readonly stdin: Writable;
-  readonly stdout: Readable;
-  readonly stderr: Readable;
-  kill(signal?: string): void;
-  close(): void;
-  on(event: 'spawn', listener: () => void): unknown;
-  on(event: 'exit', listener: (code: number) => void): unknown;
-  on(event: 'error', listener: (error: Error) => void): unknown;
-}
-
-/** What starts one exec in the Sprite (`sprite.spawn`). */
-export type SpriteSpawn = (command: string, args: string[], options: { cwd?: string }) => SpriteCommandLike;
+import type { SpriteCommandLike, SpriteSpawn } from './sprite-exec';
 
 /**
  * Start `command` in the Sprite as a long-lived process with stdio, shaped like the Agent SDK's
  * `SpawnedProcess` (and the seam's `SandboxProcess`), so a runtime talks to it exactly as to a local
- * child process. Its environment goes over stdin (see `stdinEnv`), never in the exec request.
+ * child process. `spawn` must be the Sprite's {@link envOverStdin} spawn: the environment then goes
+ * over stdin, never in the exec request.
  */
 export function spawnInSprite(
   spawn: SpriteSpawn,
@@ -36,18 +17,15 @@ export function spawnInSprite(
   args: string[],
   options: SpawnInSandboxOptions,
 ): SpriteStdioProcess {
-  const { script, preamble } = stdinEnv(options.env);
-  const exec = spawn('sh', ['-c', script, command, ...args], { cwd: options.cwd });
-  return new SpriteStdioProcess(exec, preamble, options.signal);
+  return new SpriteStdioProcess(spawn(command, args, { cwd: options.cwd, env: options.env }), options.signal);
 }
 
 /**
- * A Sprite exec as a child process. Writes to `stdin` wait until the exec is connected, behind the
- * environment preamble; `kill` signals the remote process, and `SIGKILL` also drops the connection,
- * which makes the Sprite reap it.
+ * A Sprite exec as a child process. `kill` signals the remote process, and `SIGKILL` also drops the
+ * connection, which makes the Sprite reap it.
  */
 export class SpriteStdioProcess extends EventEmitter implements SandboxProcess {
-  readonly stdin = new PassThrough();
+  readonly stdin: Writable;
   readonly stdout: Readable;
   readonly stderr: Readable;
   readonly #exec: SpriteCommandLike;
@@ -56,15 +34,12 @@ export class SpriteStdioProcess extends EventEmitter implements SandboxProcess {
   #killedWith: NodeJS.Signals | undefined;
   #exited = false;
 
-  constructor(exec: SpriteCommandLike, preamble: string, signal?: AbortSignal) {
+  constructor(exec: SpriteCommandLike, signal?: AbortSignal) {
     super();
     this.#exec = exec;
+    this.stdin = exec.stdin;
     this.stdout = exec.stdout;
     this.stderr = exec.stderr;
-    exec.on('spawn', () => {
-      exec.stdin.write(preamble);
-      this.stdin.pipe(exec.stdin);
-    });
     exec.on('exit', code => this.#exit(code));
     exec.on('error', error => {
       // An EventEmitter with no `error` listener throws; nobody listening means nobody to tell.
@@ -86,6 +61,11 @@ export class SpriteStdioProcess extends EventEmitter implements SandboxProcess {
 
   get killed(): boolean {
     return this.#killedWith !== undefined;
+  }
+
+  /** Whether the process has exited (or its connection dropped). */
+  get exited(): boolean {
+    return this.#exited;
   }
 
   kill(signal: NodeJS.Signals = 'SIGTERM'): boolean {

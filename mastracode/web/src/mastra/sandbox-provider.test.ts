@@ -54,6 +54,7 @@ describe('entry host sandbox (src/mastra/index.ts)', () => {
       'FACTORY_SANDBOX_PROVIDER',
       'SPRITES_TOKEN',
       'FACTORY_SPRITES_REGION',
+      'FACTORY_SPRITES_PREFIX',
     ]) {
       vi.stubEnv(name, '');
     }
@@ -184,6 +185,16 @@ describe('entry host sandbox (src/mastra/index.ts)', () => {
 
     expect(sandbox).toMatchObject({ provider: 'sprites', id: 'factory-session-sprite', status: 'pending' });
     expect(sandbox).toMatchObject({ _spriteConfig: { region: 'ord' } });
+  });
+
+  // fork(claude-agent)
+  it("names a deployment's Sprites with its own prefix", { timeout: 60_000 }, async () => {
+    vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+    vi.stubEnv('SPRITES_TOKEN', 'fly-sprites-token');
+    vi.stubEnv('FACTORY_SPRITES_PREFIX', 'staging');
+    const callback = await importSandboxCallback();
+
+    expect(callback({ sessionId: 'session-sprite' })).toMatchObject({ id: 'staging-session-sprite' });
   });
 
   // fork(claude-agent)

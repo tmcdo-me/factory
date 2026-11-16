@@ -4,6 +4,7 @@ import { SpritesSandbox } from '@mastra/sprites';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SpritesFactorySandbox, spriteNameFor, spriteProcesses } from './factory-sandbox';
+import { execUrl, fakeSpriteExec } from './test-utils';
 
 const ctx = (sessionId: string) => ({ sessionId, getRepositoryAccess: undefined });
 
@@ -75,5 +76,86 @@ describe('spriteProcesses files', () => {
     expect(await files.isDirectory('/dir')).toBe(true);
     expect(await files.isDirectory('/file')).toBe(false);
     expect(await files.isDirectory('/missing')).toBe(false);
+  });
+});
+
+/**
+ * A session's Sprite sandbox, started against a fake raw Sprite (local processes) instead of Fly:
+ * the Sprite handle is the one `start()` would have fetched.
+ */
+async function startedSandbox(options: { failConnect?: string; prepare?: (order: string[]) => Promise<void> } = {}) {
+  const raw = fakeSpriteExec(options.failConnect ? { failConnect: options.failConnect } : {});
+  const order: string[] = [];
+  const sandbox = new SpritesFactorySandbox({
+    token: 'fly-token',
+    ...(options.prepare ? { prepare: () => options.prepare!(order) } : {}),
+  }).create(ctx('row-1'));
+  (sandbox as unknown as { _sprite: unknown })._sprite = {
+    name: 'factory-row-1',
+    spawn: raw.spawn,
+    filesystem: () => ({}),
+    closeControlConnection: () => {},
+  };
+  sandbox.setOnStart(() => async () => {
+    order.push('setup');
+  });
+  await sandbox.start();
+  return { sandbox, raw, order };
+}
+
+describe('SessionSpritesSandbox', () => {
+  const SECRET = 'ghs_project-secret-value';
+
+  it("runs Factory's commands with the sandbox env over stdin, never in an exec URL", async () => {
+    const { sandbox, raw } = await startedSandbox();
+    sandbox.setEnv(env => ({ ...env, GH_TOKEN: SECRET, PROJECT_SECRET: 'multi\nline' }));
+
+    const result = await sandbox.executeCommand!('printf "%s|%s" "$GH_TOKEN" "$PROJECT_SECRET"');
+    expect(result).toMatchObject({ exitCode: 0, stdout: `${SECRET}|multi\nline` });
+    expect(raw.requests).toHaveLength(1);
+    expect(raw.requests[0]!.options).not.toHaveProperty('env');
+    expect(execUrl(raw.requests[0]!)).not.toContain('ghs_');
+    expect(execUrl(raw.requests[0]!)).not.toContain('multi');
+  });
+
+  it('keeps the exec URL (and so the secrets) out of a failed command', async () => {
+    const { sandbox } = await startedSandbox({ failConnect: 'Unexpected server response: 502' });
+    sandbox.setEnv(env => ({ ...env, GH_TOKEN: SECRET }));
+    const failure = await sandbox.executeCommand!('git push').then(
+      result => `${result.stdout}${result.stderr}`,
+      (error: Error) => `${error.message}\n${error.stack}`,
+    );
+    expect(failure).toContain('Unexpected server response: 502');
+    expect(failure).not.toMatch(/ghs_|wss:|git push|url:/);
+  });
+
+  it("prepares the Sprite before Factory's setup hook runs", async () => {
+    const { order } = await startedSandbox({
+      prepare: async seen => {
+        seen.push('prepare');
+      },
+    });
+    expect(order).toEqual(['prepare', 'setup']);
+  });
+
+  it('starts anyway when preparing fails (what it prepares is checked again where it is used)', async () => {
+    const { order, sandbox } = await startedSandbox({
+      prepare: async () => {
+        throw new Error('curl: (6) Could not resolve host');
+      },
+    });
+    expect(order).toEqual(['setup']);
+    expect(sandbox.status).toBe('running');
+  });
+
+  it('kills the long-lived processes it started when it stops', async () => {
+    const { sandbox, raw } = await startedSandbox();
+    const processes = sandboxProcessesOf(sandbox)!;
+    const claude = processes.spawn('node', ['-e', 'setInterval(() => {}, 1000)'], { cwd: '/', env: {} });
+    await new Promise(resolve => setTimeout(resolve, 200));
+    const exit = new Promise(resolve => claude.once('exit', (code, signal) => resolve([code, signal])));
+    await sandbox.stop();
+    expect(await exit).toEqual([null, 'SIGKILL']);
+    expect(raw.signals).toContain('SIGKILL');
   });
 });

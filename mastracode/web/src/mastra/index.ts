@@ -433,6 +433,8 @@ if (!useLocalSandbox && !useSpritesSandbox && !hasPlatformSandboxEnv && !e2bApiK
 const sandbox = useSpritesSandbox // fork(claude-agent)
   ? new SpritesFactorySandbox({
       token: spritesToken,
+      // One prefix per deployment: two sharing a token would otherwise reattach to each other's Sprites.
+      namePrefix: process.env.FACTORY_SPRITES_PREFIX?.trim() || 'factory',
       ...(process.env.FACTORY_SPRITES_REGION?.trim()
         ? { spriteConfig: { region: process.env.FACTORY_SPRITES_REGION.trim() } }
         : {}),

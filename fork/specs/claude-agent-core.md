@@ -390,8 +390,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Sprite per session, named `factory-<session id>`, created on first start and found again by
      name; Factory clones into it as for any remote sandbox, so Mastra Code runs on it unchanged.
      Its sandboxes carry the seam's `SANDBOX_PROCESSES` (`spawn` + `files`): a long-lived stdio
-     process is a WebSocket exec (`sprite.spawn`) whose environment arrives over stdin, never in
-     the exec URL. Not yet checked against a live Sprite.
+     process is a WebSocket exec (`sprite.spawn`). Every exec in the Sprite (commands, tools, the
+     clone, agent processes) gets its environment base64-encoded over stdin, never in the exec URL,
+     and Sprites errors are rebuilt without the URL the SDK writes into them. `FACTORY_SPRITES_PREFIX`
+     keeps deployments sharing a token apart; `scripts/list-orphan-sprites.mjs` lists Sprites no
+     session owns; `stop()` kills the long-lived processes. Not yet checked against a live Sprite.
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored

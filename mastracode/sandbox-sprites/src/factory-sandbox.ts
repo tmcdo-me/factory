@@ -4,11 +4,15 @@ import { SANDBOX_PROCESSES } from '@factory/agent-runtime';
 import type { ProcessSandbox, SandboxFiles, SandboxProcesses } from '@factory/agent-runtime';
 import type { Sprite, SpriteConfig } from '@fly/sprites';
 import { FactorySandbox } from '@mastra/core/workspace';
-import type { FactorySandboxContext } from '@mastra/core/workspace';
+import type { FactorySandboxContext, SandboxStartResult } from '@mastra/core/workspace';
 import { SpritesSandbox } from '@mastra/sprites';
 import type { SpritesSandboxOptions } from '@mastra/sprites';
 
+import { envOverStdin, redactSpriteError } from './sprite-exec';
 import { spawnInSprite } from './sprite-process';
+import type { SpriteStdioProcess } from './sprite-process';
+
+const LOG_PREFIX = '[SessionSpritesSandbox]';
 
 export interface SpritesFactorySandboxOptions {
   /** Sprites API token (the organization's). Falls back to `SPRITES_TOKEN`. */
@@ -17,10 +21,19 @@ export interface SpritesFactorySandboxOptions {
   baseURL?: string;
   /** Machine settings applied when a session's Sprite is created (region, CPUs, RAM, storage). */
   spriteConfig?: SpriteConfig;
-  /** Prefix of every session's Sprite name. Default `factory`. */
+  /**
+   * Prefix of every session's Sprite name. Default `factory`. Two deployments sharing a Sprites
+   * token must use different prefixes, or they reattach to (and delete) each other's Sprites.
+   */
   namePrefix?: string;
   /** Default command timeout in milliseconds. */
   timeout?: number;
+  /**
+   * Runs once the session's Sprite is up, before Factory's setup hook (clone, setup command) runs:
+   * the place to install what must not be shaped by the repository (Claude Code). A failure is
+   * logged, not fatal.
+   */
+  prepare?: (processes: SandboxProcesses) => Promise<void>;
   /**
    * Environment of every session's commands. A function receives each session's context, so a
    * credential can go to one factory's sessions only. Factory adds the session's git credentials.
@@ -65,7 +78,7 @@ export class SpritesFactorySandbox extends FactorySandbox<Record<string, never>>
   }
 
   create(ctx: FactorySandboxContext): SessionSpritesSandbox {
-    const { env, namePrefix, token, baseURL, spriteConfig, timeout } = this.#options;
+    const { env, namePrefix, token, baseURL, spriteConfig, timeout, prepare } = this.#options;
     return new SessionSpritesSandbox({
       id: spriteNameFor(ctx.sessionId, namePrefix),
       ...(token ? { token } : {}),
@@ -74,31 +87,99 @@ export class SpritesFactorySandbox extends FactorySandbox<Record<string, never>>
       ...(timeout !== undefined ? { timeout } : {}),
       ...(env ? { env: typeof env === 'function' ? env(ctx) : env } : {}),
       ...(ctx.workingDirectory ? { workingDirectory: ctx.workingDirectory } : {}),
+      ...(prepare ? { prepare } : {}),
     });
   }
 }
 
-/** A session's Sprite, with long-lived stdio processes and files for runtimes that run inside it. */
+/**
+ * A session's Sprite. Every exec in it (Factory's commands, Mastra Code's tools, a runtime's agent
+ * process) sends its environment over stdin (`envOverStdin`) and reports redacted errors, so no
+ * credential reaches an exec URL, Fly's request logs or an error message. Long-lived processes
+ * started through `SANDBOX_PROCESSES` are tracked: `stop()` and `destroy()` kill them.
+ */
 export class SessionSpritesSandbox extends SpritesSandbox implements ProcessSandbox {
   #processes: SandboxProcesses | undefined;
+  readonly #live = new Set<SpriteStdioProcess>();
+  readonly #prepare: SpritesFactorySandboxOptions['prepare'];
+  readonly #wrapped = new WeakMap<Sprite, Sprite>();
 
-  constructor(options: SpritesSandboxOptions) {
-    super(options);
+  constructor(options: SpritesSandboxOptions & Pick<SpritesFactorySandboxOptions, 'prepare'>) {
+    const { prepare, ...rest } = options;
+    super(rest);
+    this.#prepare = prepare;
+  }
+
+  /** The Sprite, with every exec's environment over stdin (throws until the sandbox started). */
+  override get sprite(): Sprite {
+    const sprite = super.sprite;
+    let wrapped = this.#wrapped.get(sprite);
+    if (!wrapped) {
+      wrapped = envOverStdin(sprite);
+      this.#wrapped.set(sprite, wrapped);
+    }
+    return wrapped;
+  }
+
+  /** Get or create the Sprite, then run the host's `prepare` before Factory's setup hook. */
+  override async start(): Promise<SandboxStartResult> {
+    const result = await super.start();
+    if (this.#prepare) {
+      try {
+        await this.#prepare(this[SANDBOX_PROCESSES]);
+      } catch (error) {
+        // Not fatal: what it prepares is checked again where it is used.
+        this.logger.warn(`${LOG_PREFIX} prepare failed`, { error: redactSpriteError(error).message });
+      }
+    }
+    return result;
+  }
+
+  override async stop(): Promise<void> {
+    this.#killLive();
+    await super.stop();
+  }
+
+  override async destroy(): Promise<void> {
+    this.#killLive();
+    await super.destroy();
   }
 
   /** Needs a started sandbox: the Sprite is looked up (or created) by `start()`. */
   get [SANDBOX_PROCESSES](): SandboxProcesses {
-    this.#processes ??= spriteProcesses(() => this.sprite);
+    this.#processes ??= spriteProcesses(
+      () => this.sprite,
+      process => {
+        this.#live.add(process);
+        process.once('exit', () => this.#live.delete(process));
+      },
+    );
     return this.#processes;
+  }
+
+  #killLive(): void {
+    for (const process of this.#live) process.kill('SIGKILL');
+    this.#live.clear();
   }
 }
 
 /** Processes and files in a Sprite, through its exec and filesystem APIs. */
-export function spriteProcesses(sprite: () => Pick<Sprite, 'spawn' | 'filesystem'>): SandboxProcesses {
+export function spriteProcesses(
+  sprite: () => Pick<Sprite, 'spawn' | 'filesystem'>,
+  track?: (process: SpriteStdioProcess) => void,
+): SandboxProcesses {
   return {
     kind: 'sprite',
-    spawn: (command, args, options) =>
-      spawnInSprite((cmd, cmdArgs, spawnOptions) => sprite().spawn(cmd, cmdArgs, spawnOptions), command, args, options),
+    spawn: (command, args, options) => {
+      const process = spawnInSprite(
+        (cmd, cmdArgs, spawnOptions) => sprite().spawn(cmd, cmdArgs, spawnOptions),
+        command,
+        args,
+        options,
+      );
+      track?.(process);
+      return process;
+    },
     files: spriteFiles(() => sprite().filesystem()),
   };
 }
