@@ -143,6 +143,6 @@ describe('Factory session transcript', () => {
 
   it('returns an empty transcript for a session with no events', async () => {
     const res = await buildApp({ user: alice }).app.request('/web/factory/sessions/none/transcript');
-    expect(await res.json()).toEqual({ sessionId: 'none', lastSeq: 0, items: [] });
+    expect(await res.json()).toEqual({ sessionId: 'none', lastSeq: 0, items: [], tasks: [] });
   });
 });

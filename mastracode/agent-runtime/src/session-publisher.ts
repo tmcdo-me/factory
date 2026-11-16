@@ -68,7 +68,7 @@ export class SessionPublisher {
 }
 
 function isMergeable(event: FactoryEvent): boolean {
-  return event.type === 'message.delta' || event.type === 'tool.output';
+  return event.type === 'message.delta' || event.type === 'tool.output' || event.type === 'tool.input.delta';
 }
 
 function merge(pending: FactoryEvent, next: FactoryEvent): FactoryEvent | undefined {
@@ -87,6 +87,9 @@ function merge(pending: FactoryEvent, next: FactoryEvent): FactoryEvent | undefi
     pending.stream === next.stream
   ) {
     return { ...pending, chunk: pending.chunk + next.chunk };
+  }
+  if (pending.type === 'tool.input.delta' && next.type === 'tool.input.delta' && pending.callId === next.callId) {
+    return { ...pending, delta: pending.delta + next.delta };
   }
   return undefined;
 }

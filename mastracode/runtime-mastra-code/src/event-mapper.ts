@@ -1,11 +1,21 @@
 import { randomUUID } from 'node:crypto';
 
-import type { FactoryEvent, InteractionRequest, InteractionResponse, RunEndReason } from '@factory/agent-runtime';
+import type {
+  FactoryEvent,
+  InteractionRequest,
+  InteractionResponse,
+  MessageAttachment,
+  MessageMeta,
+  RunEndReason,
+  ToolExit,
+} from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 
 import { classifyMastraCodeTool } from './tool-classification';
 
 export const MASTRA_CODE_RUNTIME_ID = 'mastra-code';
+
+type MastraMessage = Extract<AgentControllerEvent, { type: 'message_start' }>['message'];
 
 interface OpenInteraction {
   id: string;
@@ -17,7 +27,7 @@ interface OpenInteraction {
  *
  * Stateful: it tracks the current run, which messages and tool calls it has announced, and which
  * tool calls are parked on a human. Events that only make sense inside Mastra Code (observational
- * memory, threads, display state, tasks, goals, subagents, workspace lifecycle) produce nothing.
+ * memory, threads, modes, goals, workspace lifecycle) produce nothing.
  *
  * Interactions are mirrored from Mastra's own approval/suspension events here. They move to
  * Factory's InteractionBroker in a later slice; until then the response recorded when the tool
@@ -27,7 +37,10 @@ export class MastraCodeEventMapper {
   readonly #newRunId: () => string;
   #runId: string | undefined;
   readonly #messages = new Set<string>();
-  readonly #tools = new Map<string, string>(); // callId → tool name
+  /** The metadata last reported per open message, so `message.meta` is only sent on change. */
+  readonly #messageMeta = new Map<string, string>();
+  readonly #tools = new Map<string, { name: string; hasInput: boolean }>();
+  readonly #exits = new Map<string, ToolExit>();
   readonly #interactions = new Map<string, OpenInteraction>(); // callId → interaction
   readonly #sessionId: string;
   readonly #now: () => Date;
@@ -68,27 +81,44 @@ export class MastraCodeEventMapper {
       }
       case 'message_end': {
         if (!this.#messages.delete(event.id)) return [];
+        this.#messageMeta.delete(event.id);
         return [{ type: 'message.ended', messageId: event.id }];
       }
+      case 'display_state_changed': {
+        // Terminal metadata (model, credential) is only visible on the display snapshot.
+        const current = event.displayState?.currentMessage as MastraMessage | null | undefined;
+        return current ? this.#metaUpdate(current) : [];
+      }
+      case 'tool_input_start':
+        return this.#toolStarted(event.toolCallId, event.toolName, undefined);
+      case 'tool_input_delta': {
+        if (!this.#tools.has(event.toolCallId)) return [];
+        const delta = typeof event.argsTextDelta === 'string' ? event.argsTextDelta : '';
+        return delta ? [{ type: 'tool.input.delta', callId: event.toolCallId, delta }] : [];
+      }
       case 'tool_start': {
-        if (this.#tools.has(event.toolCallId)) return []; // re-announced after a resume
-        this.#tools.set(event.toolCallId, event.toolName);
-        const { category, executor } = classifyMastraCodeTool(event.toolName);
-        return [
-          {
-            type: 'tool.started',
-            callId: event.toolCallId,
-            name: event.toolName,
-            category,
-            executor,
-            input: event.args,
-            ...(this.#runId ? { runId: this.#runId } : {}),
-          },
-        ];
+        const known = this.#tools.get(event.toolCallId);
+        if (!known) return this.#toolStarted(event.toolCallId, event.toolName, event.args);
+        if (known.hasInput) return []; // re-announced after a resume
+        known.hasInput = true;
+        return [{ type: 'tool.input', callId: event.toolCallId, input: event.args }];
       }
       case 'shell_output':
         if (!this.#tools.has(event.toolCallId)) return [];
         return [{ type: 'tool.output', callId: event.toolCallId, stream: event.stream, chunk: event.output }];
+      case 'command_exit':
+        if (this.#tools.has(event.toolCallId)) {
+          this.#exits.set(event.toolCallId, {
+            code: event.exitCode,
+            ...(event.killed ? { killed: true } : {}),
+            ...(event.timedOut ? { timedOut: true } : {}),
+            ...(event.error ? { error: event.error } : {}),
+          });
+        }
+        return [];
+      case 'tool_update':
+        if (!this.#tools.has(event.toolCallId)) return [];
+        return [{ type: 'tool.progress', callId: event.toolCallId, partial: event.partialResult }];
       case 'tool_end':
         return this.#toolEnd(event);
       case 'tool_approval_required':
@@ -108,6 +138,36 @@ export class MastraCodeEventMapper {
         this.#interactions.delete(event.toolCallId);
         return [{ type: 'interaction.cancelled', interactionId: open.id, reason: event.reason }];
       }
+      case 'task_updated':
+        return [
+          {
+            type: 'tasks.updated',
+            tasks: event.tasks.map(task => ({
+              id: task.id,
+              title: task.content,
+              status: task.status,
+              ...(task.activeForm ? { activeTitle: task.activeForm } : {}),
+            })),
+          },
+        ];
+      case 'subagent_start':
+        return [
+          {
+            type: 'subagent.started',
+            callId: event.toolCallId,
+            agentType: event.agentType,
+            task: event.task,
+            ...(event.modelId ? { modelId: event.modelId } : {}),
+          },
+        ];
+      case 'subagent_end':
+        return [
+          {
+            type: 'subagent.ended',
+            callId: event.toolCallId,
+            ...(event.isError ? { error: event.result } : { result: event.result }),
+          },
+        ];
       case 'usage_update':
         return [
           {
@@ -118,17 +178,26 @@ export class MastraCodeEventMapper {
             ...(event.usage.cachedInputTokens !== undefined
               ? { cachedInputTokens: event.usage.cachedInputTokens }
               : {}),
+            ...(event.usage.reasoningTokens !== undefined ? { reasoningTokens: event.usage.reasoningTokens } : {}),
           },
         ];
-      case 'error':
+      case 'error': {
+        const name = event.error?.name;
+        const details = {
+          ...(event.errorType ? { errorType: event.errorType } : {}),
+          ...(event.finishReason ? { finishReason: event.finishReason } : {}),
+        };
         return [
           {
             type: 'error',
             message: event.error?.message ?? String(event.error),
             retryable: event.retryable ?? false,
+            ...(name && name !== 'Error' ? { code: name } : {}),
+            ...(Object.keys(details).length ? { details } : {}),
             ...(this.#runId ? { runId: this.#runId } : {}),
           },
         ];
+      }
       case 'model_changed':
         return [{ type: 'model.changed', runtimeId: MASTRA_CODE_RUNTIME_ID, modelId: event.modelId }];
       default:
@@ -136,41 +205,113 @@ export class MastraCodeEventMapper {
     }
   }
 
-  #messageStart(message: Extract<AgentControllerEvent, { type: 'message_start' }>['message']): FactoryEvent[] {
+  #messageStart(message: MastraMessage): FactoryEvent[] {
     if (this.#messages.has(message.id)) return [];
     const parts = message.content?.parts ?? [];
+    const runId = this.#runId ? { runId: this.#runId } : {};
 
-    let role: 'user' | 'assistant';
-    let texts: { part: 'text' | 'reasoning'; text: string }[];
     if (message.role === 'signal') {
+      const signal = signalOf(message);
       // Mastra Code delivers what the user typed as a signal carrying a `data-user-message` part.
-      // Other signals (`data-signal`, `data-system-reminder`) are system context, not transcript.
-      texts = parts.flatMap(part => {
+      const userTexts = parts.flatMap(part => {
         const text = userMessageText(part);
-        return text ? [{ part: 'text' as const, text }] : [];
-      });
-      if (texts.length === 0) return [];
-      role = 'user';
-    } else if (message.role === 'user' || message.role === 'assistant') {
-      role = message.role;
-      texts = parts.flatMap(part => {
-        const text = partText(part);
         return text ? [text] : [];
       });
-    } else {
-      return [];
+      if (userTexts.length > 0) {
+        this.#messages.add(message.id);
+        const meta = {
+          ...messageMeta(message),
+          ...(signal?.attributes?.delivery === 'while-active' ? { steer: true } : {}),
+        };
+        return [
+          {
+            type: 'message.started',
+            messageId: message.id,
+            role: 'user',
+            ...runId,
+            ...(Object.keys(meta).length ? { meta } : {}),
+          },
+          ...userTexts.map(text => ({
+            type: 'message.delta' as const,
+            messageId: message.id,
+            part: 'text' as const,
+            delta: text,
+          })),
+        ];
+      }
+      // Every other signal is context the transcript shows as a notice (skill, environment, reminder…).
+      if (!signal) return [];
+      return [
+        {
+          type: 'notice',
+          noticeId: message.id,
+          kind: typeof signal.type === 'string' ? signal.type : 'signal',
+          ...(typeof signal.tagName === 'string' ? { tag: signal.tagName } : {}),
+          text: contentsText(signal.contents) ?? '',
+          ...(signal.attributes ? { attributes: signal.attributes } : {}),
+          ...runId,
+        },
+      ];
     }
 
+    if (message.role !== 'user' && message.role !== 'assistant') return [];
     this.#messages.add(message.id);
+    const meta = messageMeta(message);
+    if (meta.modelId || meta.credentialLabel) this.#messageMeta.set(message.id, JSON.stringify(terminalMeta(meta)));
+    const attachments = parts.flatMap(part => {
+      const attachment = fileAttachment(part);
+      return attachment ? [attachment] : [];
+    });
     return [
-      { type: 'message.started', messageId: message.id, role, ...(this.#runId ? { runId: this.#runId } : {}) },
-      ...texts.map(({ part, text }) => ({ type: 'message.delta' as const, messageId: message.id, part, delta: text })),
+      {
+        type: 'message.started',
+        messageId: message.id,
+        role: message.role,
+        ...runId,
+        ...(Object.keys(meta).length ? { meta } : {}),
+        ...(attachments.length ? { attachments } : {}),
+      },
+      ...parts.flatMap(part => {
+        const text = partText(part);
+        return text
+          ? [{ type: 'message.delta' as const, messageId: message.id, part: text.part, delta: text.text }]
+          : [];
+      }),
+    ];
+  }
+
+  #metaUpdate(message: MastraMessage): FactoryEvent[] {
+    if (!this.#messages.has(message.id)) return [];
+    const meta = terminalMeta(messageMeta(message));
+    if (!Object.keys(meta).length) return [];
+    const key = JSON.stringify(meta);
+    if (this.#messageMeta.get(message.id) === key) return [];
+    this.#messageMeta.set(message.id, key);
+    return [{ type: 'message.meta', messageId: message.id, meta }];
+  }
+
+  #toolStarted(callId: string, name: string, input: unknown): FactoryEvent[] {
+    if (this.#tools.has(callId)) return [];
+    this.#tools.set(callId, { name, hasInput: input !== undefined });
+    const { category, executor } = classifyMastraCodeTool(name);
+    return [
+      {
+        type: 'tool.started',
+        callId,
+        name,
+        category,
+        executor,
+        ...(input !== undefined ? { input } : {}),
+        ...(this.#runId ? { runId: this.#runId } : {}),
+      },
     ];
   }
 
   #toolEnd(event: Extract<AgentControllerEvent, { type: 'tool_end' }>): FactoryEvent[] {
     if (!this.#tools.has(event.toolCallId)) return [];
     this.#tools.delete(event.toolCallId);
+    const exit = this.#exits.get(event.toolCallId);
+    this.#exits.delete(event.toolCallId);
     const out: FactoryEvent[] = [];
 
     const open = this.#interactions.get(event.toolCallId);
@@ -183,11 +324,15 @@ export class MastraCodeEventMapper {
       });
     }
 
-    const error = event.denied ? 'denied' : event.isError ? errorText(event.result) : undefined;
     out.push({
       type: 'tool.ended',
       callId: event.toolCallId,
-      ...(error === undefined ? { result: event.result } : { error }),
+      ...(event.denied
+        ? { denied: true }
+        : event.isError
+          ? { error: errorText(event.result) }
+          : { result: event.result }),
+      ...(exit ? { exit } : {}),
     });
     return out;
   }
@@ -218,49 +363,146 @@ function runEndReason(reason: Extract<AgentControllerEvent, { type: 'agent_end' 
   }
 }
 
-function partText(part: unknown): { part: 'text' | 'reasoning'; text: string } | undefined {
-  if (!part || typeof part !== 'object') return undefined;
-  const p = part as { type?: unknown; text?: unknown; reasoning?: unknown };
-  if (p.type === 'text' && typeof p.text === 'string' && p.text) return { part: 'text', text: p.text };
-  if (p.type === 'reasoning') {
-    const text = typeof p.reasoning === 'string' ? p.reasoning : typeof p.text === 'string' ? p.text : '';
-    if (text) return { part: 'reasoning', text };
-  }
-  return undefined;
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value);
+
+const str = (value: unknown): string | undefined => (typeof value === 'string' && value ? value : undefined);
+
+interface SignalPayload {
+  type?: unknown;
+  tagName?: unknown;
+  contents?: unknown;
+  attributes?: Record<string, unknown>;
 }
 
-/** Text of a `data-user-message` part (`contents` is a string or an array of strings / `{ text }`). */
-function userMessageText(part: unknown): string | undefined {
-  if (!part || typeof part !== 'object' || (part as { type?: unknown }).type !== 'data-user-message') return undefined;
-  const contents = ((part as { data?: unknown }).data as { contents?: unknown } | undefined)?.contents;
+/** The signal payload: on `content.metadata.signal`, or the first `data-*` part's data. */
+function signalOf(message: MastraMessage): SignalPayload | undefined {
+  const fromMetadata = message.content?.metadata?.signal;
+  if (isRecord(fromMetadata)) return normalizeSignal(fromMetadata);
+  const parts: unknown[] = message.content?.parts ?? [];
+  const part = parts.find(p => isRecord(p) && typeof p.type === 'string' && p.type.startsWith('data-'));
+  const data = isRecord(part) ? part.data : undefined;
+  return isRecord(data) ? normalizeSignal(data) : undefined;
+}
+
+function normalizeSignal(raw: Record<string, unknown>): SignalPayload {
+  return {
+    type: raw.type,
+    tagName: raw.tagName,
+    contents: raw.contents,
+    attributes: isRecord(raw.attributes) ? raw.attributes : undefined,
+  };
+}
+
+/** Text of signal `contents`: a string, or an array of strings / `{ text }`. */
+function contentsText(contents: unknown): string | undefined {
   if (typeof contents === 'string') return contents || undefined;
   if (!Array.isArray(contents)) return undefined;
   const text = contents
     .map(entry =>
-      typeof entry === 'string'
-        ? entry
-        : entry && typeof entry === 'object' && typeof (entry as { text?: unknown }).text === 'string'
-          ? (entry as { text: string }).text
-          : '',
+      typeof entry === 'string' ? entry : isRecord(entry) && typeof entry.text === 'string' ? entry.text : '',
     )
     .filter(Boolean)
     .join('\n');
   return text || undefined;
 }
 
+/** Text of a `data-user-message` part. */
+function userMessageText(part: unknown): string | undefined {
+  if (!isRecord(part) || part.type !== 'data-user-message' || !isRecord(part.data)) return undefined;
+  return contentsText(part.data.contents);
+}
+
+/** The model/credential subset of the metadata, which Mastra fills in when a reply finishes. */
+function terminalMeta({ modelId, credentialLabel, credentialOwnerId }: MessageMeta): MessageMeta {
+  return {
+    ...(modelId ? { modelId } : {}),
+    ...(credentialLabel ? { credentialLabel } : {}),
+    ...(credentialOwnerId ? { credentialOwnerId } : {}),
+  };
+}
+
+/** Who sent the message and what produced it, wherever Mastra stamped it. */
+function messageMeta(message: MastraMessage): MessageMeta {
+  const meta: MessageMeta = {};
+  const metadata = isRecord(message.content?.metadata) ? message.content.metadata : {};
+  const modelId = str(metadata.modelId);
+  const credentialLabel = str(metadata.credentialLabel);
+  const credentialOwnerId = str(metadata.credentialOwnerId);
+  if (modelId) meta.modelId = modelId;
+  if (credentialLabel) meta.credentialLabel = credentialLabel;
+  if (credentialOwnerId) meta.credentialOwnerId = credentialOwnerId;
+
+  const mastra = mastraOptions(message);
+  if (mastra) {
+    const author = isRecord(mastra.author) ? mastra.author : undefined;
+    const authorId = str(author?.id);
+    if (authorId) {
+      const name = str(author?.name);
+      const avatarUrl = str(author?.avatarUrl);
+      meta.author = { id: authorId, ...(name ? { name } : {}), ...(avatarUrl ? { avatarUrl } : {}) };
+    }
+    const channels = isRecord(mastra.channels) ? mastra.channels : undefined;
+    const platform = channels ? Object.keys(channels)[0] : undefined;
+    if (channels && platform) {
+      const info = channels[platform];
+      const channelAuthor = isRecord(info) && isRecord(info.author) ? info.author : undefined;
+      const userId = str(channelAuthor?.userId);
+      const authorName = str(channelAuthor?.fullName) ?? str(channelAuthor?.userName);
+      meta.channel = { platform, ...(userId ? { userId } : {}), ...(authorName ? { authorName } : {}) };
+    }
+  }
+  return meta;
+}
+
+/** Provider options under `mastra`: on the message, the signal envelope, or the live data part. */
+function mastraOptions(message: MastraMessage): Record<string, unknown> | undefined {
+  const signal = message.content?.metadata?.signal;
+  const parts: unknown[] = message.content?.parts ?? [];
+  const dataPart = parts.find(part => isRecord(part) && part.type === 'data-user-message');
+  const candidates = [
+    message.content?.providerMetadata,
+    isRecord(signal) ? signal.providerOptions : undefined,
+    isRecord(dataPart) && isRecord(dataPart.data) ? dataPart.data.providerOptions : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (isRecord(candidate) && isRecord(candidate.mastra)) return candidate.mastra;
+  }
+  return undefined;
+}
+
+function fileAttachment(part: unknown): MessageAttachment | undefined {
+  if (!isRecord(part) || part.type !== 'file') return undefined;
+  const mediaType = str(part.mediaType) ?? str(part.mimeType);
+  const url = str(part.url) ?? str(part.data);
+  if (!mediaType || !url) return undefined;
+  const name = str(part.filename) ?? str(part.name);
+  return { mediaType, url, ...(name ? { name } : {}) };
+}
+
+function partText(part: unknown): { part: 'text' | 'reasoning'; text: string } | undefined {
+  if (!isRecord(part)) return undefined;
+  if (part.type === 'text' && typeof part.text === 'string' && part.text) return { part: 'text', text: part.text };
+  if (part.type === 'reasoning') {
+    const text = typeof part.reasoning === 'string' ? part.reasoning : typeof part.text === 'string' ? part.text : '';
+    if (text) return { part: 'reasoning', text };
+  }
+  return undefined;
+}
+
 function suspensionRequest(toolName: string, args: unknown, payload: unknown): InteractionRequest {
-  const input = (args ?? {}) as Record<string, unknown>;
+  const input = isRecord(args) ? args : {};
   if (toolName === 'submit_plan') {
     return { kind: 'plan_approval', planPath: typeof input.path === 'string' ? input.path : '' };
   }
   if (toolName === 'ask_user') {
     const options = Array.isArray(input.options)
       ? input.options.flatMap(option =>
-          option && typeof option === 'object' && typeof (option as { label?: unknown }).label === 'string'
+          isRecord(option) && typeof option.label === 'string'
             ? [
                 {
-                  label: (option as { label: string }).label,
-                  description: (option as { description?: string }).description,
+                  label: option.label,
+                  description: typeof option.description === 'string' ? option.description : undefined,
                 },
               ]
             : [],
@@ -273,7 +515,7 @@ function suspensionRequest(toolName: string, args: unknown, payload: unknown): I
       ...(input.selectionMode === 'multi_select' ? { selection: 'multiple' as const } : {}),
     };
   }
-  const message = payload && typeof payload === 'object' ? (payload as { message?: unknown }).message : undefined;
+  const message = isRecord(payload) ? payload.message : undefined;
   return { kind: 'question', question: typeof message === 'string' ? message : `${toolName} is waiting for input` };
 }
 
@@ -282,8 +524,7 @@ function inferResponse(kind: InteractionRequest['kind'], result: unknown, denied
     case 'tool_approval':
       return { kind, approved: !denied };
     case 'plan_approval': {
-      const submitted = (result as { submittedPlan?: { action?: unknown; feedback?: unknown } } | undefined)
-        ?.submittedPlan;
+      const submitted = isRecord(result) && isRecord(result.submittedPlan) ? result.submittedPlan : undefined;
       return {
         kind,
         action: submitted?.action === 'approved' ? 'approved' : 'rejected',
@@ -297,8 +538,8 @@ function inferResponse(kind: InteractionRequest['kind'], result: unknown, denied
 
 function errorText(result: unknown): string {
   if (typeof result === 'string') return result;
-  if (result && typeof result === 'object') {
-    const message = (result as { message?: unknown; error?: unknown }).message ?? (result as { error?: unknown }).error;
+  if (isRecord(result)) {
+    const message = result.message ?? result.error;
     if (typeof message === 'string') return message;
   }
   return JSON.stringify(result) ?? 'error';
