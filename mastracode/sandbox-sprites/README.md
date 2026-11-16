@@ -109,7 +109,9 @@ Then:
 # install (in prepare, before any setup), checksum, env over stdin, MCP + skills in the Sprite
 # (no turn; deletes its Sprite afterwards):
 FACTORY_SPRITES_LIVE=1 SPRITES_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
-# plus one turn and a resume in a new Claude Code process (a few cents):
+# plus one turn and a resume in a new Claude Code process (a few cents); add
+# FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1 for a turn in Claude Code's Bash sandbox (needs bubblewrap
+# and socat in the Sprite) that checks Claude's token is absent from its commands:
 FACTORY_SPRITES_LIVE=1 FACTORY_SPRITES_LIVE_TURN=1 SPRITES_TOKEN=… CLAUDE_CODE_OAUTH_TOKEN=… pnpm --filter @factory/sandbox-sprites exec vitest run src/sprites.live.test.ts
 ```
 

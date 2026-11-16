@@ -35,6 +35,24 @@ export const CLAUDE_AGENT_ISOLATION = {
   autoMemoryEnabled: false,
 } as const;
 
+/** Claude's own credentials: what the Bash sandbox keeps from the commands Claude runs. */
+const CLAUDE_CREDENTIAL_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
+
+/**
+ * Claude Code's Bash sandbox as Factory runs it (`bashSandbox`): every Bash command sandboxed (no
+ * `dangerouslyDisableSandbox` escape), approved without a prompt as `bypassPermissions` approves
+ * everything else, with Claude's credentials unset inside (`deny`; `mask` would need TLS
+ * termination to work over HTTPS). Fail closed: if the sandbox can't start, Claude Code doesn't.
+ * The session's git credentials (`GH_TOKEN*`) stay: git and `gh` need them.
+ */
+export const CLAUDE_AGENT_BASH_SANDBOX = {
+  enabled: true,
+  failIfUnavailable: true,
+  allowUnsandboxedCommands: false,
+  autoAllowBashIfSandboxed: true,
+  credentials: { envVars: CLAUDE_CREDENTIAL_ENV.map(name => ({ name, mode: 'deny' as const })) },
+};
+
 /** Appended to the system prompt when the session has Factory's skills. */
 export const SKILLS_INSTRUCTIONS =
   "Factory's skills are the `factory:*` skills (`factory-plan` is `factory:factory-plan`). When a skill says to read one of its files with `skill_read`, read that file from the skill's folder with Read.";
@@ -69,6 +87,13 @@ export interface ClaudeAgentSessionOptions {
    * `.claude/` settings, hooks included, could be anyone's, so none of them load.
    */
   untrustedCheckout?: boolean;
+  /**
+   * Run Claude Code's Bash tool inside Claude Code's own sandbox (`CLAUDE_AGENT_BASH_SANDBOX`), so
+   * the commands it runs (a repository's tests, scripts) don't see Claude's credential. Needs the
+   * sandbox's dependencies (bubblewrap and socat on Linux); without them Claude Code refuses to
+   * start rather than run unsandboxed.
+   */
+  bashSandbox?: boolean;
   /**
    * Subprocess environment; build it with `claudeProcessEnv`. A function is asked again each time
    * Claude Code starts (after an idle close or a recycle), so credentials refreshed since (a
@@ -373,7 +398,11 @@ export class ClaudeAgentSession {
         // Isolation: nothing of the operator's Claude account or install reaches the session beyond
         // the model. No claude.ai connectors (mail, calendars, homelab), no MCP servers but Factory's,
         // no skills but Factory's (bundled and repository skills stay off), no auto-memory.
-        settings: { ...CLAUDE_AGENT_ISOLATION, claudeMdExcludes: instructionFilesAbove(options.cwd) },
+        settings: {
+          ...CLAUDE_AGENT_ISOLATION,
+          claudeMdExcludes: instructionFilesAbove(options.cwd),
+          ...(options.bashSandbox ? { sandbox: CLAUDE_AGENT_BASH_SANDBOX } : {}),
+        },
         strictMcpConfig: true,
         ...(factoryTools
           ? {

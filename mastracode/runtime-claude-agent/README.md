@@ -73,10 +73,13 @@ inside it, with the same isolation as on the host:
   monitors; ambient watchers don't count), since stopping would kill it; the stop is armed again
   when the work ends. The install and launch scripts run their checks with PATH pinned to the
   system's own directories.
-- **Known gap:** Claude Code's tool processes (Bash, a repository's tests) inherit
-  `CLAUDE_CODE_OAUTH_TOKEN`, here as on the host. `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` exists in
-  2.1.325 but is its CI hardening mode: it forces the permission mode to `default` and scrubs
-  `GH_TOKEN` and every token-like variable too, so it is not used (see `env.ts`).
+- **Claude's credential and its commands:** by default Claude Code's tool processes (Bash, a
+  repository's tests) inherit `CLAUDE_CODE_OAUTH_TOKEN`, here as on the host. `bashSandbox`
+  (Factory: `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1`, off by default) runs Bash in Claude Code's own
+  sandbox with Claude's credentials denied (`CLAUDE_AGENT_BASH_SANDBOX`); it needs bubblewrap and
+  socat on Linux and confines what commands may write and reach (spec §6, 9c).
+  `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` is not used: it drops `bypassPermissions` and scrubs
+  `GH_TOKEN` too (see `env.ts`).
 - **Skills:** `writeSkillsPlugin(dir, skills, launch.files)` writes the plugin on the sandbox's
   filesystem, under its Claude home.
 - **Resume:** transcripts stay in the sandbox's Claude home (on the Sprite's disk), so a restarted

@@ -416,10 +416,33 @@ Each slice: implement → focused tests → manual check where noted → commit.
      server needs nothing, as its traffic rides Claude Code's stdio (checked with the real binary
      through a fake Sprite exec). Isolation is unchanged (`settingSources`, `CLAUDE_AGENT_ISOLATION`,
      `strictMcpConfig`). Transcripts stay on the Sprite's disk, so `resume` works after a restart.
-     Not done: keeping `CLAUDE_CODE_OAUTH_TOKEN` from Claude's own tool processes (locally too);
-     `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` forces the default permission mode and scrubs `GH_TOKEN` in
-     2.1.325. Not yet checked against a live Sprite (`mastracode/sandbox-sprites/README.md`, "Live
-     check").
+     Claude's credential and its tool processes: see 9c. Not yet checked against a live Sprite
+     (`mastracode/sandbox-sprites/README.md`, "Live check").
+   - **9c** (spike) Keeping `CLAUDE_CODE_OAUTH_TOKEN` from Claude's own tool processes (Bash, a
+     repository's tests), locally and in Sprites:
+     - `CLAUDE_CODE_SUBPROCESS_ENV_SCRUB` (exists in 2.1.325, undocumented for the SDK) is out:
+       with it, Claude Code starts in the `default` permission mode even when `bypassPermissions`
+       is asked for (checked with the real binary), and it also scrubs `GH_TOKEN`/`GITHUB_TOKEN`
+       and every token-, secret- or key-like variable.
+     - Claude Code's Bash sandbox (`settings.sandbox`, documented in the SDK's settings schema) can:
+       `credentials.envVars` with `mode: 'deny'` unsets a variable for sandboxed commands; `mask`
+       swaps in a sentinel and injects the real value at Claude Code's proxy, which for HTTPS
+       needs the experimental `network.tlsTerminate`, so the session's `GH_TOKEN` stays plain
+       (git and `gh` need it) and only Claude's credentials are denied. With
+       `allowUnsandboxedCommands: false` no command can opt out. Checked with the real binary:
+       the settings validate and Claude Code starts in `bypassPermissions` with the sandbox on
+       (macOS); `failIfUnavailable: true` makes it refuse to start without the sandbox's
+       dependencies (bubblewrap and socat on Linux; `sandbox-exec` on macOS).
+     - Not checked (needs a model turn): that a denied variable is really gone inside Bash; what
+       the sandbox's network rules do to a command reaching a host outside
+       `network.allowedDomains` under `bypassPermissions` (a prompt nobody answers, or allowed);
+       and what its filesystem rules break (writes outside the checkout, such as a package cache
+       in the home directory, are refused by default). Whether bubblewrap and socat are in the
+       Sprites image is unknown.
+     - So it ships as `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1` (`CLAUDE_AGENT_BASH_SANDBOX`), off by
+       default and not yet on for untrusted sessions: turning it on for them waits for the live
+       check (`sprites.live.test.ts` runs a sandboxed turn that checks the token is absent and
+       git still works).
 10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
@@ -453,6 +476,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_SPRITES_REGION`              | unset          | Region new session Sprites are created in (Sprites default when unset)        |
 | `FACTORY_SPRITES_PREFIX`              | `factory`      | Sprite name prefix of this deployment (one per deployment sharing a token)    |
 | `FACTORY_CLAUDE_AGENT_IDLE_CLOSE_MS`  | 10 minutes     | Stop an idle Claude Code after this long (`0`: never); the next turn resumes  |
+| `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`   | off            | Run Claude's Bash in Claude Code's sandbox, without Claude's credential (9c)  |
 
 ## 9. Upstream
 

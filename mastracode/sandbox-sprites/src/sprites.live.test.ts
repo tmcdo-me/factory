@@ -8,7 +8,8 @@
  * environment over stdin, and Factory's MCP server and skills reaching Claude Code in the Sprite,
  * with no turn. With `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) and
  * `FACTORY_SPRITES_LIVE_TURN=1` it also runs one small turn, closes Claude Code, and resumes the
- * conversation from the Sprite's disk in a new process (a few cents of ordinary usage).
+ * conversation from the Sprite's disk in a new process (a few cents of ordinary usage); with
+ * `FACTORY_CLAUDE_AGENT_BASH_SANDBOX=1` too, one turn in Claude Code's Bash sandbox.
  */
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import type { SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
@@ -144,12 +145,13 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
         if (!process.env.FACTORY_SPRITES_LIVE_TURN || !process.env.CLAUDE_CODE_OAUTH_TOKEN) return;
 
         // One turn, then a new Claude Code process resuming it from the Sprite's disk.
-        const turn = async (resume: string | undefined, text: string) => {
+        const turn = async (resume: string | undefined, text: string, bashSandbox = false) => {
           const events: FactoryEvent[] = [];
           const session = new ClaudeAgentSession({
             sessionId: 'live',
             ...options,
             ...(resume ? { resume } : {}),
+            ...(bashSandbox ? { bashSandbox } : {}),
             model: process.env.CLAUDE_AGENT_LIVE_MODEL ?? 'claude-haiku-5-5',
             emit: event => events.push(event),
           });
@@ -173,6 +175,18 @@ describe.skipIf(!live)('Claude Agent in a live Sprite', () => {
         expect(first.claudeSessionId).toBeTruthy();
         const second = await turn(first.claudeSessionId, 'Which word did I ask you to remember? Reply with only it.');
         expect(second.reply.toLowerCase()).toContain('heliotrope');
+
+        // With Claude Code's Bash sandbox (needs bubblewrap and socat in the Sprite): Claude's own
+        // credential is not in its commands' environment, and git still reaches GitHub.
+        if (process.env.FACTORY_CLAUDE_AGENT_BASH_SANDBOX) {
+          const sandboxed = await turn(
+            undefined,
+            'Use your Bash tool to run exactly: [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && echo token-present || echo token-absent; git ls-remote https://github.com/octocat/Hello-World HEAD >/dev/null && echo git-ok. Then reply with only the lines it printed.',
+            true,
+          );
+          expect(sandboxed.reply).toContain('token-absent');
+          expect(sandboxed.reply).toContain('git-ok');
+        }
       } finally {
         if (!process.env.FACTORY_SPRITES_LIVE_KEEP) await sandbox.destroy();
         else await sandbox.stop();

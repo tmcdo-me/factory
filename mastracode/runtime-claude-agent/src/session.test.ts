@@ -6,7 +6,13 @@ import { z } from 'zod';
 
 import { claudeProcessEnv } from './env';
 import type { FactoryToolCall } from './factory-tools';
-import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
+import {
+  CLAUDE_AGENT_BASH_SANDBOX,
+  ClaudeAgentSession,
+  SKILLS_INSTRUCTIONS,
+  instructionFilesAbove,
+  stoppedBySignal,
+} from './session';
 import type { QueryFn } from './session';
 import { mcpClient } from './test-utils';
 
@@ -238,6 +244,41 @@ describe('ClaudeAgentSession', () => {
     await session.send({ text: 'review it' });
     await settled(events);
     expect(fake.calls[0]!.options).toMatchObject({ settingSources: [] });
+  });
+
+  it("runs Bash in Claude Code's sandbox when asked, keeping Claude's credentials from its commands", async () => {
+    const run = async (bashSandbox: boolean | undefined) => {
+      const events: FactoryEvent[] = [];
+      const fake = fakeQuery([[result()]]);
+      const session = new ClaudeAgentSession({
+        sessionId: 's1',
+        cwd: '/work/s1',
+        env: {},
+        ...(bashSandbox !== undefined ? { bashSandbox } : {}),
+        emit: event => events.push(event),
+        query: fake.fn,
+      });
+      await session.send({ text: 'run the tests' });
+      await settled(events);
+      return (fake.calls[0]!.options as { settings: Record<string, unknown> }).settings;
+    };
+    const sandboxed = await run(true);
+    expect(sandboxed).toMatchObject({ disableClaudeAiConnectors: true, sandbox: CLAUDE_AGENT_BASH_SANDBOX });
+    expect(CLAUDE_AGENT_BASH_SANDBOX).toMatchObject({
+      enabled: true,
+      failIfUnavailable: true,
+      allowUnsandboxedCommands: false,
+      credentials: {
+        envVars: [
+          { name: 'CLAUDE_CODE_OAUTH_TOKEN', mode: 'deny' },
+          { name: 'ANTHROPIC_API_KEY', mode: 'deny' },
+          { name: 'ANTHROPIC_AUTH_TOKEN', mode: 'deny' },
+        ],
+      },
+    });
+    expect(JSON.stringify(CLAUDE_AGENT_BASH_SANDBOX)).not.toContain('GH_TOKEN'); // git and gh need it
+    expect(await run(undefined)).not.toHaveProperty('sandbox');
+    expect(await run(false)).not.toHaveProperty('sandbox');
   });
 
   it("allows only Claude Code's coding tools, and nothing that acts outside the session", async () => {
