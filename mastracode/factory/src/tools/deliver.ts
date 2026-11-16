@@ -1,5 +1,3 @@
-import { randomUUID } from 'node:crypto';
-
 import type { MountedMastraCode } from '@mastra/code-sdk';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
 import { RequestContext } from '@mastra/core/request-context';
@@ -42,6 +40,11 @@ export type FactoryDeliveryResult =
    * next checks its inbox, not now.
    */
   | { delivered: 'woken' | 'mid-run' | 'persisted' | 'summarized'; notificationId: string; reason?: string }
+  /**
+   * fork(claude-agent): a session on another runtime holds the message for its next turn, in memory:
+   * nothing is stored, so there is no notification to name.
+   */
+  | { delivered: 'held'; reason: 'next-turn' }
   | {
       delivered: 'skipped';
       notificationId?: string;
@@ -162,12 +165,14 @@ async function deliverOnRuntime(
   const requestContext = new RequestContext();
   requestContext.set('user', { workosId: row.userId, organizationId: row.orgId });
   const attributes: Record<string, string> = { kind: notification.kind, ...notification.attributes };
-  await runtime.message(
+  const { runId } = await runtime.message(
     sessionId,
     { text: notification.summary, source: FACTORY_SESSION_NOTIFICATION_SOURCE, wake, attributes },
     requestContext,
   );
-  return { delivered: wake ? (running ? 'mid-run' : 'woken') : 'persisted', notificationId: randomUUID() };
+  // A woken session's message is a turn of its own: the turn's run names it.
+  if (!runId) return { delivered: 'held', reason: 'next-turn' };
+  return { delivered: running ? 'mid-run' : 'woken', notificationId: runId };
 }
 
 export interface FactorySessionActivity {

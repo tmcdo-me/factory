@@ -192,7 +192,7 @@ export function createFactoryMessagingTools(
     target: { sessionId: string; threadId: string },
     notification: Omit<SendNotificationSignalInput, 'source'>,
   ): Promise<
-    { notificationId: string; delivered: FactoryDeliveryResult['delivered'] } | ReturnType<typeof queuedResult>
+    { notificationId?: string; delivered: FactoryDeliveryResult['delivered'] } | ReturnType<typeof queuedResult>
   > => {
     const counted = countedInWindow(await recent(messaging.notifications, target.threadId));
     if (counted.length < SIGNAL_RATE_LIMIT) {
@@ -211,7 +211,11 @@ export function createFactoryMessagingTools(
         kind: notification.kind,
         delivery: result.delivered,
       });
-      return { notificationId: result.notificationId, delivered: result.delivered };
+      // fork(claude-agent): a message held for a Claude Agent session's next turn has no notification.
+      return {
+        ...('notificationId' in result ? { notificationId: result.notificationId } : {}),
+        delivered: result.delivered,
+      };
     }
     const key = queueKey(deps, scope.sessionId, target.threadId);
     const waiting = pendingQueues.get(key)?.length ?? 0;
@@ -338,6 +342,8 @@ export function createFactoryMessagingTools(
       'Replies come back to this session as `factory-session` notifications with kind `reply` and an `in-reply-to` attribute naming your message.',
       'Priority `medium` (default) wakes an idle session and waits for a busy one to finish its step; use `urgent` only to make it stop and change course.',
       '`delivered` is `woken` when the session was idle and is now running, `mid-run` when it was already busy and will read the message when its run next checks in.',
+      // fork(claude-agent)
+      '`held` means the session will read it with its next turn; nothing woke it.',
       ...(scope.interactive
         ? []
         : ['On this turn you can only message your side sessions and sessions working on items this session follows.']),

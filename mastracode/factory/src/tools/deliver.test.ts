@@ -329,7 +329,9 @@ describe('resolveSessionThread', () => {
 describe('deliverFactorySessionNotification to a Claude Agent session', () => {
   function onRuntime(running = false) {
     const { controller, sessions, agent, calls } = setup();
-    const message = vi.fn(async (..._args: unknown[]) => {});
+    const message = vi.fn(async (...args: unknown[]) =>
+      (args[1] as { wake: boolean }).wake ? { runId: 'run-7' } : {},
+    );
     const runtime = { runs: vi.fn(async () => true), isRunning: () => running, message };
     const deliver = (
       notification: Parameters<typeof deliverFactorySessionNotification>[0]['notification'],
@@ -351,7 +353,8 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     const { deliver, message, agent, calls } = onRuntime();
     const result = await deliver({ ...MESSAGE, attributes: { 'from-session': 'session-a' } });
 
-    expect(result).toMatchObject({ delivered: 'woken', notificationId: expect.any(String) });
+    // The turn that carries the message names it.
+    expect(result).toEqual({ delivered: 'woken', notificationId: 'run-7' });
     const [sessionId, sent, requestContext] = message.mock.calls[0] as [
       string,
       Record<string, unknown>,
@@ -370,13 +373,20 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     expect(calls).toEqual([]);
   });
 
-  it('reaches a busy session with its next turn, and leaves low-priority news and stage notices for later', async () => {
+  it('reaches a busy session with its next turn, and holds low-priority news and stage notices for later', async () => {
     const busy = onRuntime(true);
     await expect(busy.deliver(MESSAGE)).resolves.toMatchObject({ delivered: 'mid-run' });
 
     const later = onRuntime();
-    await expect(later.deliver({ ...MESSAGE, priority: 'low' })).resolves.toMatchObject({ delivered: 'persisted' });
-    await expect(later.deliver({ ...MESSAGE, kind: 'stage' }, true)).resolves.toMatchObject({ delivered: 'persisted' });
+    // Held in memory for the next turn: nothing stored, so no notification is claimed.
+    await expect(later.deliver({ ...MESSAGE, priority: 'low' })).resolves.toEqual({
+      delivered: 'held',
+      reason: 'next-turn',
+    });
+    await expect(later.deliver({ ...MESSAGE, kind: 'stage' }, true)).resolves.toEqual({
+      delivered: 'held',
+      reason: 'next-turn',
+    });
     expect(later.message.mock.calls.map(call => (call[1] as { wake: boolean }).wake)).toEqual([false, false]);
   });
 });

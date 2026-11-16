@@ -593,14 +593,14 @@ export class ClaudeAgentSessions {
         const notice = factoryMessage(message.text, message.source, message.attributes);
         if (!message.wake) {
           this.#hold(sessionId, notice);
-          return;
+          return {};
         }
         const session = await this.#ready(sessionId, requestContext);
         if (!session) {
           throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
         }
         const { text, ...shown } = notice;
-        await this.#send(session, { text, notice: shown }, requestContext);
+        return { runId: await this.#send(session, { text, notice: shown }, requestContext) };
       },
       abort: async (sessionId, requestContext) => {
         await this.commands().abort(sessionId, { context: requestContext });
