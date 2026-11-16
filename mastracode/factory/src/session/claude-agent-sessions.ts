@@ -17,13 +17,25 @@ import type {
 import {
   CLAUDE_AGENT_RUNTIME_ID,
   ClaudeAgentSession,
+  FACTORY_SKILLS_PLUGIN,
   claudeProcessEnv,
+  skillKickoffText,
   writeSkillsPlugin,
 } from '@factory/runtime-claude-agent';
-import type { ClaudeAgentFactoryTools, ClaudeAgentSkills, QueryFn } from '@factory/runtime-claude-agent';
+import type {
+  ClaudeAgentFactoryTools,
+  ClaudeAgentSkills,
+  ClaudeTurnInput,
+  ClaudeTurnNotice,
+  QueryFn,
+} from '@factory/runtime-claude-agent';
 import type { RequestContext } from '@mastra/core/request-context';
 
+import { FactoryDispatchError } from '../rules/dispatch-errors.js';
+import type { FactoryRuntimeSessions, RuntimeRunEnd } from '../rules/runtime-sessions.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
+import { withWorkItemDescription } from '../work-items/description-context.js';
+import type { ClaudeAgentContext, ClaudeAgentContextBlock } from './claude-agent-context.js';
 import { factorySkillsOf } from './claude-agent-skills.js';
 import {
   INTERACTIVE_TOOLS,
@@ -65,6 +77,8 @@ export interface ClaudeAgentSessionsDeps {
   interactions?: InteractionBroker;
   /** Factory's instructions for every Claude Agent session. */
   instructions?: string;
+  /** What each turn tells Claude about the session's card and phase, when that changed. */
+  context?: ClaudeAgentContext;
   /** Claude Code's own home directory (see `claudeAgentHome`); created on first use. */
   home?: string;
   hostEnv?: Record<string, string | undefined>;
@@ -89,6 +103,20 @@ export class ClaudeAgentSessions {
   readonly #live = new Map<string, Promise<ClaudeAgentSession | undefined>>();
   /** The host request context each open run was sent with, by run id. */
   readonly #runContexts = new Map<string, unknown>();
+  /** Per open session: what it was opened with, and what Factory told it last. */
+  readonly #opened = new Map<string, OpenSession>();
+  /** Factory messages that wait for the session's next turn. */
+  readonly #notes = new Map<string, ClaudeTurnNotice[]>();
+  /** Context last told to each session, by context id. Kept across reopens: the conversation resumes. */
+  readonly #told = new Map<string, Map<string, ClaudeAgentContextBlock>>();
+  /** Who waits for a run to end, by run id. */
+  readonly #runEnds = new Map<string, (end: RuntimeRunEnd) => void>();
+  /** Who waits for a session to have no run in flight. */
+  readonly #idle = new Map<string, (() => void)[]>();
+  /** Runs started in this process, as `sessionId run id`. */
+  readonly #started = new Set<string>();
+  /** Answers plan approvals for a board run on the board's behalf while it says so. */
+  readonly #autoApprove = new Map<string, () => boolean>();
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
@@ -98,7 +126,7 @@ export class ClaudeAgentSessions {
   open(sessionId: string, requestContext: unknown): Promise<ClaudeAgentSession | undefined> {
     const existing = this.#live.get(sessionId);
     if (existing) return existing;
-    const opening = this.#open(sessionId, requestContext).catch(error => {
+    const opening = this.#openSession(sessionId, requestContext).catch(error => {
       this.#live.delete(sessionId);
       throw error;
     });
@@ -106,7 +134,7 @@ export class ClaudeAgentSessions {
     return opening;
   }
 
-  async #open(sessionId: string, requestContext: unknown): Promise<ClaudeAgentSession | undefined> {
+  async #openSession(sessionId: string, requestContext: unknown): Promise<ClaudeAgentSession | undefined> {
     const record = await this.#deps.sessions.get(sessionId);
     if (record?.runtimeId !== CLAUDE_AGENT_RUNTIME_ID) {
       this.#live.delete(sessionId);
@@ -126,6 +154,7 @@ export class ClaudeAgentSessions {
     const session: ClaudeAgentSession = new ClaudeAgentSession({
       sessionId,
       cwd,
+      ...(untrustedCheckout(workspace, requestContext) ? { untrustedCheckout: true } : {}),
       env: claudeProcessEnv(this.#deps.hostEnv ?? process.env, env, home ? { home } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
@@ -138,6 +167,10 @@ export class ClaudeAgentSessions {
         if (event.type === 'run.ended') {
           this.#runContexts.delete(event.runId);
           factoryTools?.endRun(event.runId);
+          this.#settleRun(event.runId, { reason: event.reason, ...(event.error ? { error: event.error } : {}) });
+          if (session.status() !== 'running') {
+            for (const wake of this.#idle.get(sessionId)?.splice(0) ?? []) wake();
+          }
         }
         if (event.type !== 'model.changed' && event.type !== 'run.ended') return;
         const state = JSON.stringify(session.runtimeState());
@@ -149,6 +182,11 @@ export class ClaudeAgentSessions {
             console.warn(`[factory] Claude Agent session ${sessionId}: saving resume state failed`, error),
           );
       },
+    });
+    this.#opened.set(sessionId, {
+      session,
+      skills: skills?.names ?? [],
+      ...(workspace.requestContext ? { requestContext: workspace.requestContext } : {}),
     });
     return session;
   }
@@ -210,8 +248,15 @@ export class ClaudeAgentSessions {
             ...toolIdentity(requestContext),
             workspace: sessionWorkspace,
             signal: call.signal,
-            interact: request => {
+            interact: async request => {
               if (!broker) throw new Error('Nobody can answer questions in this session');
+              // A board that approves this phase's plans answers for the person.
+              if (request.kind === 'plan_approval' && this.#autoApprove.get(sessionId)?.()) {
+                return { kind: 'plan_approval', action: 'approved' } as never;
+              }
+              // A board run that waits on a person is parked, as a suspended Mastra Code run ends: the
+              // dispatcher stops watching it, and the turn goes on once the person answers.
+              if (call.runId) this.#settleRun(call.runId, { reason: 'awaiting_interaction' });
               return broker.request(sessionId, request, { callId: call.callId, signal: call.signal });
             },
           };
@@ -237,11 +282,136 @@ export class ClaudeAgentSessions {
     return writeSkillsPlugin(join(home, 'factory-skills', sessionId), skills);
   }
 
-  /** Start a turn, remembering the request it came with so its tool calls act as that caller. */
-  async #send(session: ClaudeAgentSession, input: SendInput, context: unknown): Promise<void> {
+  /**
+   * Start a turn, remembering the request it came with so its tool calls act as that caller. The
+   * turn carries what Factory has to tell the session first: messages that waited for it, and the
+   * card's context where it changed since the session last heard.
+   */
+  async #send(session: ClaudeAgentSession, input: SendInput | ClaudeTurnInput, context: unknown): Promise<string> {
+    const told = await this.#context(session.id, context);
+    const notes = this.#notes.get(session.id) ?? [];
+    this.#notes.delete(session.id);
+    const extra = (input as ClaudeTurnInput).context ?? [];
+    const turn: ClaudeTurnInput = { ...input, context: [...notes, ...told.map(contextNotice), ...extra] };
     // Set before Claude Code reads the turn: `send` queues it and returns without yielding to it.
-    const { runId } = await session.send(input);
+    const { runId } = await session.send(turn);
     this.#runContexts.set(runId, context);
+    this.#started.add(`${session.id} ${runId}`);
+    const known = this.#told.get(session.id) ?? new Map<string, ClaudeAgentContextBlock>();
+    for (const block of told) known.set(block.id, block);
+    this.#told.set(session.id, known);
+    return runId;
+  }
+
+  /** Tell whoever waits on a run how it ended (or that it waits on a person). */
+  #settleRun(runId: string, end: RuntimeRunEnd): void {
+    this.#runEnds.get(runId)?.(end);
+    this.#runEnds.delete(runId);
+  }
+
+  /** The card's context that changed since the session last heard it. */
+  async #context(sessionId: string, hostContext: unknown): Promise<ClaudeAgentContextBlock[]> {
+    const produce = this.#deps.context;
+    const requestContext = this.#opened.get(sessionId)?.requestContext;
+    if (!produce || !requestContext) return [];
+    try {
+      return await produce(requestContext(hostContext), this.#told.get(sessionId) ?? new Map());
+    } catch (error) {
+      console.warn(`[factory] Claude Agent session ${sessionId}: reading its card's context failed`, error);
+      return [];
+    }
+  }
+
+  /**
+   * The session, freshly started when it is idle. Claude Code fixes its tools and skills when it
+   * starts, and a board run's phase decides both, so a run starts Claude Code again (resuming the
+   * conversation) rather than keep what an earlier phase was given.
+   */
+  async #fresh(sessionId: string, requestContext: unknown): Promise<ClaudeAgentSession | undefined> {
+    const current = this.#opened.get(sessionId)?.session;
+    if (current && current.status() === 'idle' && this.#live.has(sessionId)) {
+      this.#live.delete(sessionId);
+      this.#opened.delete(sessionId);
+      await current.close();
+    }
+    return this.open(sessionId, requestContext);
+  }
+
+  /** Board runs on Claude Agent sessions, for the dispatcher. */
+  runtimeSessions(): FactoryRuntimeSessions {
+    return {
+      runs: async sessionId => (await this.#deps.sessions.get(sessionId))?.runtimeId === CLAUDE_AGENT_RUNTIME_ID,
+      hasRun: async (sessionId, runId) => {
+        if (this.#started.has(`${sessionId} ${runId}`)) return true;
+        const events = await this.#deps.hub.log.list(sessionId);
+        return events.some(({ event }) => event.type === 'run.started' && event.runId === runId);
+      },
+      isRunning: sessionId => this.#opened.get(sessionId)?.session.status() === 'running',
+      awaitsPerson: async sessionId => ((await this.#deps.interactions?.listPending({ sessionId })) ?? []).length > 0,
+      idle: sessionId => {
+        if (this.#opened.get(sessionId)?.session.status() !== 'running') return Promise.resolve();
+        return new Promise<void>(resolve => {
+          const waiting = this.#idle.get(sessionId) ?? [];
+          waiting.push(resolve);
+          this.#idle.set(sessionId, waiting);
+        });
+      },
+      kickoff: async (sessionId, kickoff, requestContext) => {
+        const session = await this.#fresh(sessionId, requestContext);
+        if (!session) {
+          throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
+        }
+        const skill = kickoff.skill;
+        if (skill && !this.#opened.get(sessionId)?.skills.includes(`${FACTORY_SKILLS_PLUGIN}:${skill.name}`)) {
+          throw new FactoryDispatchError(
+            'run_configuration_invalid',
+            `Skill ${skill.name} is not available to this Claude Agent session.`,
+          );
+        }
+        const text = withWorkItemDescription(
+          skill ? skillKickoffText(skill.name, skill) : (kickoff.prompt ?? ''),
+          kickoff.description,
+        );
+        const ended = new Promise<RuntimeRunEnd>(resolve => this.#runEnds.set(kickoff.runId, resolve));
+        if (kickoff.autoApprovePlan) this.#autoApprove.set(sessionId, kickoff.autoApprovePlan);
+        void ended.then(() => {
+          if (this.#autoApprove.get(sessionId) === kickoff.autoApprovePlan) this.#autoApprove.delete(sessionId);
+        });
+        try {
+          await this.#send(
+            session,
+            {
+              runId: kickoff.runId,
+              text,
+              ...(kickoff.preface ? { context: [factoryMessage(kickoff.preface, 'stage-transition')] } : {}),
+              ...(skill ? { notice: { kind: 'reactive', tag: 'skill', attributes: { name: skill.name } } } : {}),
+            },
+            requestContext,
+          );
+        } catch (error) {
+          this.#runEnds.delete(kickoff.runId);
+          this.#autoApprove.delete(sessionId);
+          throw error;
+        }
+        return { ended };
+      },
+      message: async (sessionId, message, requestContext) => {
+        const notice = factoryMessage(message.text, message.source);
+        if (!message.wake) {
+          this.#notes.set(sessionId, [...(this.#notes.get(sessionId) ?? []), notice]);
+          return;
+        }
+        const session = await this.open(sessionId, requestContext);
+        if (!session) {
+          throw new FactoryDispatchError('session_unavailable', `Session ${sessionId} does not run on Claude Agent.`);
+        }
+        const { text, ...shown } = notice;
+        await this.#send(session, { text, notice: shown }, requestContext);
+      },
+      abort: async (sessionId, requestContext) => {
+        await this.commands().abort(sessionId, { context: requestContext });
+      },
+    };
   }
 
   commands(): SessionCommands {
@@ -297,10 +467,43 @@ export class ClaudeAgentSessions {
   async shutdown(): Promise<void> {
     const sessions = await Promise.allSettled(this.#live.values());
     this.#live.clear();
+    this.#opened.clear();
     await Promise.allSettled(
       sessions.flatMap(result => (result.status === 'fulfilled' && result.value ? [result.value.close()] : [])),
     );
   }
+}
+
+/**
+ * Whether the session works an untrusted checkout (a pull request under review). Building the
+ * session's Factory tools found its card and recorded that on the session's controller state,
+ * as it does for Mastra Code.
+ */
+function untrustedCheckout(
+  workspace: Partial<Pick<ClaudeAgentWorkspace, 'requestContext'>>,
+  hostContext: unknown,
+): boolean {
+  const controller = workspace.requestContext?.(hostContext).get('controller') as
+    | { getState?(): { untrustedCheckout?: unknown } }
+    | undefined;
+  return controller?.getState?.().untrustedCheckout === true;
+}
+
+interface OpenSession {
+  session: ClaudeAgentSession;
+  /** The skills it was started with (`factory:<name>`). */
+  skills: readonly string[];
+  /** Factory's request context for a turn sent with a host context. */
+  requestContext?: (hostContext: unknown) => RequestContext;
+}
+
+function contextNotice({ kind, tag, text, attributes }: ClaudeAgentContextBlock): ClaudeTurnNotice {
+  return { kind, tag, text, ...(attributes ? { attributes } : {}) };
+}
+
+/** Something Factory tells the session, shown as Factory's in the transcript. */
+function factoryMessage(text: string, source: string): ClaudeTurnNotice {
+  return { kind: 'reactive', tag: 'factory-message', text, attributes: { source } };
 }
 
 /** A request context's `get`, or none (tests and hosts may pass anything). */

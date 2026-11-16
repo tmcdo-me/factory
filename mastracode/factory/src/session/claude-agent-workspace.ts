@@ -43,9 +43,23 @@ export interface ClaudeAgentWorkspace {
 export function createClaudeAgentWorkspaceResolver(options: {
   resolveWorkspace: ResolveWorkspace;
   getMastra: () => Mastra | undefined;
+  /**
+   * The memory resource the session's thread lives under, which its run binding records. Factory's
+   * tools find the card a session works by thread and resource, so they must match the binding.
+   */
+  resourceIdOf?: (sessionId: string) => Promise<string | undefined>;
+  /** The session's Claude model, which Factory's phase context names in review phases. */
+  modelIdOf?: (sessionId: string) => Promise<string | undefined>;
 }) {
   return async (sessionId: string, requestContext: unknown): Promise<ClaudeAgentWorkspace> => {
-    const contextFor = claudeAgentRequestContext(sessionId);
+    const [resourceId, modelId] = await Promise.all([
+      options.resourceIdOf?.(sessionId),
+      options.modelIdOf?.(sessionId),
+    ]);
+    const contextFor = claudeAgentRequestContext(sessionId, {
+      ...(resourceId ? { resourceId } : {}),
+      ...(modelId ? { modelId } : {}),
+    });
     const context = contextFor(requestContext);
     const workspace = await options.resolveWorkspace({ requestContext: context, mastra: options.getMastra() });
     const sandbox = workspace?.sandbox;
@@ -87,14 +101,18 @@ export function createClaudeAgentWorkspaceResolver(options: {
  * interactive marker) with the session's controller context, which Factory's workspace and tools
  * read the session from. One controller per session, so its state carries across turns.
  */
-export function claudeAgentRequestContext(sessionId: string): (hostContext: unknown) => RequestContext {
+export function claudeAgentRequestContext(
+  sessionId: string,
+  options: { resourceId?: string; modelId?: string } = {},
+): (hostContext: unknown) => RequestContext {
   // The resolver reads the session from the controller context and records the checkout in its state.
   const state: Record<string, unknown> = {};
   const controller = {
     controllerId: 'claude-agent',
     sessionId,
     threadId: sessionId,
-    resourceId: sessionId,
+    resourceId: options.resourceId ?? sessionId,
+    ...(options.modelId ? { session: { id: sessionId, ownerId: '', modelId: options.modelId } } : {}),
     state,
     getState: () => state,
     setState: async (updates: Record<string, unknown>) => {

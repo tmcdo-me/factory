@@ -72,6 +72,7 @@ import { decisionOvertaken } from './decision-applicability.js';
 import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata } from './dispatch-errors.js';
 import { isStatusEventDecision } from './event-rules.js';
 import { endPhaseGoal, PHASE_GOAL_METADATA_KEY, phaseGoalOf, startPhaseGoal } from './phase-goal.js';
+import type { FactoryRuntimeSessions } from './runtime-sessions.js';
 import type { FactoryTransitionService } from './transition-service.js';
 import type { FactoryCommitDecision, FactoryRuleActor, FactoryRuleCausalEntry } from './types.js';
 import { authorTrusted, externalSourceForWorkItem, workItemSource } from './types.js';
@@ -525,6 +526,8 @@ export interface FactoryDecisionDispatcherOptions {
   }) => Promise<string | null>;
   /** `false` spends a linked-card decision unfiled: its Factory project was deleted after the decision committed. */
   factoryProjectExists?: (tenant: { orgId: string; factoryProjectId: string }) => Promise<boolean>;
+  /** fork(claude-agent): sessions that run on another agent runtime (Claude Agent), reached through the seam. */
+  runtimeSessions?: FactoryRuntimeSessions;
   maxInFlight?: number;
   /** How often the stale-binding sweep runs. Defaults to 10 minutes. */
   staleBindingSweepIntervalMs?: number;
@@ -739,6 +742,7 @@ export class FactoryDecisionDispatcher {
   >();
   readonly #resolveLinkedWorkItemParentId?: FactoryDecisionDispatcherOptions['resolveLinkedWorkItemParentId'];
   readonly #factoryProjectExists?: FactoryDecisionDispatcherOptions['factoryProjectExists'];
+  readonly #runtimeSessions?: FactoryRuntimeSessions; // fork(claude-agent)
   readonly #maxInFlight: number;
   readonly #staleBindingSweepIntervalMs: number;
   readonly #staleBindingTtlMs: number;
@@ -782,6 +786,7 @@ export class FactoryDecisionDispatcher {
     this.#reportReviewStatus = options.reportReviewStatus;
     this.#resolveLinkedWorkItemParentId = options.resolveLinkedWorkItemParentId;
     this.#factoryProjectExists = options.factoryProjectExists;
+    this.#runtimeSessions = options.runtimeSessions; // fork(claude-agent)
     const maxInFlight = options.maxInFlight ?? MAX_IN_FLIGHT;
     this.#maxInFlight = Number.isFinite(maxInFlight) && maxInFlight > 0 ? Math.floor(maxInFlight) : MAX_IN_FLIGHT;
     this.#staleBindingSweepIntervalMs = positiveMs(
@@ -1035,6 +1040,11 @@ export class FactoryDecisionDispatcher {
         // suspension and run state belong to that thread. Lookup failures revoke.
         keep: async binding => {
           try {
+            // fork(claude-agent)
+            if (await this.#onRuntimeSeam(binding)) {
+              const seam = this.#runtimeSessions!;
+              return seam.isRunning(binding.sessionId) || (await seam.awaitsPerson(binding.sessionId));
+            }
             const session = await this.#controller.getSession(binding.sessionId);
             if (session?.thread.getId() !== binding.threadId) return false;
             return session.suspensions.hasPending() || session.run.isRunning();
@@ -1439,6 +1449,11 @@ export class FactoryDecisionDispatcher {
           throw new FactoryDecisionSuperseded();
         }
         const binding = await this.#requireOrPrepareBinding(record, decision.role);
+        // fork(claude-agent): a session on another runtime runs its kickoff through the seam.
+        if (await this.#onRuntimeSeam(binding)) {
+          await this.#withBindingSkillRun(binding.id, () => this.#invokeSkillOnSeam(record, decision, binding));
+          return;
+        }
         await this.#withBindingSkillRun(binding.id, async () => {
           const item = record.workItemId
             ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
@@ -1719,6 +1734,15 @@ export class FactoryDecisionDispatcher {
         const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
         const startedBy = item?.sessions[binding.role]?.startedBy;
         if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
+        // fork(claude-agent)
+        if (await this.#onRuntimeSeam(binding)) {
+          await this.#messageOnSeam(binding, startedBy, record.orgId, {
+            text: decision.message,
+            source: 'rule-message',
+            wake: (decision.idleBehavior ?? 'wake') === 'wake',
+          });
+          return;
+        }
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
         const requestContext = factoryRequestContext({
@@ -1772,6 +1796,16 @@ export class FactoryDecisionDispatcher {
         const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
         const startedBy = item?.sessions[binding.role]?.startedBy;
         if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
+        // fork(claude-agent): a notification waits for the session's next turn, as an idle Mastra Code session persists it.
+        if (await this.#onRuntimeSeam(binding)) {
+          const text = decision.body ? `${decision.title}\n\n${decision.body}` : decision.title;
+          await this.#messageOnSeam(binding, startedBy, record.orgId, {
+            text,
+            source: 'rule-notification',
+            wake: false,
+          });
+          return;
+        }
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
         const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
         const requestContext = factoryRequestContext({ session, binding, userId: startedBy, orgId: record.orgId });
@@ -2491,8 +2525,11 @@ export class FactoryDecisionDispatcher {
     const item = await this.#storage.get({ orgId: record.orgId, id: record.workItemId });
     const startedBy = item?.sessions[binding.role]?.startedBy;
     if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
-    await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
-    const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
+    const onSeam = await this.#onRuntimeSeam(binding); // fork(claude-agent)
+    if (!onSeam) await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
+    const session = onSeam
+      ? undefined
+      : await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
     const author = decision.author
       ? `@${decision.author}${decision.authorTrusted ? '' : ' (untrusted author)'}`
       : decision.authorTrusted
@@ -2506,6 +2543,12 @@ export class FactoryDecisionDispatcher {
     // comments apart. Core never wakes a thread for a low-priority notification on any path;
     // a medium one can still wake it through a summary if the busy run ends mid-delivery.
     const wakes = decision.authorTrusted && decision.idleBehavior !== 'persist';
+    // fork(claude-agent): only a trusted author's activity wakes the session; a busy one hears it next turn.
+    if (!session) {
+      const wake = wakes && !this.#runtimeSessions!.isRunning(binding.sessionId);
+      await this.#messageOnSeam(binding, startedBy, record.orgId, { text: message, source: 'source-activity', wake });
+      return;
+    }
     await awaitNotification(() =>
       session.sendNotificationSignal(
         {
@@ -2882,6 +2925,252 @@ export class FactoryDecisionDispatcher {
     });
   }
 
+  // ── fork(claude-agent): runs on another agent runtime ──────────────────────────────────────
+  //
+  // A session on Claude Agent is driven through `FactoryRuntimeSessions`, not the agent controller.
+  // The board semantics stay the dispatcher's: the same supersession and staleness checks, the
+  // same run-ends-with-the-card-moved rule, the same failure codes. What the controller session
+  // gave Mastra Code runs (the thread's message ids, the open-run ledger, phase goals) is not
+  // there; the run's id stands in for the kickoff's message id.
+
+  /** Whether the bound session runs on another runtime. */
+  async #onRuntimeSeam(binding: FactoryRunBindingRecord): Promise<boolean> {
+    return this.#runtimeSessions ? this.#runtimeSessions.runs(binding.sessionId) : false;
+  }
+
+  /** The request a seam run acts with: the session owner, as for any Factory-started run. */
+  #seamRequestContext(userId: string, orgId: string): RequestContext {
+    const requestContext = new RequestContext();
+    requestContext.set('user', { workosId: userId, organizationId: orgId });
+    return requestContext;
+  }
+
+  async #messageOnSeam(
+    binding: FactoryRunBindingRecord,
+    startedBy: string,
+    orgId: string,
+    message: { text: string; source: string; wake: boolean },
+  ): Promise<void> {
+    try {
+      await this.#runtimeSessions!.message(binding.sessionId, message, this.#seamRequestContext(startedBy, orgId));
+    } catch (error) {
+      if (error instanceof FactoryDispatchError) throw error;
+      throw new FactoryDispatchError(
+        'notification_delivery_failed',
+        `Factory message delivery failed: ${sanitizeDispatchError(error)}`,
+        { cause: error },
+      );
+    }
+  }
+
+  /** `invokeSkill` for a session on another runtime. Mirrors the Mastra Code path above. */
+  async #invokeSkillOnSeam(
+    record: FactoryDeferredDecisionRecord,
+    decision: Extract<FactoryCommitDecision, { type: 'invokeSkill' }>,
+    binding: FactoryRunBindingRecord,
+  ): Promise<void> {
+    const seam = this.#runtimeSessions!;
+    const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+    const startedBy = item?.sessions[binding.role]?.startedBy;
+    if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
+    const deliveryId = record.deliveryGeneration === 0 ? record.id : `${record.id}:retry:${record.deliveryGeneration}`;
+    const kickoffStale = async () =>
+      (await this.#roleSuperseded(record, decision.role)) ||
+      (await this.#findBinding(record, decision.role))?.id !== binding.id ||
+      (await this.#decisionOvertaken(record, decision.role));
+    // A kickoff that already landed is not sent again; a review waits for that run before it says it finished.
+    if (await seam.hasRun(binding.sessionId, deliveryId)) {
+      if (await this.#isReviewRun(record, decision)) {
+        await seam.idle(binding.sessionId);
+        this.#reviewReplayed.add(record);
+      }
+      return;
+    }
+    const requestContext = this.#seamRequestContext(startedBy, record.orgId);
+    if (decision.cancelInFlight && seam.isRunning(binding.sessionId))
+      await seam.abort(binding.sessionId, requestContext);
+    // Never overlap a run in flight (a person's turn, or the previous phase's).
+    await seam.idle(binding.sessionId);
+    if (await this.#roleSuperseded(record, decision.role)) throw new FactoryDecisionSuperseded();
+    const activeBinding = await this.#requireBinding(record, decision.role);
+    if (activeBinding.id !== binding.id) {
+      throw new FactoryDispatchError(
+        'session_unavailable',
+        `Factory binding ${binding.id} changed while waiting for its open run to end.`,
+      );
+    }
+    if (await kickoffStale()) throw new FactoryDecisionSuperseded();
+    if (decision.goal) {
+      // Phase goals (re-kicking a run until its exit tool succeeds) are Mastra Code's objective API.
+      console.warn(
+        `[factory] ${decision.skillName ?? 'prompt'} run on ${binding.sessionId}: phase goals need Mastra Code; running once.`,
+      );
+    }
+    await this.#reviewQueuedOnce(record, decision);
+    // Re-read: the description may have been edited while the open run drained.
+    const current = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+    const since = new Date();
+    await this.#runOnSeam({
+      binding,
+      startedBy,
+      orgId: record.orgId,
+      attempts: record.attempts,
+      label: 'Factory skill run',
+      kickoff: {
+        runId: deliveryId,
+        ...(decision.skillName !== undefined
+          ? {
+              skill: {
+                name: decision.skillName,
+                ...(decision.arguments !== undefined ? { arguments: decision.arguments } : {}),
+                ...(decision.resume ? { resume: true } : {}),
+              },
+            }
+          : { prompt: decision.prompt }),
+        description: current?.description ?? null,
+        ...(decision.precedingMessage ? { preface: decision.precedingMessage } : {}),
+      },
+      autoApprovedTool: await this.#autoApprovedExitTool(record),
+      superseded: () => this.#roleSuperseded(record, decision.role),
+      workingPhase: await this.#workingPhaseCheck(record, decision, kickoffStale),
+      onStarted: async () => {
+        this.#reviewWatched.add(record);
+        await this.#reviewStatus(record, decision, { phase: 'reviewing', startedAt: since });
+      },
+      onSuperseded: async () => {
+        this.#reviewWatched.delete(record);
+        await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
+      },
+    });
+  }
+
+  /**
+   * For a run that works the card's phase (it has a goal or an exit tool): the check, after a clean
+   * end, that the run moved the card, as the Mastra Code path makes. `undefined` for other runs.
+   */
+  async #workingPhaseCheck(
+    record: FactoryDeferredDecisionRecord,
+    decision: Extract<FactoryCommitDecision, { type: 'invokeSkill' }>,
+    kickoffStale: () => Promise<boolean>,
+  ): Promise<(() => Promise<void>) | undefined> {
+    const runItem = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+    if (!runItem) return undefined;
+    const boards = await this.#boards.load(record);
+    const stage = runItem.stages.length === 1 ? runItem.stages[0] : undefined;
+    const phase = stage ? boards.get(boardForWorkItem(runItem))?.phases[stage] : undefined;
+    const working =
+      phase?.kind === 'working' &&
+      (phase.runner.goal || phase.exitTool) &&
+      phase.runner.context === decision.role &&
+      phase.runner.skill === decision.skillName;
+    if (!working) return undefined;
+    const workingRevision = runItem.revision;
+    const existingLinkedReviewIds = new Set(
+      (await this.#storage.listLinked({ item: runItem, limit: 100 })).map(card => card.id),
+    );
+    return async () => {
+      const after = await this.#storage.get({ orgId: record.orgId, id: record.workItemId! });
+      if (after?.revision !== workingRevision || (await kickoffStale())) return;
+      const linked = await this.#storage.listLinked({ item: after, limit: 100 });
+      const ownCardHandOff = linked.some(card => {
+        if (
+          card.parentWorkItemId !== after.id ||
+          existingLinkedReviewIds.has(card.id) ||
+          card.externalSource?.integrationId !== 'github' ||
+          card.externalSource.type !== 'pull-request' ||
+          card.stages.length !== 1
+        )
+          return false;
+        const review = boards.get(boardForWorkItem(card))?.phases[card.stages[0]!];
+        return review?.kind === 'working' && review.runner.context === 'review';
+      });
+      if (ownCardHandOff) return;
+      throw new FactoryDispatchError('run_incomplete', 'Factory skill run ended before completing the working phase.');
+    };
+  }
+
+  /** Start a run through the seam and settle the decision on how it ended. */
+  async #runOnSeam(run: {
+    binding: FactoryRunBindingRecord;
+    startedBy: string;
+    orgId: string;
+    attempts: number;
+    label: string;
+    kickoff: Omit<Parameters<FactoryRuntimeSessions['kickoff']>[1], 'autoApprovePlan'>;
+    /** The exit tool the board approves itself for this card; only `submit_plan` asks a person. */
+    autoApprovedTool?: string;
+    superseded?: () => Promise<boolean>;
+    workingPhase?: () => Promise<void>;
+    onStarted?: () => Promise<void>;
+    onSuperseded?: () => Promise<void>;
+  }): Promise<void> {
+    const { binding, startedBy, label } = run;
+    const requestContext = this.#seamRequestContext(startedBy, run.orgId);
+    let approvals = 0;
+    const since = new Date();
+    let started: { ended: Promise<{ reason: string; error?: string }> };
+    try {
+      started = await this.#runtimeSessions!.kickoff(
+        binding.sessionId,
+        {
+          ...run.kickoff,
+          ...(run.autoApprovedTool === 'submit_plan'
+            ? { autoApprovePlan: () => approvals++ < MAX_PLAN_APPROVALS }
+            : {}),
+        },
+        requestContext,
+      );
+    } catch (error) {
+      if (error instanceof FactoryDispatchError) throw error;
+      // Nothing reached the runtime, so a retry with a fresh delivery is safe.
+      throw new FactoryDispatchError(
+        'notification_delivery_failed',
+        `${label} did not start: ${sanitizeDispatchError(error)}`,
+        {
+          cause: error,
+        },
+      );
+    }
+    await run.onStarted?.();
+    // Whether the role had handed the card on when its run ended; a move after that keeps the run's verdict.
+    let supersededAtEnd: Promise<boolean> | undefined;
+    const handedOn = async () => (await supersededAtEnd) ?? (await run.superseded?.()) ?? false;
+    try {
+      await this.#reportingRunEnd(
+        { binding, startedBy, since, attempts: run.attempts, superseded: handedOn },
+        async () => {
+          let timer: ReturnType<typeof setTimeout> | undefined;
+          const overdue = new Promise<never>((_resolve, reject) => {
+            timer = setTimeout(
+              () =>
+                reject(
+                  new FactoryDispatchError(
+                    'run_overdue',
+                    `${label} is still in flight after ${Math.round(this.#skillCompletionObservationTimeoutMs / 3_600_000)} hours and needs a person.`,
+                  ),
+                ),
+              this.#skillCompletionObservationTimeoutMs,
+            );
+            timer.unref?.();
+          });
+          const end = await Promise.race([started.ended, overdue]).finally(() => clearTimeout(timer));
+          supersededAtEnd = run.superseded?.() ?? Promise.resolve(false);
+          if (end.reason === 'error') throw runErrorFailure(label, new Error(end.error ?? 'The run failed.'));
+          if (end.reason === 'aborted') throw new Error(`${label} was aborted before it finished.`);
+          // Parked on a person (a plan to approve, a question), like a suspended Mastra Code run: its
+          // turn goes on once they answer, and the card moves then.
+          if (end.reason === 'awaiting_interaction' || (await supersededAtEnd)) return;
+          await run.workingPhase?.();
+        },
+      );
+      if (supersededAtEnd && (await supersededAtEnd)) await run.onSuperseded?.();
+    } catch (error) {
+      // Handed on mid-turn: the turn's verdict is the successor's to record.
+      if (!(await handedOn())) throw error;
+      await run.onSuperseded?.();
+    }
+  }
+
   async #dispatchPendingStart(record: FactoryPendingStartRecord, now: Date): Promise<void> {
     try {
       await this.#withLease(
@@ -2904,6 +3193,20 @@ export class FactoryDecisionDispatcher {
           const item = await this.#storage.get({ orgId: record.orgId, id: binding.workItemId });
           const startedBy = item?.sessions[binding.role]?.startedBy;
           if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
+          // fork(claude-agent)
+          if (await this.#onRuntimeSeam(binding)) {
+            const kickoffId = `factory-kickoff:${record.kickoffKey}:${record.attempts}`;
+            await this.#runOnSeam({
+              binding,
+              startedBy,
+              orgId: record.orgId,
+              attempts: record.attempts,
+              label: 'Factory kickoff run',
+              kickoff: { runId: kickoffId, prompt: record.message },
+              autoApprovedTool: await this.#autoApprovedExitTool({ ...record, workItemId: binding.workItemId }),
+            });
+            return;
+          }
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
           const requestContext = factoryRequestContext({

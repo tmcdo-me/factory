@@ -69,3 +69,20 @@ function skillMarkdown(skill: ClaudeAgentSkill): string {
     skill.instructions.trimStart(),
   ].join('\n');
 }
+
+/**
+ * The turn that starts one of Factory's skills for a board run, as Mastra Code's `<skill>` kickoff
+ * does: Claude opens the skill with its Skill tool, so it reads the skill from its own folder.
+ * `resume` continues a skill the conversation already has open instead of restarting it.
+ */
+export function skillKickoffText(name: string, options: { arguments?: string; resume?: boolean } = {}): string {
+  const skill = `${FACTORY_SKILLS_PLUGIN}:${name}`;
+  const args = options.arguments?.trim();
+  const lines = options.resume
+    ? [
+        `Resume the active \`${skill}\` skill: it is already open in this conversation, so continue it rather than restarting.`,
+        `Open it again with the Skill tool if its instructions are no longer in context.`,
+      ]
+    : [`Run the \`${skill}\` skill now: open it with the Skill tool and follow its instructions.`];
+  return [...lines, ...(args ? [`\nARGUMENTS: ${args}`] : [])].join('\n');
+}

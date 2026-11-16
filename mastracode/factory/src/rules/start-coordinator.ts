@@ -64,10 +64,13 @@ export class UntrustedSharedSessionError extends Error {
  */
 async function runMemoryResource(
   controller: Pick<FactoryController, 'queryThreadById'>,
-  input: { sessionId: string; factoryProjectId: string; untrusted: boolean },
+  input: { sessionId: string; factoryProjectId: string; untrusted: boolean; ownMemory?: boolean },
 ): Promise<string> {
   const existing = await controller.queryThreadById({ threadId: input.sessionId });
   if (existing?.resourceId === input.sessionId) return input.sessionId;
+  // fork(claude-agent): a runtime with its own conversation shares no Mastra memory, so its thread
+  // keeps the resource it has, and a new one gets its own.
+  if (input.ownMemory) return existing?.resourceId ?? input.sessionId;
   if (!input.untrusted) return existing?.resourceId ?? input.factoryProjectId;
   if (existing) throw new UntrustedSharedSessionError(input.sessionId);
   return input.sessionId;
@@ -92,6 +95,17 @@ export class FactoryStartTransitionError extends Error {
     this.name = 'FactoryStartTransitionError';
     this.result = result;
   }
+}
+
+/**
+ * fork(claude-agent): which agent runtime a run's session uses. A session keeps the runtime it has;
+ * one that has never run takes its project's default. Without it every run is on Mastra Code.
+ */
+export interface FactoryStartRuntimes {
+  /** The session's runtime id, recording it for a session that had none. */
+  sessionRuntime(input: { orgId: string; factoryProjectId: string; sessionId: string }): Promise<string>;
+  /** Runtimes that keep their own conversation rather than Mastra Code's model, memory and permissions. */
+  ownsConversation(runtimeId: string): boolean;
 }
 
 export interface FactoryStartPreparedResult {
@@ -150,6 +164,7 @@ export class FactoryStartCoordinator {
   readonly #projects?: FactoryProjectsStorage;
   readonly #modelDefaults?: ModelDefaultsStorage;
   readonly #boards?: ProjectBoardSource;
+  readonly #runtimes?: FactoryStartRuntimes;
 
   constructor(
     controller: FactoryController,
@@ -164,8 +179,11 @@ export class FactoryStartCoordinator {
     sessionModel?: { projects: FactoryProjectsStorage; modelDefaults: ModelDefaultsStorage },
     /** Tells a pull request review run from the card's other review runs; without it every review run with a pull request is untrusted. */
     boards?: BoardRegistry | ProjectBoardSource,
+    /** fork(claude-agent) */
+    runtimes?: FactoryStartRuntimes,
   ) {
     this.#controller = controller;
+    this.#runtimes = runtimes;
     this.#storage = storage;
     this.#transitionService = transitionService;
     this.#sourceControl = sourceControl;
@@ -281,9 +299,18 @@ export class FactoryStartCoordinator {
     const baseRef =
       (sourceSession.baseBranch || undefined) ??
       (typeof metadataBaseBranch === 'string' && metadataBaseBranch ? metadataBaseBranch : undefined);
+    // fork(claude-agent): the run's runtime. A session on Claude Agent still gets its controller
+    // session (routes and the session page read it), but none of Mastra Code's model setup.
+    const runtimeId = await this.#runtimes?.sessionRuntime({
+      orgId: request.orgId,
+      factoryProjectId: request.factoryProjectId,
+      sessionId: sourceSession.sessionId,
+    });
+    const ownConversation = runtimeId !== undefined && this.#runtimes!.ownsConversation(runtimeId);
     const memoryResourceId = await runMemoryResource(this.#controller, {
       sessionId: sourceSession.sessionId,
       factoryProjectId: request.factoryProjectId,
+      ownMemory: ownConversation,
       untrusted:
         untrustedCheckout ||
         externallyAuthoredWorkItem(
@@ -330,23 +357,25 @@ export class FactoryStartCoordinator {
       ],
       ...(untrustedCheckout ? { untrustedCheckout: true, ...(baseRef ? { baseRef } : {}) } : {}),
     });
-    await primeTenantCredentialsForTenant({
-      orgId: request.orgId,
-      userId: sourceSession.userId,
-      credentialScope: sessionModel.modelScope,
-    });
-    // Apply the factory's main model before any model-dependent run work.
-    // Observational-memory settings are loaded per invocation by the input processor.
-    await hydrateFactorySession(session, {
-      orgId: request.orgId,
-      modelScope: sessionModel.modelScope,
-      ownerUserId: sourceSession.userId,
-      defaultModelId: sessionModel.modelId,
-    });
-    // The tool is `requireApproval`, and that prompt parks the run whether or not
-    // someone pressed Start — a person is reading the plan, not an approval queue.
-    // Starting the run was already the say-so; the rules engine still governs.
-    await session.permissions.setForTool({ toolName: 'factory_transition_work_item', policy: 'allow' });
+    if (!ownConversation) {
+      await primeTenantCredentialsForTenant({
+        orgId: request.orgId,
+        userId: sourceSession.userId,
+        credentialScope: sessionModel.modelScope,
+      });
+      // Apply the factory's main model before any model-dependent run work.
+      // Observational-memory settings are loaded per invocation by the input processor.
+      await hydrateFactorySession(session, {
+        orgId: request.orgId,
+        modelScope: sessionModel.modelScope,
+        ownerUserId: sourceSession.userId,
+        defaultModelId: sessionModel.modelId,
+      });
+      // The tool is `requireApproval`, and that prompt parks the run whether or not
+      // someone pressed Start — a person is reading the plan, not an approval queue.
+      // Starting the run was already the say-so; the rules engine still governs.
+      await session.permissions.setForTool({ toolName: 'factory_transition_work_item', policy: 'allow' });
+    }
     const threadId = await configureThread(session, request);
     const prepared = await storage.prepareRunStart({
       orgId: request.orgId,

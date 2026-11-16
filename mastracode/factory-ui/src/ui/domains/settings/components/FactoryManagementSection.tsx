@@ -11,6 +11,7 @@ import {
   SettingsSkeleton,
 } from '@mastra/playground-ui/new/settings';
 
+import { AgentRuntimeSection } from './AgentRuntimeSection';
 import { EnvironmentSection } from './EnvironmentSection';
 import { SettingsSubsection } from './SettingsSubsection';
 import { TrashIcon } from '@mastra/playground-ui/icons/TrashIcon';
@@ -40,6 +41,7 @@ export function FactoryManagementSection() {
   return (
     <>
       <EnvironmentSection factoryId={factory.id} />
+      <AgentRuntimeSection factoryId={factory.id} /> {/* fork(claude-agent) */}
       <SettingsSubsection scope="factory" title="Danger zone">
         <SettingsContainer>
           <SettingsRow label={`Delete ${factory.name}`} description="Also unlinks its repositories.">
