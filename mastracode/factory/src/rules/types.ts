@@ -359,6 +359,8 @@ export interface FactoryGithubRuleContext extends FactoryRuleContextBase {
      * fork) on the card's own branch (its build or a session's, or the run binding's provenance names).
      */
     ownedByCard?: boolean;
+    /** fork(claude-agent): the repository the head lives in, when the delivery says (a fork's is another). */
+    headRepositoryId?: number;
   };
   /** Present on `pullRequestReviewRequested`: who review was (re-)requested from. */
   reviewRequest?: { reviewer: string; factoryReviewer: boolean };

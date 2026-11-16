@@ -91,7 +91,7 @@ function fakeGithub() {
 async function setup(
   mode: CiFollowMode,
   permission: 'write' | 'read' = 'write',
-  store: { failReads?: boolean } = {},
+  store: { failReads?: boolean; attachedHeadRepositoryId?: number } = {},
 ) {
   const seed = await createFactoryStorageForTests();
   const storage = seed.workItems;
@@ -159,7 +159,13 @@ async function setup(
       externalId: 'github:10:pull-request:17',
       url: 'https://github.com/acme/repo/pull/17',
     },
-    metadata: { state: 'open', githubRepositoryId: 10, githubPullRequestNumber: 17, headBranch: 'factory/issue-1' },
+    metadata: {
+      state: 'open',
+      githubRepositoryId: 10,
+      githubPullRequestNumber: 17,
+      headBranch: 'factory/issue-1',
+      headRepositoryId: store.attachedHeadRepositoryId ?? 10,
+    },
   });
   const inReview = (await storage.get({ orgId: 'org-1', id: created.id }))!;
   await storage.commitTransition({
@@ -292,6 +298,8 @@ async function setup(
     project,
     storage,
     ciFollow,
+    options,
+    deliver,
   };
 }
 
@@ -577,6 +585,92 @@ describe("a card following its pull request's CI", () => {
     // Building: a message to the run, which carries the auto-fix key but moves nothing.
     expect((await allDecisions()).some(row => row.decision.type === 'sendMessage')).toBe(true);
     expect((await decisions()).every(row => row.decision.type !== 'transition')).toBe(true);
+  });
+});
+
+describe('auto-fix edge cases', () => {
+  const comment = (github: ReturnType<typeof fakeGithub>, id: number) => ({
+    event: 'issue_comment',
+    deliveryId: `comment-${id}`,
+    payload: {
+      action: 'created',
+      installation: { id: 7 },
+      repository: { id: 10, full_name: 'acme/repo' },
+      sender: { login: 'maintainer' },
+      comment: { id, body: 'Please also handle empty files.', user: { login: 'maintainer' } },
+      issue: {
+        number: 17,
+        title: 'Fix the importer',
+        html_url: github.pull.html_url,
+        user: { login: 'factory-app[bot]' },
+        pull_request: {},
+      },
+    },
+  });
+
+  it("takes a maintainer's comment as the card's only on its own head, never on a fork's same-named branch", async () => {
+    const own = await setup('autofix');
+    await own.rules.ingest(comment(own.github, 1));
+    expect(await own.decisions()).toMatchObject([{ decision: { type: 'transition', stage: 'execute' } }]);
+
+    // A fork's branch named like the card's, attached because the pull request closes the card's issue.
+    const fork = await setup('autofix', 'write', { attachedHeadRepositoryId: 99 });
+    await fork.rules.ingest(comment(fork.github, 2));
+    expect(await fork.decisions()).toEqual([]);
+  });
+
+  it('spends one attempt when the card changed while the rule decided, and the evaluation ran again', async () => {
+    const { github, poll, decisions, storage, card, ciFollow, project } = await setup('autofix');
+    // The first commit loses a revision race (a write to the card lands between read and commit).
+    const commit = storage.commitRuleEvaluation.bind(storage);
+    let raced = false;
+    vi.spyOn(storage, 'commitRuleEvaluation').mockImplementation(async input => {
+      if (!raced) {
+        raced = true;
+        const current = (await card())!;
+        await storage.update({ orgId: 'org-1', id: current.id, userId: 'user-1', patch: { metadata: { note: 1 } } });
+      }
+      return commit(input);
+    });
+    github.failing(SHA_A);
+    await poll([repository]);
+    expect(raced).toBe(true);
+    // Not held as a repeat of itself, and one attempt spent.
+    expect(await decisions()).toMatchObject([{ status: 'pending', decision: { type: 'transition' } }]);
+    expect((await decisions())[0]!.decision).not.toHaveProperty('consent');
+    expect(
+      await ciFollow.attempts({ orgId: 'org-1', factoryProjectId: project.id, repositoryId: 10, pullRequestNumber: 17 }),
+    ).toMatchObject({ attempts: 1 });
+  });
+
+  it('tells a run still building about a failure once, however often it recurs', async () => {
+    const context = await setup('autofix');
+    const current = (await context.card())!;
+    await context.storage.commitTransition({
+      orgId: 'org-1',
+      factoryProjectId: current.factoryProjectId,
+      workItemId: current.id,
+      expectedRevision: current.revision,
+      destinationStage: 'execute',
+      actorId: 'user-1',
+      ingress: { identity: 'building', triggerType: 'human', transitionId: 'building' },
+      configVersion: 'rules-v1',
+      causalChain: [],
+      evaluation: { outcome: 'accepted', decisions: [] },
+    });
+    context.github.failing(SHA_A);
+    await context.poll([repository]);
+    // The same failure on another push (and a poll that forgot what it sent, as after a restart).
+    Object.assign(context.github.pull, { head: { ref: 'factory/issue-1', sha: SHA_B, repo: { id: 10 } } });
+    context.github.failing(SHA_B);
+    const restarted = createActivePullRequestPoll(context.options, {
+      get: context.github.get,
+      deliver: context.deliver,
+      ci: { mode: scope => context.ciFollow.mode(scope), ownApp: 'factory-app' },
+    });
+    await restarted([repository]);
+    const messages = (await context.decisions()).filter(row => row.decision.type === 'sendMessage');
+    expect(messages).toHaveLength(1);
   });
 });
 

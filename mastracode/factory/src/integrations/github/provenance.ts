@@ -330,6 +330,8 @@ function pullRequestSourceFacts(repositoryId: number, pullRequest: Record<string
       ? pullRequest.labels.map(label => record(label).name).filter((name): name is string => typeof name === 'string')
       : [],
     headBranch: typeof head.ref === 'string' ? head.ref : '',
+    // fork(claude-agent): where the head lives (the repository itself, for a card's own pull request).
+    ...(typeof record(head.repo).id === 'number' ? { headRepositoryId: record(head.repo).id } : {}),
     baseBranch: typeof base.ref === 'string' ? base.ref : '',
     ...(typeof author === 'string' ? { author } : {}),
   };

@@ -211,6 +211,10 @@ function materializePullRequestIntake(
       requestedReviewers: context.pullRequest.requestedReviewers ?? [],
       labels: context.pullRequest.labels ?? [],
       headBranch: context.pullRequest.headBranch,
+      // fork(claude-agent): where the head lives, so a fork's same-named branch is never taken for the card's.
+      ...(context.pullRequest.headRepositoryId !== undefined
+        ? { headRepositoryId: context.pullRequest.headRepositoryId }
+        : {}),
       baseBranch: context.pullRequest.baseBranch,
       ...(context.pullRequest.author ? { author: context.pullRequest.author } : {}),
     },
@@ -507,8 +511,10 @@ function autoFix(
       ...(held ? { consent: 'required' as const } : {}),
     } as const;
   }
-  // Still building (or held for a person already): the run hears it, unless a person must decide.
+  // Still building (or held for a person already): the run hears it, unless a person must decide, and a
+  // failure it was already told (or sent back for) isn't told again.
   if (item.stages.length !== 1 || item.stages[0] !== flow.build || held) return;
+  if (feedback.signature !== undefined && ciFollow.signatures.includes(feedback.signature)) return;
   return { type: 'sendMessage', idempotencyKey: key, role: flow.buildRole, priority: 'high', message: text } as const;
 }
 

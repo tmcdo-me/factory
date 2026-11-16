@@ -492,8 +492,15 @@ Each slice: implement → focused tests → manual check where noted → commit.
      request starts its own count. Past them, for a failure an earlier attempt already sent back,
      or when the count can't be read, the move waits for a person (`consent: 'required'`: a
      proposal in the inbox that only an organization admin may approve; `factory_resolve_proposal`
-     refuses it). Factory never merges, and Claude Agent sessions can't either (`Bash(gh pr merge:*)`
-     is denied, which holds under `bypassPermissions`). Build runs respect the Claude Agent cap.
+     refuses it). Factory never merges. Claude Agent sessions are denied `Bash(gh pr merge:*)` (it holds
+     under `bypassPermissions`), but that is defense in depth only (`gh api` and `git push` to the
+     default branch stay open, and a `gh api` pattern would block the API calls Claude needs): the
+     real control is GitHub's branch protection or rulesets on the default branch, with a required
+     review and no bypass for the app's installation token. A failure told to a run still building
+     (no attempt spent) is told once per failure signature, so push, fail the same way, tell
+     can't loop. A comment's payload names no head, so the card's attached record of the pull request
+     must say its head lives in the repository itself (`headRepositoryId`, now kept with the pull
+     request's facts). Build runs respect the Claude Agent cap.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

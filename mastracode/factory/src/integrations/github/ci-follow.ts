@@ -78,6 +78,25 @@ export function ciFollowSettings(
       });
       return { reserved };
     },
+    rememberFailure: async (key, signature) => {
+      let fresh = false;
+      await store.updateSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key), current => {
+        const signatures = current?.signatures ?? [];
+        fresh = !signatures.includes(signature);
+        return fresh
+          ? { attempts: current?.attempts ?? 0, signatures: [...signatures, signature].slice(-KEPT_SIGNATURES) }
+          : (current ?? { attempts: 0, signatures });
+      });
+      return { fresh };
+    },
+    forgetFailure: async (key, signature) => {
+      await store.updateSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key), current => {
+        const signatures = [...(current?.signatures ?? [])];
+        const at = signatures.lastIndexOf(signature);
+        if (at >= 0) signatures.splice(at, 1);
+        return { attempts: current?.attempts ?? 0, signatures };
+      });
+    },
     releaseAttempt: async (key, signature) => {
       await store.updateSetting<{ attempts?: number; signatures?: string[] }>(attemptsKey(key), current => {
         const signatures = [...(current?.signatures ?? [])];

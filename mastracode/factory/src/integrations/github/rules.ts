@@ -497,6 +497,13 @@ export interface CiFollowSettings {
   reserveAttempt(key: CiFollowAttemptKey, signature: string | undefined): Promise<{ reserved: boolean }>;
   /** Give back an attempt reserved for a fix that was not committed after all. */
   releaseAttempt(key: CiFollowAttemptKey, signature: string | undefined): Promise<void>;
+  /**
+   * Note a failure told to a run still building (no attempt spent), atomically: `fresh` only when it
+   * wasn't sent back before, so the same failure is never told twice.
+   */
+  rememberFailure(key: CiFollowAttemptKey, signature: string): Promise<{ fresh: boolean }>;
+  /** Forget a failure noted for a message that was not committed after all. */
+  forgetFailure(key: CiFollowAttemptKey, signature: string): Promise<void>;
 }
 
 export interface CiFollowAttemptKey {
@@ -1102,6 +1109,9 @@ export class GithubRules {
                 baseBranch: string(object(pullRequest?.base)?.ref) ?? '',
                 // fork(claude-agent)
                 ...(ownedByCard ? { ownedByCard: true } : {}),
+                ...(number(object(object(pullRequest?.head)?.repo)?.id) !== undefined
+                  ? { headRepositoryId: number(object(object(pullRequest?.head)?.repo)?.id)! }
+                  : {}),
               },
             }
           : {}),
@@ -1196,6 +1206,21 @@ export class GithubRules {
         }
         if (!reserved) holdAutoFix(autoFix);
       }
+      // A failure told to a run still building is told once: push, fail the same way, and it isn't again.
+      let remembered = false;
+      const failureMessage = decisions.find(
+        entry => entry.type === 'sendMessage' && String(entry.idempotencyKey ?? '').endsWith(':auto-fix'),
+      );
+      if (failureMessage && checks?.signature && attemptKey && this.options.ciFollow) {
+        let fresh = false;
+        try {
+          fresh = (await this.options.ciFollow.rememberFailure(attemptKey, checks.signature)).fresh;
+        } catch (error) {
+          console.warn('[factory] noting a failure told to the run failed; not telling it', error);
+        }
+        if (fresh) remembered = true;
+        else decisions = decisions.filter(entry => entry !== failureMessage);
+      }
       const committed = await this.options.storage.commitRuleEvaluation({
         orgId: project.orgId,
         factoryProjectId: project.factoryProjectId,
@@ -1209,6 +1234,18 @@ export class GithubRules {
         causalChain: [],
         now: new Date(),
       });
+      // fork(claude-agent): an attempt reserved for a fix that wasn't committed is given back, before a
+      // stale evaluation runs again (which reserves anew), so a retry never counts its own attempt.
+      if (reserved && committed.status !== 'committed' && attemptKey && this.options.ciFollow) {
+        await this.options.ciFollow
+          .releaseAttempt(attemptKey, checks?.signature)
+          .catch(error => console.warn('[factory] giving back an auto-fix attempt failed', error));
+      }
+      if (remembered && committed.status !== 'committed' && attemptKey && checks && this.options.ciFollow) {
+        await this.options.ciFollow
+          .forgetFailure(attemptKey, checks.signature)
+          .catch(error => console.warn('[factory] forgetting a failure told to the run failed', error));
+      }
       if (committed.status === 'stale') {
         // The item was written concurrently. Re-read it and run the rule again
         // against the fresh revision; nothing was persisted for this attempt.
@@ -1218,12 +1255,6 @@ export class GithubRules {
         const fresh = item ? await this.options.storage.get({ orgId: project.orgId, id: item.id }) : null;
         if (item && !fresh) return { status: 'missing' };
         return evaluate(fresh ?? undefined, ingressIdentity, pullRequestIntake, attempt + 1);
-      }
-      // fork(claude-agent): an attempt reserved for a fix that wasn't committed is given back.
-      if (reserved && committed.status !== 'committed' && attemptKey && this.options.ciFollow) {
-        await this.options.ciFollow
-          .releaseAttempt(attemptKey, checks?.signature)
-          .catch(error => console.warn('[factory] giving back an auto-fix attempt failed', error));
       }
       return { status: committed.status };
     };
@@ -2665,7 +2696,10 @@ function holdAutoFix(decision: Record<string, unknown>): void {
   if (message?.text && !message.text.includes('A person released this attempt')) message.text = `${message.text}\n\n${note}`;
 }
 
-/** fork(claude-agent): the head branch recorded on the card's attached record of this pull request. */
+/**
+ * fork(claude-agent): the head branch recorded on the card's attached record of this pull request, when
+ * that record says its head lives in this repository (a fork's same-named branch is not the card's).
+ */
 function attachedHeadBranch(
   item: Card,
   repositoryId: number,
@@ -2673,7 +2707,7 @@ function attachedHeadBranch(
   pullRequestNumber: number,
 ): string | undefined {
   const source = attachedPullRequestSource(item, repositoryId, repositoryName, pullRequestNumber);
-  if (source?.role !== 'attached') return undefined;
+  if (source?.role !== 'attached' || source.metadata?.headRepositoryId !== repositoryId) return undefined;
   const branch = source.metadata?.headBranch;
   return typeof branch === 'string' && branch ? branch : undefined;
 }
