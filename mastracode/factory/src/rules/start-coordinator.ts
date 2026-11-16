@@ -111,6 +111,12 @@ export interface FactoryStartRuntimes {
   }): Promise<string>;
   /** Runtimes that keep their own conversation rather than Mastra Code's model, memory and permissions. */
   ownsConversation(runtimeId: string): boolean;
+  /**
+   * Ready a session on a runtime that keeps its own conversation before its first turn: start its
+   * sandbox and clone its checkout, as Mastra Code's workspace does when its session is created.
+   * Fire and forget: it never blocks the start and never starts a turn.
+   */
+  prepare?(input: { sessionId: string; runtimeId: string; requestContext: RequestContext }): void;
 }
 
 export interface FactoryStartPreparedResult {
@@ -398,6 +404,12 @@ export class FactoryStartCoordinator {
       kickoffMessage: null,
     });
     await session.thread.setSetting({ key: 'factoryWorkItemId', value: prepared.item.id });
+    // fork(claude-agent): the controller session above resolved a workspace no turn will use, so
+    // nothing starts this session's sandbox until its first turn, and the card waits on a checkout
+    // that never materializes. Start it now, in the background.
+    if (ownConversation) {
+      this.#runtimes!.prepare?.({ sessionId: sourceSession.sessionId, runtimeId: runtimeId!, requestContext });
+    }
 
     let revision = prepared.item.revision;
     const destinationStage = request.destinationStage;

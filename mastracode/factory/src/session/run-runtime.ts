@@ -26,6 +26,11 @@ export function createRunRuntimes(options: {
   unscopedDefaults(): boolean;
   /** Runtimes that hold their own conversation (everything but Mastra Code). */
   ownConversation: readonly string[];
+  /**
+   * Starts a session's sandbox and clones its checkout without starting a turn (for Claude Agent,
+   * its workspace resolver). Rejections are logged: the first turn tries again.
+   */
+  prepareWorkspace?(sessionId: string, requestContext: unknown): Promise<unknown>;
 }): FactoryStartRuntimes {
   const { sessions, events } = options;
   return {
@@ -58,5 +63,14 @@ export function createRunRuntimes(options: {
       }
     },
     ownsConversation: runtimeId => options.ownConversation.includes(runtimeId),
+    prepare: ({ sessionId, requestContext }) => {
+      const prepare = options.prepareWorkspace;
+      if (!prepare) return;
+      void Promise.resolve()
+        .then(() => prepare(sessionId, requestContext))
+        .catch(error =>
+          console.warn(`[factory] Session ${sessionId}: starting its sandbox ahead of its first turn failed`, error),
+        );
+    },
   };
 }

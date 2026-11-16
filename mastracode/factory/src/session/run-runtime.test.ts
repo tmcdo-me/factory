@@ -87,4 +87,48 @@ describe('createRunRuntimes', () => {
       'claude-agent',
     );
   });
+
+  it('readies a session ahead of its first turn in the background, and only logs a failure', async () => {
+    let finish!: () => void;
+    const prepareWorkspace = vi.fn(() => new Promise<void>(resolve => (finish = resolve)));
+    const failing = vi.fn(async () => {
+      throw new Error('no sandbox');
+    });
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    onTestFinished(() => warn.mockRestore());
+    const base = {
+      sessions: { get: vi.fn(), assign: vi.fn(), getProjectDefault: vi.fn() },
+      events: new InMemoryEventLog(),
+      threadHasMessages: async () => false,
+      unscopedDefaults: () => false,
+      ownConversation: ['claude-agent'],
+    };
+    const context = { caller: 'user-1' };
+
+    // Returns at once, before the workspace is ready.
+    expect(
+      createRunRuntimes({ ...base, prepareWorkspace }).prepare?.({
+        sessionId: 's1',
+        runtimeId: 'claude-agent',
+        requestContext: context as never,
+      }),
+    ).toBeUndefined();
+    await vi.waitFor(() => expect(prepareWorkspace).toHaveBeenCalledWith('s1', context));
+    finish();
+
+    createRunRuntimes({ ...base, prepareWorkspace: failing }).prepare?.({
+      sessionId: 's2',
+      runtimeId: 'claude-agent',
+      requestContext: context as never,
+    });
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledWith(expect.stringContaining('s2'), expect.any(Error)));
+    // Without a preparer there is nothing to do.
+    expect(() =>
+      createRunRuntimes(base).prepare?.({
+        sessionId: 's3',
+        runtimeId: 'claude-agent',
+        requestContext: context as never,
+      }),
+    ).not.toThrow();
+  });
 });
