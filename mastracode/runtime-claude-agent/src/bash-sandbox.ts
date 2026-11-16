@@ -1,5 +1,6 @@
 import { SYSTEM_PATH } from './install';
 import type { RunInSandbox } from './install';
+import { claudeAgentSecretFiles } from './secret-files';
 
 /** Claude's own credentials: what the Bash sandbox keeps from the commands Claude runs. */
 const CLAUDE_CREDENTIAL_ENV = ['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN'] as const;
@@ -28,7 +29,8 @@ export const BASH_SANDBOX_WRITABLE_HOME_DIRS = [
 export interface ClaudeAgentBashSandboxOptions {
   /**
    * Files commands must not read, beyond Claude's own saved login (the host's env file that holds
-   * `CLAUDE_CODE_OAUTH_TOKEN`, say). The sandbox lets commands read everything else.
+   * `CLAUDE_CODE_OAUTH_TOKEN`, say), as {@link claudeAgentSecretFiles} lists them. The sandbox lets
+   * commands read everything else.
    */
   denyRead?: readonly string[];
 }
@@ -50,7 +52,7 @@ export interface ClaudeAgentBashSandboxOptions {
  * Code keeps `.git/config`, `.git/hooks` and `.claude/` settings read-only even in the checkout.
  */
 export function claudeAgentBashSandbox(options: ClaudeAgentBashSandboxOptions = {}) {
-  const denyRead = ['~/.claude/.credentials.json', ...(options.denyRead ?? [])];
+  const denyRead = claudeAgentSecretFiles(options.denyRead);
   return {
     enabled: true,
     failIfUnavailable: true,
@@ -60,7 +62,7 @@ export function claudeAgentBashSandbox(options: ClaudeAgentBashSandboxOptions = 
     filesystem: { allowWrite: BASH_SANDBOX_WRITABLE_HOME_DIRS.map(dir => `~/${dir}`) },
     credentials: {
       envVars: CLAUDE_CREDENTIAL_ENV.map(name => ({ name, mode: 'deny' as const })),
-      files: [...new Set(denyRead)].map(path => ({ path, mode: 'deny' as const })),
+      files: denyRead.map(path => ({ path, mode: 'deny' as const })),
     },
   };
 }

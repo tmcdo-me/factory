@@ -5,11 +5,11 @@ import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/c
 import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runtime';
 
 import { claudeAgentBashSandbox } from './bash-sandbox';
-import type { ClaudeAgentBashSandboxOptions } from './bash-sandbox';
 import { CLAUDE_AGENT_BUILTIN_TOOLS, CLAUDE_AGENT_DISALLOWED_TOOLS, SKILL_TOOL } from './builtin-tools';
 import { ClaudeAgentEventMapper } from './event-mapper';
 import { FACTORY_TOOLS_INSTRUCTIONS, createFactoryMcpServer } from './factory-tools';
 import type { ClaudeAgentFactoryTools } from './factory-tools';
+import { claudeAgentFileToolDeny, claudeAgentSecretFiles } from './secret-files';
 import type { ClaudeAgentSkills } from './skills';
 import { FACTORY_MCP_SERVER } from './tool-classification';
 
@@ -75,9 +75,18 @@ export interface ClaudeAgentSessionOptions {
    * Run Claude Code's Bash tool inside Claude Code's own sandbox (`claudeAgentBashSandbox`), so
    * the commands it runs (a repository's tests, scripts) can't get at Claude's credential. Needs
    * the sandbox's dependencies (bubblewrap and socat on Linux); without them Claude Code refuses to
-   * start rather than run unsandboxed. `true` or the sandbox's options.
+   * start rather than run unsandboxed.
    */
-  bashSandbox?: boolean | ClaudeAgentBashSandboxOptions;
+  bashSandbox?: boolean;
+  /**
+   * Files on the machine Claude Code runs on that hold Claude's credential (absolute or `~/`
+   * paths: this host's env file, say), beyond Claude's saved login, which is always included
+   * (`claudeAgentSecretFiles`). Claude's file tools (Read, Grep, Glob, Edit, Write, NotebookEdit)
+   * are refused them in every session, by permission deny rules (`claudeAgentFileToolDeny`), and
+   * so is `/proc` where Claude Code runs on Linux or elsewhere (`spawnClaudeCodeProcess`: a Sprite);
+   * with `bashSandbox`, its commands can't read them either.
+   */
+  secretFiles?: readonly string[];
   /**
    * Subprocess environment; build it with `claudeProcessEnv`. A function is asked again each time
    * Claude Code starts (after an idle close or a recycle), so credentials refreshed since (a
@@ -436,6 +445,7 @@ export class ClaudeAgentSession {
     ]
       .filter(Boolean)
       .join('\n\n');
+    const secretFiles = claudeAgentSecretFiles(options.secretFiles);
     const query = (options.query ?? (sdkQuery as QueryFn))({
       prompt: input,
       options: {
@@ -457,9 +467,7 @@ export class ClaudeAgentSession {
         settings: {
           ...CLAUDE_AGENT_ISOLATION,
           claudeMdExcludes: instructionFilesAbove(options.cwd),
-          ...(options.bashSandbox
-            ? { sandbox: claudeAgentBashSandbox(options.bashSandbox === true ? {} : options.bashSandbox) }
-            : {}),
+          ...(options.bashSandbox ? { sandbox: claudeAgentBashSandbox({ denyRead: secretFiles }) } : {}),
         },
         strictMcpConfig: true,
         ...(factoryTools
@@ -482,7 +490,16 @@ export class ClaudeAgentSession {
         },
         // An allow-list of built-in tools (see builtin-tools.ts); the Skill tool only with skills.
         tools: [...CLAUDE_AGENT_BUILTIN_TOOLS, ...(skills ? [SKILL_TOOL] : [])],
-        disallowedTools: [...CLAUDE_AGENT_DISALLOWED_TOOLS, ...(skills ? [] : [SKILL_TOOL])],
+        // Deny rules hold under `bypassPermissions`, and `--disallowedTools` ones even where managed
+        // settings would drop rules from other settings: Claude's file tools run in Claude Code's own
+        // process, outside the Bash sandbox, so they are kept from the credential's files here.
+        disallowedTools: [
+          ...CLAUDE_AGENT_DISALLOWED_TOOLS,
+          ...(skills ? [] : [SKILL_TOOL]),
+          ...claudeAgentFileToolDeny(secretFiles, {
+            linux: process.platform === 'linux' || Boolean(options.spawnClaudeCodeProcess),
+          }),
+        ],
         ...(options.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: options.spawnClaudeCodeProcess } : {}),
         ...(options.pathToClaudeCodeExecutable
           ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable }

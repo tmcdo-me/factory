@@ -217,7 +217,8 @@ describe.skipIf(!process.env.CLAUDE_AGENT_LIVE)('ClaudeAgentSession (live Claude
         // A stand-in for the session's GitHub token: git and gh must still get it.
         env: claudeProcessEnv(process.env, { GH_TOKEN: 'ghs_factorylive000000000000000000000000' }, { home }),
         model: process.env.CLAUDE_AGENT_LIVE_MODEL ?? 'claude-haiku-5-5',
-        bashSandbox: { denyRead: [secretFile] },
+        bashSandbox: true,
+        secretFiles: [secretFile],
         emit: event => events.push(event),
       });
       try {

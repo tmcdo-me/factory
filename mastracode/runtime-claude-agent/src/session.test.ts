@@ -242,7 +242,7 @@ describe('ClaudeAgentSession', () => {
   });
 
   it("runs Bash in Claude Code's sandbox when asked, keeping Claude's credentials from its commands", async () => {
-    const run = async (bashSandbox: boolean | { denyRead: string[] } | undefined) => {
+    const run = async (bashSandbox: boolean | undefined, secretFiles?: string[]) => {
       const events: FactoryEvent[] = [];
       const fake = fakeQuery([[result()]]);
       const session = new ClaudeAgentSession({
@@ -250,6 +250,7 @@ describe('ClaudeAgentSession', () => {
         cwd: '/work/s1',
         env: {},
         ...(bashSandbox !== undefined ? { bashSandbox } : {}),
+        ...(secretFiles ? { secretFiles } : {}),
         emit: event => events.push(event),
         query: fake.fn,
       });
@@ -274,13 +275,71 @@ describe('ClaudeAgentSession', () => {
     });
     expect(JSON.stringify(sandboxed.sandbox)).not.toContain('GH_TOKEN'); // git and gh need it
     // The host's own files holding the credential (its env file) are denied too.
-    const withHostFiles = await run({ denyRead: ['/srv/factory/.env'] });
+    const withHostFiles = await run(true, ['/srv/factory/.env']);
     expect((withHostFiles.sandbox as { credentials: { files: unknown[] } }).credentials.files).toEqual([
       { path: '~/.claude/.credentials.json', mode: 'deny' },
       { path: '/srv/factory/.env', mode: 'deny' },
     ]);
     expect(await run(undefined)).not.toHaveProperty('sandbox');
     expect(await run(false)).not.toHaveProperty('sandbox');
+  });
+
+  // 9c: Read, Grep, Glob, Edit, Write and NotebookEdit run in Claude Code's own process, outside the
+  // Bash sandbox: permission deny rules (which hold under bypassPermissions) keep them from the files
+  // holding Claude's credential, and on Linux from /proc (/proc/self/environ is Claude Code's own env).
+  it("refuses Claude's file tools the files holding its credential, sandboxed or not, and /proc on Linux", async () => {
+    const run = async (options: { bashSandbox?: boolean; secretFiles?: string[]; remote?: boolean }) => {
+      const events: FactoryEvent[] = [];
+      const fake = fakeQuery([[result()]]);
+      const session = new ClaudeAgentSession({
+        sessionId: 's1',
+        cwd: '/work/s1',
+        env: {},
+        ...(options.bashSandbox ? { bashSandbox: true } : {}),
+        ...(options.secretFiles ? { secretFiles: options.secretFiles } : {}),
+        ...(options.remote ? { spawnClaudeCodeProcess: (() => undefined) as never } : {}),
+        emit: event => events.push(event),
+        query: fake.fn,
+      });
+      await session.send({ text: 'read the config' });
+      await settled(events);
+      return fake.calls[0]!.options as {
+        disallowedTools: string[];
+        settings: { sandbox?: { credentials: { files: { path: string }[] } } };
+      };
+    };
+    const files = ['/srv/factory/web/.env', '/srv/factory/web/.env.local', '/etc/factory/claude.env'];
+    const local = await run({ bashSandbox: true, secretFiles: files });
+    // Every file the Bash sandbox refuses, the file tools are refused too: read (Read, Grep, Glob)
+    // and write (Edit, Write, NotebookEdit).
+    const sandboxed = local.settings.sandbox!.credentials.files.map(file => file.path);
+    expect(sandboxed).toEqual(['~/.claude/.credentials.json', ...files]);
+    for (const path of sandboxed) {
+      const pattern = path.startsWith('/') ? `/${path}` : path;
+      expect(local.disallowedTools).toEqual(expect.arrayContaining([`Read(${pattern})`, `Edit(${pattern})`]));
+    }
+    // The checkout itself stays readable: no rule names a bare tool.
+    expect(local.disallowedTools).not.toContain('Read');
+    expect(local.disallowedTools).not.toContain('Edit');
+    if (process.platform !== 'linux') expect(local.disallowedTools.join()).not.toContain('proc');
+
+    // With the Bash sandbox off, the file tools are still refused them.
+    const unsandboxed = await run({ secretFiles: files });
+    expect(unsandboxed.settings).not.toHaveProperty('sandbox');
+    expect(unsandboxed.disallowedTools).toEqual(expect.arrayContaining(['Read(//etc/factory/claude.env)']));
+    expect(unsandboxed.disallowedTools).toEqual(expect.arrayContaining(['Read(~/.claude/.credentials.json)']));
+
+    // Claude Code in a Sprite (Linux): /proc, where /proc/self/environ holds the credential.
+    const remote = await run({ bashSandbox: true, remote: true });
+    expect(remote.disallowedTools).toEqual(
+      expect.arrayContaining([
+        'Read(~/.claude/.credentials.json)',
+        'Edit(~/.claude/.credentials.json)',
+        'Read(//proc)',
+        'Read(//proc/**)',
+        'Edit(//proc/**)',
+      ]),
+    );
   });
 
   it("allows only Claude Code's coding tools, and nothing that acts outside the session", async () => {
