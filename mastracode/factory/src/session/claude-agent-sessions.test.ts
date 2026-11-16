@@ -563,6 +563,8 @@ describe('ClaudeAgentSessions with Factory tools', () => {
       });
       // Nothing of this host's environment, only Claude's credential and the sandbox's.
       expect(fake.options[0]!.env).toEqual({
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_CONFIG_NOSYSTEM: '1',
         CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
         GH_TOKEN: 'ghs_x',
         HOME: spriteHome,
