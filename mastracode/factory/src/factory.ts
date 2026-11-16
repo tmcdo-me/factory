@@ -163,6 +163,7 @@ import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-
 import type { ClaudeAgentHost } from './session/claude-agent-host.js';
 import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
 import { ClaudeAgentSessions, claudeAgentHome, routeSessionCommands } from './session/claude-agent-sessions.js';
+import { claudeAgentWaitingJudge } from './session/claude-agent-waiting-judge.js';
 import { createClaudeAgentWorkspaceResolver } from './session/claude-agent-workspace.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
@@ -1904,6 +1905,8 @@ export class MastraFactory {
       sessions: agentSessionsStorage,
       workspace: claudeAgentWorkspace,
       home: claudeAgentHome(),
+      // fork(claude-agent): a turn that ends asking the person something in plain text waits for them.
+      waitingJudge: claudeAgentWaitingJudge({ home: claudeAgentHome() }),
       // fork(claude-agent): one process sharing the database runs Claude Agent sessions.
       host: claudeAgentHost,
       // Held messages survive a restart where the domain is up; otherwise they wait in memory.

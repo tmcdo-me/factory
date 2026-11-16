@@ -23,6 +23,7 @@ import {
   ClaudeAgentSession,
   FACTORY_SKILLS_PLUGIN,
   claudeProcessEnv,
+  plainTextQuestion,
   skillKickoffText,
   writeSkillsPlugin,
 } from '@factory/runtime-claude-agent';
@@ -33,6 +34,7 @@ import type {
   ClaudeTurnInput,
   ClaudeTurnNotice,
   QueryFn,
+  WaitingVerdict,
 } from '@factory/runtime-claude-agent';
 import type { RequestContext } from '@mastra/core/request-context';
 
@@ -54,6 +56,7 @@ import {
   toolIdentity,
 } from './claude-agent-tools.js';
 import type { MastraTools } from './claude-agent-tools.js';
+import { claudeAgentExecutable } from './claude-agent-waiting-judge.js';
 import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
 import { answersWithDecision, interactionToolName } from './pending-interactions.js';
 
@@ -131,6 +134,12 @@ export interface ClaudeAgentSessionsDeps {
   bashSandbox?: boolean;
   /** fork(claude-agent): how long background work alone may keep Claude Code running (see `claudeAgentBackgroundMaxMs`). */
   backgroundMaxMs?: number;
+  /**
+   * fork(claude-agent): decides whether a turn's last message waits on a person, when the cheap check
+   * (`plainTextQuestion`) can't tell: Claude Code itself, one turn with no tools
+   * (`judgeWaitingOnPerson`). Without it, a turn that asks in plain text is re-kicked, as before.
+   */
+  waitingJudge?(input: { objective: string; text: string }): Promise<WaitingVerdict | undefined>;
 }
 
 /**
@@ -265,6 +274,10 @@ export class ClaudeAgentSessions {
   readonly #stateWrites = new Map<string, Promise<void>>();
   /** Answers plan approvals on the board's behalf, by the board run's id, while it says so. */
   readonly #autoApprove = new Map<string, () => boolean>();
+  /** fork(claude-agent): the text of the last assistant message of each session's latest turn. */
+  readonly #lastReply = new Map<string, { messageId?: string; text: string }>();
+  /** fork(claude-agent): a board run parked on a question its turn asked in plain text, by session. */
+  readonly #awaitingReply = new Map<string, AwaitingReply>();
 
   constructor(deps: ClaudeAgentSessionsDeps) {
     this.#deps = deps;
@@ -323,6 +336,8 @@ export class ClaudeAgentSessions {
     let savedState = JSON.stringify(record.runtimeState ?? {});
     const resume = runtimeState?.claudeSessionId;
     const hostEnv = this.#deps.hostEnv ?? process.env;
+    // fork(claude-agent): in a sandbox, its own install; on this host, an installed `claude` when one is set.
+    const executable = launch ? launch.pathToClaudeCodeExecutable : claudeAgentExecutable(hostEnv);
     const envOptions = { ...(home ? { home } : {}), ...(launch?.remote ? { remote: true } : {}) };
     const freshEnv = workspace.freshEnv;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
@@ -342,7 +357,7 @@ export class ClaudeAgentSessions {
       processDeadlineMs: CLAUDE_AGENT_PROCESS_DEADLINE_MS,
       backgroundMaxMs: this.#deps.backgroundMaxMs ?? claudeAgentBackgroundMaxMs(),
       ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
-      ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
       ...(this.#deps.instructions ? { instructions: this.#deps.instructions } : {}),
@@ -352,6 +367,7 @@ export class ClaudeAgentSessions {
       emit: event => {
         publisher.emit(event);
         watchShell(event);
+        this.#followReply(sessionId, event);
         if (event.type === 'usage' && event.runId && this.#runEnds.has(event.runId)) {
           const { inputTokens, outputTokens, cachedInputTokens, reasoningTokens } = event;
           this.#runUsage.set(event.runId, [
@@ -744,6 +760,99 @@ export class ClaudeAgentSessions {
     };
   }
 
+  /** fork(claude-agent): keep the text of the latest turn's last assistant message, for `askedPerson`. */
+  #followReply(sessionId: string, event: FactoryEvent): void {
+    if (event.type === 'run.started') this.#lastReply.delete(sessionId);
+    else if (event.type === 'message.started' && event.role === 'assistant') {
+      this.#lastReply.set(sessionId, { messageId: event.messageId, text: '' });
+    } else if (event.type === 'message.delta' && event.part === 'text') {
+      const reply = this.#lastReply.get(sessionId);
+      if (reply?.messageId === event.messageId) reply.text += event.delta;
+    }
+  }
+
+  /**
+   * fork(claude-agent): the question the session's last turn ended on, asked in plain text, when the
+   * run's goal needs a person's answer to it: the cheap check first, the judge only when it can't tell.
+   */
+  async #askedPerson(sessionId: string, goal: { objective: string }): Promise<string | undefined> {
+    const text = this.#lastReply.get(sessionId)?.text.trim();
+    if (!text || !this.#deps.waitingJudge || plainTextQuestion(text) === 'none') return undefined;
+    let verdict: WaitingVerdict | undefined;
+    try {
+      verdict = await this.#deps.waitingJudge({ objective: goal.objective, text });
+    } catch (error) {
+      console.warn(
+        `[factory] Claude Agent session ${sessionId}: judging whether its turn waits on a person failed`,
+        error,
+      );
+      return undefined;
+    }
+    if (!verdict?.waiting) return undefined;
+    return verdict.question || lastParagraph(text);
+  }
+
+  /**
+   * fork(claude-agent): park a board run on a question its turn asked in plain text. It is asked
+   * through the broker, so it waits in the inbox and attention lists as `ask_user` does; an answer
+   * there becomes the person's reply in the session, and so does a message they type in it. Either
+   * reply's turn is what `resumed` ends with.
+   */
+  async #awaitReply(
+    sessionId: string,
+    question: string,
+    requestContext: RequestContext,
+  ): Promise<{ resumed: Promise<RuntimeRunEnd> } | undefined> {
+    const broker = this.#deps.interactions;
+    if (!broker || !this.#opened.has(sessionId)) return undefined;
+    this.#awaitingReply.get(sessionId)?.drop();
+    const signal = new AbortController();
+    let settle!: (end: RuntimeRunEnd) => void;
+    const resumed = new Promise<RuntimeRunEnd>(resolve => (settle = resolve));
+    const entry: AwaitingReply = {
+      replied: runId => {
+        this.#awaitingReply.delete(sessionId);
+        this.#runEnds.set(runId, settle);
+        signal.abort();
+        return error => {
+          this.#runEnds.delete(runId);
+          settle({ reason: 'error', error: error instanceof Error ? error.message : String(error) });
+        };
+      },
+      drop: () => {
+        this.#awaitingReply.delete(sessionId);
+        signal.abort();
+        settle({ reason: 'aborted' });
+      },
+    };
+    this.#awaitingReply.set(sessionId, entry);
+    void broker
+      .request(sessionId, { kind: 'question', question }, { signal: signal.signal })
+      .then(async response => {
+        if (this.#awaitingReply.get(sessionId) !== entry) return;
+        this.#awaitingReply.delete(sessionId);
+        const answer = Array.isArray(response.answer) ? response.answer.join(', ') : response.answer;
+        const runId = randomUUID();
+        this.#runEnds.set(runId, settle);
+        try {
+          const session = await this.#ready(sessionId, requestContext);
+          if (!session) throw new Error(`Session ${sessionId} no longer runs on Claude Agent.`);
+          await this.#send(session, { text: answer, runId }, requestContext);
+        } catch (error) {
+          this.#runEnds.delete(runId);
+          console.warn(`[factory] Claude Agent session ${sessionId}: sending the person's answer failed`, error);
+          settle({ reason: 'error', error: error instanceof Error ? error.message : String(error) });
+        }
+      })
+      .catch(() => {
+        // Cancelled: by the person's own reply in the session (handled there), or with the run.
+        if (this.#awaitingReply.get(sessionId) !== entry) return;
+        this.#awaitingReply.delete(sessionId);
+        settle({ reason: 'aborted' });
+      });
+    return { resumed };
+  }
+
   /** Board runs on Claude Agent sessions, for the dispatcher. */
   runtimeSessions(): FactoryRuntimeSessions {
     return {
@@ -760,6 +869,8 @@ export class ClaudeAgentSessions {
         return pending.some(record => record.callId === parked.callId);
       },
       awaitsPerson: async sessionId => ((await this.#deps.interactions?.listPending({ sessionId })) ?? []).length > 0,
+      askedPerson: (sessionId, goal) => this.#askedPerson(sessionId, goal),
+      awaitReply: (sessionId, { question }, requestContext) => this.#awaitReply(sessionId, question, requestContext),
       idle: sessionId => {
         if (this.#opened.get(sessionId)?.session.status() !== 'running') return Promise.resolve();
         return new Promise<void>(resolve => {
@@ -769,6 +880,8 @@ export class ClaudeAgentSessions {
         });
       },
       kickoff: async (sessionId, kickoff, requestContext) => {
+        // fork(claude-agent): a new phase's kickoff drops a question the last run waits on.
+        this.#awaitingReply.get(sessionId)?.drop();
         // A goal's re-kick goes on in the same phase, so the Claude Code it has applies as it is.
         const session = await this.#ready(sessionId, requestContext, {
           restartIdle: kickoff.continuation === undefined,
@@ -921,7 +1034,15 @@ export class ClaudeAgentSessions {
       send: async (sessionId, input, request) => {
         const session = await this.#ready(sessionId, request.context);
         if (!session) return notFound;
-        await this.#send(session, input, request.context);
+        // fork(claude-agent): a board run parked on its plain-text question takes this as the reply.
+        const runId = randomUUID();
+        const failed = this.#awaitingReply.get(sessionId)?.replied(runId);
+        try {
+          await this.#send(session, { ...input, runId }, request.context);
+        } catch (error) {
+          failed?.(error);
+          throw error;
+        }
         return { ok: true };
       },
       abort: async (sessionId, request) => {
@@ -972,6 +1093,9 @@ export class ClaudeAgentSessions {
 
   /** Close every Claude Code this process runs; a run in flight ends as stopped, saying `notice`. */
   async #stopAll(notice: string): Promise<void> {
+    // fork(claude-agent): a run parked on a plain-text question ends with its session, as one parked on
+    // its `ask_user` does: its follower closes its run record, and the question is withdrawn.
+    for (const waiting of [...this.#awaitingReply.values()]) waiting.drop();
     const sessions = await Promise.allSettled(this.#live.values());
     this.#live.clear();
     this.#opened.clear();
@@ -1022,6 +1146,23 @@ export interface ClaudeAgentShellResult {
 function commandOf(input: unknown): string | undefined {
   const command = (input as { command?: unknown } | undefined)?.command;
   return typeof command === 'string' ? command : undefined;
+}
+
+/** fork(claude-agent): a board run waiting on the reply to a question its turn asked in plain text. */
+interface AwaitingReply {
+  /** The person replied in the session, in the turn `runId`: the run follows that turn. Call the result if it failed to start. */
+  replied(runId: string): (error: unknown) => void;
+  /** Stop waiting (another kickoff): the run ends as aborted. */
+  drop(): void;
+}
+
+/** The last paragraph of a message, as the question it ends on when the judge named none. */
+function lastParagraph(text: string): string {
+  const paragraphs = text
+    .split(/\n\s*\n/)
+    .map(paragraph => paragraph.trim())
+    .filter(Boolean);
+  return (paragraphs.at(-1) ?? text).slice(-1_000);
 }
 
 interface OpenSession {

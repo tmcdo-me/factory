@@ -50,3 +50,11 @@ export {
   sandboxClaudeCodeLaunch,
 } from './launch';
 export type { ClaudeCodeLaunch } from './launch';
+export {
+  WAITING_JUDGE_MODEL,
+  WAITING_JUDGE_PROMPT,
+  judgeWaitingOnPerson,
+  plainTextQuestion,
+  verdictOf,
+} from './waiting-judge';
+export type { WaitingJudgeOptions, WaitingVerdict } from './waiting-judge';

@@ -722,3 +722,70 @@ describe("a pull request the run opened outside Factory's tools", () => {
     expect(list).toHaveBeenCalledTimes(1);
   });
 });
+
+// fork(claude-agent): a turn that ends asking the person something in plain text is not re-kicked.
+describe('a turn that ends with a question for the person', () => {
+  it('parks the run on the question instead of re-kicking it, and judges the goal again after their reply', async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService, moveOn } = await building(storage);
+    const state = threadState();
+    const { runtime, kickoffs } = scriptedRuntime([
+      () => ({ reason: 'complete' }),
+      async () => {
+        await moveOn();
+        return { reason: 'complete' };
+      },
+    ]);
+    // The session's first turn asked "Staging or production?"; later turns asked nothing.
+    const asked = ['Staging or production?'];
+    let reply!: (end: RuntimeRunEnd) => void;
+    const waits: string[] = [];
+    runtime.askedPerson = vi.fn(async () => asked.shift());
+    runtime.awaitReply = vi.fn(async (_sessionId: string, { question }: { question: string }) => {
+      waits.push(question);
+      return { resumed: new Promise<RuntimeRunEnd>(resolve => (reply = resolve)) };
+    });
+    const { audit, records } = auditLog();
+    const { dispatcher } = dispatcherFor(storage, transitionService, runtime, { state: state.store, audit });
+
+    await dispatcher.runOnce(new Date());
+
+    // Parked like a run on its ask_user: the decision is settled, the goal waits with its count unchanged.
+    expect(waits).toEqual(['Staging or production?']);
+    expect(kickoffs).toHaveLength(1);
+    expect(await decisionOf(storage)).toMatchObject({ status: 'succeeded' });
+    expect(await state.goal()).toMatchObject({ status: 'active', runsUsed: 0 });
+    expect(records.map(record => record.action)).toEqual(['factory.run.started']);
+    expect(await state.ledger()).toHaveLength(1);
+
+    // The person replies; their turn ends with the card still in Building, so the goal goes on.
+    reply({ reason: 'complete' });
+    await vi.waitFor(() => expect(kickoffs).toHaveLength(2));
+    expect(kickoffs[1]!.continuation).toMatch(/^\[Goal attempt 1\/3\]/);
+    await vi.waitFor(async () => expect(await state.goal()).toMatchObject({ status: 'done', runsUsed: 2 }));
+    await vi.waitFor(() => expect(records.map(record => record.action)).toContain('factory.run.ended'));
+  });
+
+  it('re-kicks as before when the turn asked nothing the person must answer', async () => {
+    const { workItems: storage } = await createFactoryStorageForTests();
+    const { transitionService, moveOn } = await building(storage);
+    const state = threadState();
+    const { runtime, kickoffs } = scriptedRuntime([
+      () => ({ reason: 'complete' }),
+      async () => {
+        await moveOn();
+        return { reason: 'complete' };
+      },
+    ]);
+    runtime.askedPerson = vi.fn(async () => undefined);
+    runtime.awaitReply = vi.fn();
+    const { dispatcher } = dispatcherFor(storage, transitionService, runtime, { state: state.store });
+
+    await dispatcher.runOnce(new Date());
+
+    expect(runtime.askedPerson).toHaveBeenCalledTimes(1);
+    expect(runtime.awaitReply).not.toHaveBeenCalled();
+    expect(kickoffs).toHaveLength(2);
+    expect(await decisionOf(storage)).toMatchObject({ status: 'succeeded' });
+  });
+});

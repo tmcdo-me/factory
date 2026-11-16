@@ -66,12 +66,18 @@ export async function holdRuntimeGoal(store: RuntimeThreadState, goal: RuntimeGo
  * turn: the same record, count, budget and statuses, with Factory's own check (`verdict`) in place of
  * the model judge. Returns the re-kick to send (and its attempt) when the goal goes on, else `undefined` (met, parked
  * with its runs spent, or no longer this run's to pursue: ended, replaced, or the run handed on).
+ *
+ * fork(claude-agent): `waiting`, when given, is asked before an unmet goal is re-kicked whether the
+ * turn ended waiting on a person (a question asked in plain text rather than with `ask_user`), as
+ * Mastra Code's judge decides "waiting": then the question is returned, the goal stays active with its
+ * count unchanged, and it is judged again once the person replied and that turn ended.
  */
 export async function judgeRuntimeGoal(
   store: RuntimeThreadState,
   goal: RuntimeGoal,
   verdict: () => Promise<RuntimeGoalVerdict>,
-): Promise<{ continuation: string; attempt: number } | undefined> {
+  waiting?: () => Promise<string | undefined>,
+): Promise<{ continuation: string; attempt: number } | { waiting: string } | undefined> {
   const read = () => store.getState<GoalObjectiveRecord>({ threadId: goal.threadId, type: GOAL_STATE_TYPE });
   const record = await read();
   if (record?.id !== goal.id || record.status !== 'active') return undefined;
@@ -89,6 +95,15 @@ export async function judgeRuntimeGoal(
   const current = await read();
   if (current?.id !== goal.id || current.status !== 'active' || current.startedAt !== record.startedAt) {
     return undefined;
+  }
+  if (judged === 'unmet' && waiting) {
+    const question = await waiting();
+    if (question !== undefined) {
+      // The judge took a while: the goal may have ended or been replaced meanwhile (the card moved on).
+      const after = await read();
+      if (after?.id !== goal.id || after.status !== 'active' || after.startedAt !== record.startedAt) return undefined;
+      return { waiting: question };
+    }
   }
   const runsUsed = current.runsUsed + 1;
   const spent = runsUsed >= maxRuns;

@@ -372,6 +372,24 @@ Each slice: implement → focused tests → manual check where noted → commit.
      the attach and the hand-off to the board's pull request review. So a pull request Claude opened
      with its own `gh pr create` (a `Bash` command, which reaches no phase processor) is on the card
      before the turn is judged, rather than when GitHub's "opened" or a reconcile arrives.
+     A turn short of its goal that ended asking the person something in plain text (not with
+     `ask_user`) is not re-kicked with a goal-judge reminder: before the re-kick, Factory asks whether
+     it waits on a person. A cheap check of its last message first (`plainTextQuestion`: no question
+     mark near its end and no phrase asking for something means no), and only when that can't tell,
+     a judge that is Claude Code itself (`judgeWaitingOnPerson`): one turn of the unmodified binary
+     through the Agent SDK on `claude-haiku-5-5`, with Claude Code's own system prompt and the
+     judge's instructions appended, no tools, MCP servers, settings, skills or memory, nothing
+     persisted, Claude Agent's own home, credential and binary (`FACTORY_CLAUDE_AGENT_EXECUTABLE`
+     when set, as for local sessions), and an empty folder of its own (`<home>/goal-judge`);
+     Factory calls no model API. Its first failure (no login, say) is logged. Its prompt is Mastra Code's goal judge's
+     "waiting"/"continue" rules (asking for input the goal does not require, or for permission to go
+     on, is "continue"); no answer within a minute, or none it can read, re-kicks as before. When it
+     waits, the run is parked on the question as on an `ask_user`: a question interaction in the
+     broker (inbox, `factory_list_attention`, the card), the goal kept active with its count
+     unchanged, the decision settled and the run followed. The person's answer there, or a message
+     they type in the session, is their reply; once that turn ends the goal is judged again. A new
+     kickoff for the card drops the question (the run ends as aborted), and so does the process
+     stopping its Claude Agent sessions (shutdown, lease lost), as a run parked on `ask_user` ends.
      **One process runs Claude Agent sessions** per database (`session/claude-agent-host.ts`): their
      Claude Code, in-memory run state and ledger writes (whole-value, no compare-and-set) live in
      it. The holder is one process (host, Claude Agent home, pid, boot nonce), renewing every 10s;

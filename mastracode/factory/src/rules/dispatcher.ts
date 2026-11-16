@@ -472,7 +472,9 @@ type SeamSend = (
 type SeamGoalStep =
   | { kind: 'done' }
   | { kind: 'busy' }
-  | { kind: 'rekicked'; started: { ended: Promise<RuntimeRunEnd> } };
+  | { kind: 'rekicked'; started: { ended: Promise<RuntimeRunEnd> } }
+  // fork(claude-agent): parked on a question the turn asked in plain text; `resumed` once the person replied.
+  | { kind: 'waiting'; resumed: Promise<RuntimeRunEnd> };
 
 interface SeamRun {
   binding: FactoryRunBindingRecord;
@@ -3419,9 +3421,22 @@ export class FactoryDecisionDispatcher {
                 await run.workingPhase?.verify();
                 return;
               }
-              const step = await this.#seamGoalStep(run.goal, run.workingPhase, binding, send, kickoffId);
+              const step = await this.#seamGoalStep(
+                run.goal,
+                run.workingPhase,
+                binding,
+                send,
+                kickoffId,
+                requestContext,
+              );
               if (step.kind === 'done') {
                 await run.workingPhase.verify();
+                return;
+              }
+              // Parked on the person, as a run parked on its `ask_user` is: followed once they reply.
+              if (step.kind === 'waiting') {
+                ended = undefined;
+                following = step.resumed;
                 return;
               }
               // Another turn took the session first (a person's): its goal goes on after it, unwatched,
@@ -3495,11 +3510,22 @@ export class FactoryDecisionDispatcher {
         await this.#runtimeSessions!.idle(binding.sessionId);
         const taken: { step: SeamGoalStep } = { step: { kind: 'done' } };
         await this.#withBindingSkillRun(binding.id, async () => {
-          taken.step = await this.#seamGoalStep(goal, workingPhase, binding, ctx.send, ctx.kickoffId);
+          taken.step = await this.#seamGoalStep(
+            goal,
+            workingPhase,
+            binding,
+            ctx.send,
+            ctx.kickoffId,
+            this.#seamRequestContext(run.startedBy, run.orgId),
+          );
         });
         const step = taken.step;
         if (step.kind === 'busy') {
           current = Promise.resolve({ reason: 'complete' });
+          continue;
+        }
+        if (step.kind === 'waiting') {
+          current = step.resumed;
           continue;
         }
         if (step.kind === 'done') break;
@@ -3519,6 +3545,9 @@ export class FactoryDecisionDispatcher {
    * The goal's next step after a turn that ended on its own: `done` (met, spent, no longer this run's),
    * `rekicked`, or `busy` when another turn holds the session (a person's), which a re-kick must never
    * queue behind with a verdict from before it. Judged right before the re-kick is sent.
+   *
+   * fork(claude-agent): a turn that ended asking the person something in plain text is not re-kicked
+   * (a goal-judge reminder would answer it for them): it is parked on that question (`waiting`).
    */
   async #seamGoalStep(
     goal: RuntimeGoal,
@@ -3526,13 +3555,25 @@ export class FactoryDecisionDispatcher {
     binding: FactoryRunBindingRecord,
     send: SeamSend,
     kickoffId: string,
+    requestContext: RequestContext,
   ): Promise<SeamGoalStep> {
     const seam = this.#runtimeSessions!;
     if (seam.isRunning(binding.sessionId)) return { kind: 'busy' };
-    const next = await this.#nextSeamGoalAttempt(goal, workingPhase);
+    const next = await this.#nextSeamGoalAttempt(goal, workingPhase, binding);
     if (!next) return { kind: 'done' };
     // Judging read storage: a turn that started meanwhile goes first, and the goal is judged after it.
     if (seam.isRunning(binding.sessionId)) return { kind: 'busy' };
+    if ('waiting' in next) {
+      const parked = await seam.awaitReply!(binding.sessionId, { question: next.waiting }, requestContext);
+      if (parked) return { kind: 'waiting', resumed: parked.resumed };
+      // Nobody can be asked here after all: the goal goes on as it would have.
+      const again = await this.#nextSeamGoalAttempt(goal, workingPhase);
+      if (!again || 'waiting' in again) return { kind: 'done' };
+      return {
+        kind: 'rekicked',
+        started: await send({ runId: `${kickoffId}:goal:${again.attempt}`, continuation: again.continuation }),
+      };
+    }
     return {
       kind: 'rekicked',
       started: await send({ runId: `${kickoffId}:goal:${next.attempt}`, continuation: next.continuation }),
@@ -3543,11 +3584,18 @@ export class FactoryDecisionDispatcher {
   async #nextSeamGoalAttempt(
     goal: RuntimeGoal,
     workingPhase: SeamWorkingPhase,
-  ): Promise<{ continuation: string; attempt: number } | undefined> {
+    // fork(claude-agent): asked whether the turn ended waiting on a person, when it can be parked on them.
+    asking?: FactoryRunBindingRecord,
+  ): Promise<{ continuation: string; attempt: number } | { waiting: string } | undefined> {
     const store = await this.#runtimeThreadState?.();
     if (!store) return undefined;
+    const seam = this.#runtimeSessions!;
+    const waiting =
+      asking && seam.askedPerson && seam.awaitReply
+        ? () => seam.askedPerson!(asking.sessionId, { objective: goal.objective })
+        : undefined;
     // Claude's Factory tool results reach the board before Claude gets them: nothing trails the turn.
-    return judgeRuntimeGoal(store, goal, workingPhase.verdict);
+    return judgeRuntimeGoal(store, goal, workingPhase.verdict, waiting);
   }
 
   /**
