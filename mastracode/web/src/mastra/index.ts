@@ -28,6 +28,7 @@ import { E2BFactorySandbox } from '@mastra/e2b';
 import { RedisStreamsPubSub } from '@mastra/redis-streams';
 import { getDatabasePath } from '@mastra/code-sdk/utils/project';
 import { DEFAULT_RETENTION } from '@mastra/code-sdk/utils/storage-maintenance';
+import { OidcAuth } from '@factory/auth-oidc';
 import { MastraAuthWorkos } from '@mastra/auth-workos';
 import { createFactorySecretEncryption, LocalFactorySandbox, MastraFactory } from '@mastra/factory';
 import { GithubIntegration } from '@mastra/factory/integrations/github/integration';
@@ -152,6 +153,10 @@ if (redisUrl) {
 //      platform-backed default provider.
 const authDisabled = process.env.MASTRACODE_AUTH_DISABLED === '1';
 const workosConfigured = Boolean(process.env.WORKOS_API_KEY?.trim() && process.env.WORKOS_CLIENT_ID?.trim());
+// fork(claude-agent): self-hosted OpenID Connect sign-in.
+const oidcConfigured = Boolean(
+  process.env.OIDC_ISSUER?.trim() && process.env.OIDC_CLIENT_ID?.trim() && process.env.OIDC_CLIENT_SECRET?.trim(),
+);
 let auth: IMastraAuthProvider | null | undefined;
 
 if (authDisabled) {
@@ -162,6 +167,19 @@ if (authDisabled) {
       '[Auth] WORKOS_API_KEY/WORKOS_CLIENT_ID are set but ignored: MASTRA_SHARED_API_URL takes precedence, so sign-in defers to the platform. Unset MASTRA_SHARED_API_URL to use self-managed WorkOS auth.',
     );
   }
+} else if (oidcConfigured) {
+  // fork(claude-agent): any OpenID Connect provider (e.g. Pocket ID) through @factory/auth-oidc.
+  auth = new OidcAuth({
+    issuer: process.env.OIDC_ISSUER!.trim(),
+    clientId: process.env.OIDC_CLIENT_ID!.trim(),
+    clientSecret: process.env.OIDC_CLIENT_SECRET!.trim(),
+    sessionSecret: process.env.FACTORY_SESSION_SECRET?.trim() ?? '',
+    redirectUri: process.env.MASTRACODE_PUBLIC_URL?.trim()
+      ? new URL('/auth/callback', process.env.MASTRACODE_PUBLIC_URL.trim()).toString()
+      : undefined,
+    organizationId: process.env.OIDC_ORGANIZATION_ID?.trim() || 'homelab',
+    displayName: process.env.OIDC_DISPLAY_NAME?.trim() || 'Pocket ID',
+  });
 } else if (workosConfigured) {
   auth = new MastraAuthWorkos({ fetchMemberships: true });
 }

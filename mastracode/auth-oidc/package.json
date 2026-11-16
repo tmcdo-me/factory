@@ -1,0 +1,48 @@
+{
+  "name": "@factory/auth-oidc",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Sign in to Factory with any OpenID Connect provider (e.g. Pocket ID): discovery, authorization code + PKCE, a signed session cookie, one organization.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown --silent --config tsdown.config.ts",
+    "build:lib": "pnpm build",
+    "check": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test": "vitest run",
+    "lint": "oxlint --type-aware ."
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "jose": "^6.2.12"
+  },
+  "devDependencies": {
+    "@internal/lint": "workspace:*",
+    "@internal/types-builder": "workspace:*",
+    "@mastra/core": "workspace:*",
+    "@types/node": "22.19.15",
+    "tsdown": "0.23.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  },
+  "peerDependencies": {
+    "@mastra/core": ">=1.68.0-0 <2.0.0-0"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}
