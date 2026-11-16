@@ -1802,6 +1802,23 @@ export class MastraFactory {
     // fork(claude-agent): Factory's session tools, built per turn for Mastra Code (`extraTools`
     // below assigns it) and Claude Agent alike.
     let factorySessionTools: ((context: { requestContext: RequestContext }) => Promise<IntegrationTools>) | undefined;
+    // fork(claude-agent): the git audit Mastra Code's post-tool observer runs, for Claude Agent's commands.
+    const auditAgentGitAction = (
+      toolContext: { toolName: string; input: unknown; output?: unknown; error?: unknown },
+      requestContext: RequestContext,
+    ) =>
+      observeAgentGitAction({
+        audit: auditDomain,
+        toolContext: { ...toolContext, context: requestContext },
+        resolveRepositorySlugs: async sessionId => {
+          for (const provider of sourceControlToolProviders) {
+            const session = await provider.storage.sessions.getBySessionId(sessionId);
+            if (!session) continue;
+            return environmentSlugs(await resolveSessionRepositories({ sourceControl: provider.storage, session }));
+          }
+          return [];
+        },
+      });
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
@@ -1823,6 +1840,22 @@ export class MastraFactory {
         : {}),
       // The card and phase each turn, as Mastra Code's state signals tell its sessions.
       context: stateSignalContext([factoryProcessor, workItemProcessor].filter(processor => processor !== undefined)),
+      // A finished Factory tool call counts as it does for Mastra Code: an approved plan lets the card
+      // leave Planning, and the board's tool-result rules run.
+      onToolResult: async result => {
+        await factoryProcessor?.ingestRuntimeToolResult(result.requestContext, result);
+      },
+      // Claude Code's own shell is Mastra Code's `execute_command` to the git audit.
+      onShellResult: result =>
+        auditAgentGitAction(
+          {
+            toolName: 'execute_command',
+            input: { command: result.command },
+            output: result.output,
+            ...(result.error ? { error: result.error } : {}),
+          },
+          result.requestContext,
+        ),
     });
     this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>

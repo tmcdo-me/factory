@@ -648,6 +648,53 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     }
   }
 
+  /**
+   * fork(claude-agent): a Factory tool call that finished in a session on another runtime (Claude
+   * Agent), read as a finished call in a Mastra Code thread is: it stamps the phase's exit (an
+   * approved plan is what lets the card leave Planning), runs the board's tool-result rules and
+   * records pull request provenance. The call id stands in for the assistant message id.
+   */
+  async ingestRuntimeToolResult(
+    requestContext: ComputeStateSignalArgs['requestContext'],
+    result: {
+      callId: string;
+      toolName: string;
+      input: unknown;
+      status: 'success' | 'error';
+      value?: unknown;
+      error?: unknown;
+    },
+  ): Promise<void> {
+    const binding = await findSessionRunBinding(requestContext, this.options.storage);
+    if (!binding) return;
+    const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
+    if (!itemInRuleStage(await this.boards.load(binding), item)) return;
+    const toolResult: CompletedToolResult = {
+      assistantMessageId: result.callId,
+      messageCreatedAt: new Date(),
+      toolCallId: result.callId,
+      toolName: result.toolName.slice(0, 256),
+      input: boundedResult(result.input ?? {}),
+      status: result.status,
+      value: result.status === 'error' ? boundedError(result.error) : boundedResult(result.value),
+    };
+    try {
+      await this.options.recordPullRequestProvenance?.({
+        binding,
+        item,
+        assistantMessageId: toolResult.assistantMessageId,
+        toolCallId: toolResult.toolCallId,
+        toolName: toolResult.toolName,
+        toolInput: toolResult.input,
+        toolResult: toolResult.value,
+        status: toolResult.status,
+      });
+    } catch {
+      // Provenance is supporting evidence and must not block authoritative rule ingress.
+    }
+    await this.ingestToolResult(binding, item, toolResult);
+  }
+
   private async ingestMessages(
     binding: FactoryRunBindingRecord,
     messages: MastraDBMessage[],

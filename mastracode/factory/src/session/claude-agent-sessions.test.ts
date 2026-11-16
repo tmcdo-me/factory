@@ -763,6 +763,101 @@ describe('ClaudeAgentSessions board runs', () => {
   });
 });
 
+describe('ClaudeAgentSessions tool observers', () => {
+  it("tells Factory each tool call's result before Claude gets it, failures included", async () => {
+    const order: string[] = [];
+    const echo = createTool({
+      id: 'factory_echo',
+      description: 'Echoes',
+      inputSchema: z.object({ item: z.string() }),
+      execute: async ({ item }) => ({ item }),
+    });
+    const failing = createTool({
+      id: 'factory_fail',
+      description: 'Always fails',
+      inputSchema: z.object({}),
+      execute: async () => {
+        throw new Error('no such card');
+      },
+    });
+    const fake = toolCallingQuery(async client => {
+      await client.call('factory_echo', { item: 'w1' }, 'toolu_ok');
+      order.push('claude got the result');
+      await client.call('factory_fail', {}, 'toolu_bad');
+    });
+    const onToolResult = vi.fn(async (result: { toolName: string }) => {
+      order.push(`observed ${result.toolName}`);
+    });
+    const { sessions, log } = toolSetup(fake.fn, {
+      onToolResult,
+      tools: async () => ({ factory_echo: echo, factory_fail: failing }),
+    });
+    await sessions.commands().send('s1', { text: 'go' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    expect(order).toEqual(['observed factory_echo', 'claude got the result', 'observed factory_fail']);
+    expect(onToolResult.mock.calls[0]![0]).toMatchObject({
+      sessionId: 's1',
+      callId: 'toolu_ok',
+      toolName: 'factory_echo',
+      input: { item: 'w1' },
+      status: 'success',
+      value: { item: 'w1' },
+    });
+    expect(onToolResult.mock.calls[1]![0]).toMatchObject({ callId: 'toolu_bad', status: 'error' });
+    // It carries the request context the call ran with: the session's, as the turn's caller.
+    const rc = (onToolResult.mock.calls[0]![0] as unknown as { requestContext: RequestContext }).requestContext;
+    expect((rc.get('controller') as { sessionId: string }).sessionId).toBe('s1');
+    expect((rc.get('user') as { workosId: string }).workosId).toBe('user-a');
+  });
+
+  it("follows Claude Code's own shell commands and reports each one that finished", async () => {
+    const onShellResult = vi.fn(async () => {});
+    const query: QueryFn = ({ prompt }) => {
+      const iterator = (async function* () {
+        for await (const _message of prompt) {
+          yield { type: 'system', subtype: 'init', session_id: 'claude-xyz', uuid: 'u' } as never;
+          yield {
+            type: 'assistant',
+            uuid: 'u',
+            session_id: 'claude-xyz',
+            parent_tool_use_id: null,
+            message: {
+              id: 'msg_1',
+              role: 'assistant',
+              content: [{ type: 'tool_use', id: 'toolu_gh', name: 'Bash', input: { command: 'gh pr create --fill' } }],
+            },
+          } as never;
+          yield {
+            type: 'user',
+            uuid: 'u',
+            session_id: 'claude-xyz',
+            parent_tool_use_id: null,
+            message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_gh', content: 'ok' }] },
+            tool_use_result: { stdout: 'https://github.com/acme/repo/pull/7\n', stderr: '' },
+          } as never;
+          yield { type: 'result', subtype: 'success', session_id: 'claude-xyz', uuid: 'u', usage: {} } as never;
+        }
+      })();
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as never;
+    };
+    const { sessions } = toolSetup(query, { onShellResult });
+    await sessions.commands().send('s1', { text: 'open the PR' }, { context: hostContext('user-a') });
+
+    await vi.waitFor(() => expect(onShellResult).toHaveBeenCalledTimes(1));
+    const [shell] = onShellResult.mock.calls[0] as unknown as [
+      { command: string; output: string; requestContext: RequestContext },
+    ];
+    expect(shell).toMatchObject({
+      sessionId: 's1',
+      callId: 'toolu_gh',
+      command: 'gh pr create --fill',
+      output: 'https://github.com/acme/repo/pull/7\n',
+    });
+    expect((shell.requestContext.get('user') as { workosId: string }).workosId).toBe('user-a');
+  });
+});
+
 describe('routeSessionCommands', () => {
   it('sends commands to the runtime recorded for the session, else the fallback', async () => {
     const calls: string[] = [];
