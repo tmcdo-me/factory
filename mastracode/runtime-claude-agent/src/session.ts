@@ -4,7 +4,7 @@ import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import type { Options, Query, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import type { FactoryEvent, RunEndReason, SendInput } from '@factory/agent-runtime';
 
-import { claudeAgentBashSandbox } from './bash-sandbox';
+import { BASH_SANDBOX_INSTRUCTIONS, claudeAgentBashSandbox } from './bash-sandbox';
 import { CLAUDE_AGENT_BUILTIN_TOOLS, CLAUDE_AGENT_DISALLOWED_TOOLS, SKILL_TOOL } from './builtin-tools';
 import { ClaudeAgentEventMapper } from './event-mapper';
 import { FACTORY_TOOLS_INSTRUCTIONS, createFactoryMcpServer } from './factory-tools';
@@ -442,6 +442,7 @@ export class ClaudeAgentSession {
       options.instructions,
       factoryTools ? FACTORY_TOOLS_INSTRUCTIONS : undefined,
       skills ? SKILLS_INSTRUCTIONS : undefined,
+      options.bashSandbox ? BASH_SANDBOX_INSTRUCTIONS : undefined,
     ]
       .filter(Boolean)
       .join('\n\n');

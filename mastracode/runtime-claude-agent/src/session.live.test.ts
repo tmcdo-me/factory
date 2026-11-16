@@ -5,7 +5,9 @@
  * `claude` binary is signed in to. With `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`) it
  * also runs one turn in Claude Code's Bash sandbox, as Factory runs it on this host (a home of its
  * own, the token in the environment), and checks with a probe that no command gets at the token.
- * On macOS that adds a throwaway keychain item for the turn (standing in for a saved login).
+ * On macOS that adds a throwaway keychain item for the turn (standing in for a saved login). A
+ * second sandboxed turn pushes a new branch twice to a local bare repository standing in for
+ * `origin` (no GitHub involved).
  */
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -27,6 +29,28 @@ import { claudeProcessEnv } from './env';
 import { ClaudeAgentSession } from './session';
 import type { QueryFn } from './session';
 import { writeSkillsPlugin } from './skills';
+
+/**
+ * What the push check runs in Claude's sandboxed shell: a new branch off `origin/main`, two commits
+ * each pushed with plain `git push`, then what `-u` and plain `git pull` still do there (reported,
+ * not required). One `check.<name>=<value>` line per result.
+ */
+const PUSH_CHECK_SCRIPT = `set -u
+p() { echo "check.$1=$2"; }
+quiet() { if [ -z "$1" ]; then echo none; else printf '%s' "$1" | tr '\\n' ' '; fi; }
+commit() { git -c user.email=check@example.com -c user.name=check commit -q --allow-empty -m "$1"; }
+if git config factory.check yes 2>/dev/null; then p config_write ok; else p config_write denied; fi
+p push_default "$(git config --get push.default)"
+if git checkout -q -b feature origin/main 2>/dev/null; then p checkout ok; else p checkout failed; fi
+commit one
+if out=$(git push -q 2>&1); then p push_first ok; else p push_first failed; fi; p push_first_stderr "$(quiet "$out")"
+commit two
+if out=$(git push -q 2>&1); then p push_second ok; else p push_second failed; fi; p push_second_stderr "$(quiet "$out")"
+if git pull -q origin feature >/dev/null 2>&1; then p pull_origin ok; else p pull_origin failed; fi
+if out=$(git pull -q 2>&1); then p pull_plain ok; else p pull_plain failed; fi
+if out=$(git push -q -u origin feature 2>&1); then p push_u ok; else p push_u failed; fi; p push_u_stderr "$(quiet "$out")"
+p done yes
+`;
 
 /** The real `query`, with every message Claude Code sends copied to `seen`. */
 function tappedQuery(seen: SDKMessage[]): QueryFn {
@@ -261,6 +285,83 @@ describe.skipIf(!process.env.CLAUDE_AGENT_LIVE)('ClaudeAgentSession (live Claude
       } finally {
         await session.close();
         if (keychainService) execFileSync('security', ['delete-generic-password', '-s', keychainService]);
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+  // Live: in the sandbox `.git/config` is read-only, so `git push -u` pushed but could not record
+  // the upstream, and later plain pushes had none. Claude's environment carries push config instead.
+  it.skipIf(!process.env.CLAUDE_CODE_OAUTH_TOKEN)(
+    "pushes a new branch with plain git push from Claude's sandboxed shell, twice",
+    { timeout: 240_000 },
+    async () => {
+      const root = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'factory-claude-push-'));
+      const cwd = join(root, 'repo');
+      const home = join(root, 'home');
+      for (const dir of BASH_SANDBOX_WRITABLE_HOME_DIRS) mkdirSync(join(home, dir), { recursive: true });
+      const git = (args: string[], at = cwd) => execFileSync('git', args, { cwd: at, encoding: 'utf8' }).trim();
+      // `origin` is a bare repository inside the checkout (where the sandbox lets commands write),
+      // kept out of its status; the clone records `main`'s upstream, as Factory's checkout does.
+      mkdirSync(cwd);
+      git(['init', '-q', '-b', 'main']);
+      git(['init', '-q', '--bare', '.origin.git']);
+      writeFileSync(join(cwd, '.git', 'info', 'exclude'), '.origin.git\n');
+      git(['remote', 'add', 'origin', join(cwd, '.origin.git')]);
+      git([
+        '-c',
+        'user.email=check@example.com',
+        '-c',
+        'user.name=check',
+        'commit',
+        '-q',
+        '--allow-empty',
+        '-m',
+        'init',
+      ]);
+      git(['push', '-q', '-u', 'origin', 'main']);
+      writeFileSync(join(cwd, '.git', 'push-check.sh'), PUSH_CHECK_SCRIPT);
+      const events: FactoryEvent[] = [];
+      const session = new ClaudeAgentSession({
+        sessionId: 'live-push',
+        cwd,
+        env: claudeProcessEnv(process.env, {}, { home }),
+        model: process.env.CLAUDE_AGENT_LIVE_MODEL ?? 'claude-haiku-5-5',
+        bashSandbox: true,
+        emit: event => events.push(event),
+      });
+      try {
+        await session.send({
+          text: 'Use your Bash tool to run exactly `sh .git/push-check.sh` (one call), then reply with only: done',
+        });
+        const deadline = Date.now() + 230_000;
+        while (!events.some(e => e.type === 'run.ended') && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        await session.close();
+        const output = events.flatMap(e => (e.type === 'tool.output' ? [e.chunk] : [])).join('');
+        console.log('[live] push check:\n' + output);
+        const check = Object.fromEntries(
+          output.split('\n').flatMap(line => {
+            const match = /^(check\.[\w.]+)=(.*)$/.exec(line.trim());
+            return match ? [[match[1]!, match[2]!]] : [];
+          }),
+        );
+        expect(check).toMatchObject({
+          'check.config_write': 'denied', // the sandbox still keeps .git/config read-only
+          'check.push_default': 'current',
+          'check.checkout': 'ok',
+          'check.push_first': 'ok',
+          'check.push_first_stderr': 'none',
+          'check.push_second': 'ok',
+          'check.push_second_stderr': 'none',
+          'check.pull_origin': 'ok',
+          'check.done': 'yes',
+        });
+        // Both commits reached `origin`, from outside the sandbox's view.
+        expect(git(['rev-parse', 'refs/heads/feature'], join(cwd, '.origin.git'))).toBe(git(['rev-parse', 'feature']));
+        expect(git(['rev-list', '--count', 'main..feature'])).toBe('2');
+      } finally {
+        await session.close();
         await rm(root, { recursive: true, force: true });
       }
     },

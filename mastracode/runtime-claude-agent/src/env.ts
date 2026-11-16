@@ -71,6 +71,54 @@ export interface ClaudeProcessEnvOptions {
   remote?: boolean;
 }
 
+/**
+ * git config Claude's shell gets from its environment (`GIT_CONFIG_COUNT`, see
+ * {@link withGitConfig}), because Claude Code's Bash sandbox keeps the checkout's `.git/config`
+ * read-only: git can't record a branch's upstream there.
+ *
+ * - `push.default=current`: plain `git push` pushes the current branch to a branch of the same name
+ *   on `origin`, upstream or not. (`push.autoSetupRemote` is left off: it makes every such push try
+ *   to record the upstream, and print the sandbox's "could not lock config file" error.)
+ * - `branch.autoSetupMerge=false`: `git checkout -b <branch> origin/main` would otherwise try to
+ *   record `origin/main` as the new branch's upstream and, refused, exit 1.
+ *
+ * `git push -u` still pushes but prints that error, and `git pull` on a branch with no upstream has
+ * no default to fall back on (`git pull origin <branch>` works): the session's instructions say so
+ * (`BASH_SANDBOX_INSTRUCTIONS`).
+ */
+export const CLAUDE_GIT_CONFIG: readonly (readonly [key: string, value: string])[] = [
+  ['push.default', 'current'],
+  ['branch.autoSetupMerge', 'false'],
+];
+
+/**
+ * `env` with git config `entries` added as `GIT_CONFIG_KEY_<n>`/`GIT_CONFIG_VALUE_<n>` after the
+ * entries it already has (`GIT_CONFIG_COUNT`). A key those entries already set keeps its value.
+ */
+export function withGitConfig(
+  env: Record<string, string>,
+  entries: readonly (readonly [key: string, value: string])[],
+): Record<string, string> {
+  const raw = env.GIT_CONFIG_COUNT;
+  const count = raw !== undefined && /^\d+$/.test(raw) ? Number(raw) : 0;
+  // Section and key names are case-insensitive (`push.default` is `Push.Default`).
+  const present = new Set<string>();
+  for (let i = 0; i < count; i++) {
+    const key = env[`GIT_CONFIG_KEY_${i}`];
+    if (key) present.add(key.toLowerCase());
+  }
+  const out = { ...env };
+  let next = count;
+  for (const [key, value] of entries) {
+    if (present.has(key.toLowerCase())) continue;
+    out[`GIT_CONFIG_KEY_${next}`] = key;
+    out[`GIT_CONFIG_VALUE_${next}`] = value;
+    next++;
+  }
+  if (next > count) out.GIT_CONFIG_COUNT = String(next);
+  return out;
+}
+
 export function claudeProcessEnv(
   hostEnv: Record<string, string | undefined>,
   sandboxEnv: Record<string, string> = {},
@@ -98,5 +146,6 @@ export function claudeProcessEnv(
   if (options.remote) env.DISABLE_AUTOUPDATER = '1';
   // Identifies the embedding app in Claude Code's User-Agent.
   env.CLAUDE_AGENT_SDK_CLIENT_APP = 'factory';
-  return env;
+  // After the sandbox's own entries, which win for a key both set.
+  return withGitConfig(env, CLAUDE_GIT_CONFIG);
 }

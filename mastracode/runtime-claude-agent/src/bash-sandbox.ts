@@ -67,6 +67,14 @@ export function claudeAgentBashSandbox(options: ClaudeAgentBashSandboxOptions = 
   };
 }
 
+/**
+ * What Claude is told when its Bash runs in the sandbox: `.git/config` is read-only there, so git
+ * can't record a branch's upstream. Claude's environment makes plain `git push` push the current
+ * branch (`CLAUDE_GIT_CONFIG` in `env.ts`); `-u` still pushes but prints an error.
+ */
+export const BASH_SANDBOX_INSTRUCTIONS =
+  "Your shell can't write `.git/config`, so git can't record a branch's upstream: push with plain `git push` (it pushes the current branch to `origin` under the same name), not `git push -u`, and pull a branch with no upstream with `git pull origin <branch>`.";
+
 /** {@link claudeAgentBashSandbox} with no extra `denyRead`. */
 export const CLAUDE_AGENT_BASH_SANDBOX = claudeAgentBashSandbox();
 

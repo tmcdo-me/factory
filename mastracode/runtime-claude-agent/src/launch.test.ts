@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 import { BASH_SANDBOX_WRITABLE_HOME_DIRS } from './bash-sandbox';
-import { claudeProcessEnv } from './env';
+import { CLAUDE_GIT_CONFIG, claudeProcessEnv, withGitConfig } from './env';
 import {
   LAUNCH_BASH_SANDBOX_UNAVAILABLE,
   LAUNCH_BINARY_MISMATCH,
@@ -51,6 +51,11 @@ describe('claudeProcessEnv for Claude Code in a sandbox', () => {
       CLAUDE_CONFIG_DIR: `${installed.home}/.claude`,
       DISABLE_AUTOUPDATER: '1',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'push.default',
+      GIT_CONFIG_VALUE_0: 'current',
+      GIT_CONFIG_KEY_1: 'branch.autoSetupMerge',
+      GIT_CONFIG_VALUE_1: 'false',
     });
   });
 
@@ -60,6 +65,55 @@ describe('claudeProcessEnv for Claude Code in a sandbox', () => {
     expect(claudeProcessEnv(host, {})).toMatchObject({ GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1' });
     // A sandbox that needs its system config can still say so.
     expect(claudeProcessEnv(host, { GIT_CONFIG_NOSYSTEM: '0' })).toMatchObject({ GIT_CONFIG_NOSYSTEM: '0' });
+  });
+
+  // Live: in the Bash sandbox `.git/config` is read-only, so `git push -u` could not record the
+  // upstream and later plain pushes had none. git config from the environment needs no file.
+  it("gives git in Claude's shell push config through its environment, on this host and in a sandbox", () => {
+    const git = {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'push.default',
+      GIT_CONFIG_VALUE_0: 'current',
+      GIT_CONFIG_KEY_1: 'branch.autoSetupMerge',
+      GIT_CONFIG_VALUE_1: 'false',
+    };
+    expect(claudeProcessEnv(host, {})).toMatchObject(git);
+    expect(claudeProcessEnv(host, {}, { home: installed.home, remote: true })).toMatchObject(git);
+    // Never the host's own entries: they are not on the allow-list.
+    expect(
+      claudeProcessEnv({ ...host, GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.pager', GIT_CONFIG_VALUE_0: 'x' }, {}),
+    ).toMatchObject(git);
+  });
+
+  it("adds Factory's git config after the sandbox's own entries, which win for a key both set", () => {
+    const env = claudeProcessEnv(host, {
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/o/r.git.extraHeader',
+      GIT_CONFIG_VALUE_0: 'Authorization: Basic x',
+      GIT_CONFIG_KEY_1: 'Push.Default',
+      GIT_CONFIG_VALUE_1: 'simple',
+    });
+    expect(env).toMatchObject({
+      GIT_CONFIG_COUNT: '3',
+      GIT_CONFIG_KEY_0: 'http.https://github.com/o/r.git.extraHeader',
+      GIT_CONFIG_VALUE_0: 'Authorization: Basic x',
+      GIT_CONFIG_KEY_1: 'Push.Default',
+      GIT_CONFIG_VALUE_1: 'simple',
+      GIT_CONFIG_KEY_2: 'branch.autoSetupMerge',
+      GIT_CONFIG_VALUE_2: 'false',
+    });
+    expect(env).not.toHaveProperty('GIT_CONFIG_KEY_3');
+  });
+
+  it('withGitConfig leaves env alone when every key is already set, and ignores a malformed count', () => {
+    const set = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'push.default', GIT_CONFIG_VALUE_0: 'nothing' };
+    expect(withGitConfig(set, [['push.default', 'current']])).toEqual(set);
+    expect(withGitConfig({ GIT_CONFIG_COUNT: 'two' }, [['push.default', 'current']])).toEqual({
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'push.default',
+      GIT_CONFIG_VALUE_0: 'current',
+    });
+    expect(CLAUDE_GIT_CONFIG.map(([key]) => key)).not.toContain('push.autoSetupRemote');
   });
 
   it('still passes the host basics when Claude Code runs on this host', () => {

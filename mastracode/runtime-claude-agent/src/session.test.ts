@@ -4,7 +4,7 @@ import type { EventEnvelope, FactoryEvent, FactoryToolContext } from '@factory/a
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { claudeAgentBashSandbox } from './bash-sandbox';
+import { BASH_SANDBOX_INSTRUCTIONS, claudeAgentBashSandbox } from './bash-sandbox';
 import { claudeProcessEnv } from './env';
 import type { FactoryToolCall } from './factory-tools';
 import { ClaudeAgentSession, SKILLS_INSTRUCTIONS, instructionFilesAbove, stoppedBySignal } from './session';
@@ -282,6 +282,31 @@ describe('ClaudeAgentSession', () => {
     ]);
     expect(await run(undefined)).not.toHaveProperty('sandbox');
     expect(await run(false)).not.toHaveProperty('sandbox');
+  });
+
+  // Live: in the sandbox `git push -u` pushed but could not record the upstream (`.git/config` is
+  // read-only there), so Claude is told to push with plain `git push` (see CLAUDE_GIT_CONFIG).
+  it("tells Claude how to push and pull when its shell can't write .git/config", async () => {
+    const appendFor = async (bashSandbox: boolean) => {
+      const events: FactoryEvent[] = [];
+      const fake = fakeQuery([[result()]]);
+      const session = new ClaudeAgentSession({
+        sessionId: 's1',
+        cwd: '/work/s1',
+        env: {},
+        instructions: 'You are working on a Factory card.',
+        ...(bashSandbox ? { bashSandbox } : {}),
+        emit: event => events.push(event),
+        query: fake.fn,
+      });
+      await session.send({ text: 'push it' });
+      await settled(events);
+      return (fake.calls[0]!.options as { systemPrompt: { append?: string } }).systemPrompt.append;
+    };
+    expect(await appendFor(true)).toBe(`You are working on a Factory card.\n\n${BASH_SANDBOX_INSTRUCTIONS}`);
+    expect(BASH_SANDBOX_INSTRUCTIONS).toContain('plain `git push`');
+    expect(BASH_SANDBOX_INSTRUCTIONS).toContain('`git pull origin <branch>`');
+    expect(await appendFor(false)).toBe('You are working on a Factory card.');
   });
 
   // 9c: Read, Grep, Glob, Edit, Write and NotebookEdit run in Claude Code's own process, outside the
@@ -771,6 +796,11 @@ describe('claudeProcessEnv', () => {
       CLAUDE_CODE_OAUTH_TOKEN: 'sk-ant-oat-x',
       GH_TOKEN: 'ghs_sandbox',
       CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
+      GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'push.default',
+      GIT_CONFIG_VALUE_0: 'current',
+      GIT_CONFIG_KEY_1: 'branch.autoSetupMerge',
+      GIT_CONFIG_VALUE_1: 'false',
     });
   });
 

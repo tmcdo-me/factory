@@ -652,6 +652,12 @@ describe('ClaudeAgentSessions with Factory tools', () => {
         CLAUDE_CONFIG_DIR: `${spriteHome}/.claude`,
         DISABLE_AUTOUPDATER: '1',
         CLAUDE_AGENT_SDK_CLIENT_APP: 'factory',
+        // Push config for git in Claude's sandboxed shell, which can't write `.git/config`.
+        GIT_CONFIG_COUNT: '2',
+        GIT_CONFIG_KEY_0: 'push.default',
+        GIT_CONFIG_VALUE_0: 'current',
+        GIT_CONFIG_KEY_1: 'branch.autoSetupMerge',
+        GIT_CONFIG_VALUE_1: 'false',
       });
       // The skills plugin is written in the sandbox; nothing is written on this host.
       expect(written.get(`${plugin}/skills/factory-plan/SKILL.md`)).toContain('# Factory Plan');
