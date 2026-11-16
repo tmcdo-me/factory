@@ -16,6 +16,7 @@
     "test:msw": "vitest run --project msw:factory-ui"
   },
   "dependencies": {
+    "@factory/agent-runtime": "workspace:*",
     "@mastra/client-js": "workspace:*",
     "@mastra/code-sdk": "workspace:*",
     "@mastra/core": "workspace:*",
