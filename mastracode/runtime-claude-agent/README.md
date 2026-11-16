@@ -90,7 +90,14 @@ inside it, with the same isolation as on the host:
   through `enableWeakerNetworkIsolation`). Writes go to the checkout, the temp directory and the
   package caches under Claude's home (`BASH_SANDBOX_WRITABLE_HOME_DIRS`); Claude Code keeps
   `.git/config`, `.git/hooks` and `.claude/` settings read-only, so `git config` (and `git remote
-add`) fails in Claude's shell, while commits and pushes work. In a Sprite, `ensureBashSandbox`
+add`) fails in Claude's shell, while commits and pushes work.
+  git can't record a branch's upstream there either, so `claudeProcessEnv` gives git its config through the environment
+  (`CLAUDE_GIT_CONFIG` as `GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_n`, after any the sandbox sets):
+  `push.default=current`, so plain `git push` pushes a new branch, and `branch.autoSetupMerge=false`,
+  so `git checkout -b <b> origin/main` doesn't fail recording an upstream. `git push -u` still
+  pushes but prints "could not lock config file", and plain `git pull` on a branch without an
+  upstream has nothing to pull from, so sandboxed sessions are told to use plain `git push` and
+  `git pull origin <branch>` (`BASH_SANDBOX_INSTRUCTIONS`). In a Sprite, `ensureBashSandbox`
   installs bubblewrap and socat (apt), and the launch drops the Sprite user's ambient capabilities
   and unmasks `/proc` so bubblewrap can mount a fresh one; without them Claude Code refuses to
   start (`LAUNCH_BASH_SANDBOX_UNAVAILABLE`). On a Linux host it needs bubblewrap and socat
@@ -114,7 +121,8 @@ add`) fails in Claude's shell, while commits and pushes work. In a Sprite, `ensu
 pnpm --filter @factory/runtime-claude-agent test
 # one real turn against the bundled Claude Code, on this machine's Claude login; with
 # CLAUDE_CODE_OAUTH_TOKEN also one in the Bash sandbox, probed for the token (macOS: adds and
-# removes a throwaway keychain item):
+# removes a throwaway keychain item), and one pushing a new branch twice with plain `git push` to a
+# local bare `origin`:
 CLAUDE_AGENT_LIVE=1 pnpm --filter @factory/runtime-claude-agent exec vitest run src/session.live.test.ts
 # with CLAUDE_CODE_OAUTH_TOKEN: two turns through Factory's sessions, checking that Read and Grep
 # are refused a FACTORY_CLAUDE_AGENT_BASH_DENY_READ file and still read the checkout:

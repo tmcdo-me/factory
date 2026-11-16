@@ -458,8 +458,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
      (`BASH_SANDBOX_WRITABLE_HOME_DIRS`: `.npm`, `.cache`, pnpm, yarn, bun, Go, Cargo, Gradle,
      Maven, `Library/Caches`) are writable, created before Claude Code starts (a Linux rule for a
      missing path does nothing). Claude Code keeps `.git/config`, `.git/hooks` and `.claude/`
-     settings read-only even in the checkout: `git config`/`git remote add` fail in Claude's shell
-     (commits and pushes, `push -u` included, work), and a command can't plant a hook. In a Sprite
+     settings read-only even in the checkout: `git config`/`git remote add` fail in Claude's shell,
+     and a command can't plant a hook. Commits and pushes work, but git can't record a branch's
+     upstream there: live, `git push -u` pushed and printed "could not lock config file", so later
+     plain pushes had no upstream, and `git checkout -b <b> origin/main` exited 1 (it records
+     `origin/main` as the upstream). Claude Code's environment now carries git config instead
+     (`GIT_CONFIG_COUNT`, after any entries the sandbox sets; `CLAUDE_GIT_CONFIG`), locally and in
+     Sprites: `push.default=current` (plain `git push` pushes the current branch to `origin` under
+     its own name) and `branch.autoSetupMerge=false`; `push.autoSetupRemote` is left off (every
+     push would try to record the upstream and print the error). `-u` still prints the error and
+     plain `git pull` has no upstream on a branch Claude created (git has no default to fall back
+     on; `git pull origin <branch>` works), so sandboxed sessions' instructions say to push with
+     plain `git push` and pull with `git pull origin <branch>` (`BASH_SANDBOX_INSTRUCTIONS`).
+     Checked live on macOS against a local bare `origin` (`session.live.test.ts`: new branch, two
+     commits, two plain pushes). Factory's own pushes (`source_control_*`) run outside Claude's
+     sandbox and still record upstreams; Mastra Code sessions don't get this environment. In a Sprite
      (Ubuntu 26.04) bubblewrap and socat are missing; `ensureBashSandbox` installs them with
      `apt-get` (the archive's signed index) in `prepare` and on every sandboxed open. Two more
      things stopped bubblewrap there: the Sprite's user holds the container's default capabilities
