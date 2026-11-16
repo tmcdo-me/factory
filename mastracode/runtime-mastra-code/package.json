@@ -1,0 +1,50 @@
+{
+  "name": "@factory/runtime-mastra-code",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mastra Code as a Factory agent runtime: maps Mastra Code's AgentController sessions onto @factory/agent-runtime.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown --silent --config tsdown.config.ts",
+    "build:lib": "pnpm build",
+    "check": "tsc --noEmit",
+    "test:unit": "vitest run",
+    "test": "vitest run",
+    "lint": "oxlint --type-aware ."
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@factory/agent-runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@internal/ai-sdk-v5": "workspace:*",
+    "@internal/lint": "workspace:*",
+    "@internal/types-builder": "workspace:*",
+    "@mastra/core": "workspace:*",
+    "@types/node": "22.19.15",
+    "tsdown": "0.23.1",
+    "typescript": "catalog:",
+    "vitest": "catalog:",
+    "zod": "^4.4.3"
+  },
+  "peerDependencies": {
+    "@mastra/core": ">=1.68.0-0 <2.0.0-0"
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

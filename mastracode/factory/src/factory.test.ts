@@ -977,6 +977,8 @@ describe('MastraFactory.prepare', () => {
       'custom-providers',
       'sandbox-envs',
       'queue-health',
+      'agent-events', // fork(claude-agent)
+      'agent-interactions', // fork(claude-agent)
       'integrations',
       'projects',
       'filesystem',

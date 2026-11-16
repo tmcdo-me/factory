@@ -21,6 +21,7 @@
 
 import { existsSync } from 'node:fs';
 
+import { SessionEventHub } from '@factory/agent-runtime';
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
 import type { MastraCodeConfig } from '@mastra/code-sdk';
@@ -149,6 +150,7 @@ import { peekSessionSandbox } from './sandbox/session-sandbox.js';
 import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
+import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
 import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './session/credential-policy.js';
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
@@ -175,6 +177,8 @@ import { FactoryWorkItemStateProcessor } from './session/work-item-state-process
 import { assertFactorySkills, findBoardSkillProblems } from './skills/app-skills.js';
 import { createSpaStaticMiddleware, resolveUiDistDir } from './spa-static.js';
 import { createStateSigner } from './state-signing.js';
+import { AgentEventsStorage } from './storage/domains/agent-events/base.js';
+import { AgentInteractionsStorage } from './storage/domains/agent-interactions/base.js';
 import { observeAgentGitAction } from './storage/domains/audit/agent-audit.js';
 import { AuditStorage } from './storage/domains/audit/base.js';
 import { AuditDomain } from './storage/domains/audit/domain.js';
@@ -601,6 +605,8 @@ export class MastraFactory {
   readonly #skills: readonly InlineSkill[];
   readonly #configVersion: string;
   #prepared: Awaited<ReturnType<typeof prepareAgentControllerMount>> | undefined;
+  /** fork(claude-agent): agent runtime seam services, set in `prepare()`. */
+  #agentSeam: { events: SessionEventHub; interactions: AgentInteractionsStorage } | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -929,6 +935,10 @@ export class MastraFactory {
       return undefined;
     });
     const queueHealthStorage = storage.registerDomain(new QueueHealthStorage());
+    // fork(claude-agent): the agent runtime seam's event log and interaction store. Mastra Code
+    // sessions are mirrored into the log (shadow write) until the UI and board rules read from it.
+    const agentEventHub = new SessionEventHub(storage.registerDomain(new AgentEventsStorage()));
+    this.#agentSeam = { events: agentEventHub, interactions: storage.registerDomain(new AgentInteractionsStorage()) };
     // Generic integration storage (connections/subscriptions/settings) — the
     // default persistence surface for integrations without a bespoke domain.
     const integrationStorage = storage.registerDomain(new IntegrationStorage(secretEncryption));
@@ -2416,6 +2426,7 @@ export class MastraFactory {
         },
       );
       observeSessionThreadStamp(session);
+      observeSessionAgentEvents(session, agentEventHub); // fork(claude-agent)
     });
 
     // Blocking: `createSession` awaits the organization seed so per-invocation

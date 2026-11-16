@@ -20,6 +20,7 @@ everything agent-related — and put agents behind it as adapters:
 Only **Mastra Code the agent** moves behind the seam.
 
 ### Done means
+
 - Factory code outside the adapters has **no imports** of `@mastra/code-sdk` or
   `@mastra/core/agent-controller` (enforced by lint rule).
 - A work item completes Intake → Planning → Building → Review → Done on **either** runtime,
@@ -62,11 +63,11 @@ a `RuntimeRegistry`.
 
 ```ts
 interface AgentRuntime {
-  readonly id: string;                         // 'mastra-code' | 'claude-agent'
-  readonly label: string;                      // 'Mastra Code' | 'Claude Agent'
-  capabilities: RuntimeCapabilities;           // subagents, remoteSandbox, thinkingLevels, …
+  readonly id: string; // 'mastra-code' | 'claude-agent'
+  readonly label: string; // 'Mastra Code' | 'Claude Agent'
+  capabilities: RuntimeCapabilities; // subagents, remoteSandbox, thinkingLevels, …
   listModels(ctx: TenantContext): Promise<RuntimeModel[]>;
-  openSession(spec: SessionSpec): Promise<RuntimeSession>;   // create or resume (idempotent by id)
+  openSession(spec: SessionSpec): Promise<RuntimeSession>; // create or resume (idempotent by id)
   init?(): Promise<void>;
   shutdown?(): Promise<void>;
 }
@@ -75,20 +76,20 @@ interface SessionSpec {
   sessionId: string;
   owner: { orgId: string; userId: string; resourceId: string };
   workspace: SessionWorkspace;
-  tools: FactoryToolDef[];                     // bound by Factory for this session
-  context: ContextProvider[];                  // work item / phase / environment, re-read per turn
-  instructions: string;                        // Factory/role instructions (runtime adds its own)
+  tools: FactoryToolDef[]; // bound by Factory for this session
+  context: ContextProvider[]; // work item / phase / environment, re-read per turn
+  instructions: string; // Factory/role instructions (runtime adds its own)
   model?: string;
-  runtimeState?: unknown;                      // adapter-private resume state (opaque to Factory)
+  runtimeState?: unknown; // adapter-private resume state (opaque to Factory)
 }
 
 interface RuntimeSession {
   readonly id: string;
-  send(input: TurnInput): Promise<RunHandle>;  // user message or skill kickoff
+  send(input: TurnInput): Promise<RunHandle>; // user message or skill kickoff
   abort(reason?: string): Promise<void>;
   setModel(modelId: string): Promise<void>;
-  events(): AsyncIterable<FactoryEvent>;       // live; Factory persists + fans out
-  status(): SessionStatus;                     // idle | running | awaiting_interaction | error
+  events(): AsyncIterable<FactoryEvent>; // live; Factory persists + fans out
+  status(): SessionStatus; // idle | running | awaiting_interaction | error
   close(): Promise<void>;
 }
 
@@ -109,7 +110,15 @@ type FactoryEvent =
   | { type: 'run.ended'; runId; reason: 'complete' | 'aborted' | 'error' | 'awaiting_interaction' }
   | { type: 'message.started' | 'message.ended'; messageId; role: 'assistant' | 'user' }
   | { type: 'message.delta'; messageId; part: 'text' | 'reasoning'; delta: string }
-  | { type: 'tool.started'; callId; name; category: ToolCategory; input; executor: 'runtime' | 'factory'; parentCallId? }
+  | {
+      type: 'tool.started';
+      callId;
+      name;
+      category: ToolCategory;
+      input;
+      executor: 'runtime' | 'factory';
+      parentCallId?;
+    }
   | { type: 'tool.updated'; callId; output?: string /* shell stdout etc. */ }
   | { type: 'tool.ended'; callId; result?: unknown; error?: string }
   | { type: 'interaction.requested'; interaction: PendingInteraction }
@@ -130,15 +139,23 @@ type ToolCategory = 'shell' | 'file.read' | 'file.write' | 'search' | 'factory' 
 
 ```ts
 interface FactoryToolDef<I, O> {
-  name: string; description: string;
-  input: ZodType<I>; output?: ZodType<O>;
-  approval?: 'none' | 'required';              // seam asks the human before execute
+  name: string;
+  description: string;
+  input: ZodType<I>;
+  output?: ZodType<O>;
+  approval?: 'none' | 'required'; // seam asks the human before execute
   execute(input: I, ctx: FactoryToolContext): Promise<O>;
 }
 interface FactoryToolContext {
-  sessionId; projectId; orgId; userId; workItemId?; phase?;
-  workspace: SessionWorkspace; signal: AbortSignal;
-  interact<R>(req: InteractionRequest): Promise<R>;   // questions, plan approval
+  sessionId;
+  projectId;
+  orgId;
+  userId;
+  workItemId?;
+  phase?;
+  workspace: SessionWorkspace;
+  signal: AbortSignal;
+  interact<R>(req: InteractionRequest): Promise<R>; // questions, plan approval
 }
 ```
 
@@ -162,15 +179,22 @@ adapter → in-process MCP server (`createSdkMcpServer`). The Factory MCP endpoi
 ```ts
 interface SessionWorkspace {
   kind: 'local' | 'sprite';
-  checkoutDir: string;                 // repo path *inside* the sandbox
-  sandbox: MastraSandbox;              // command/file API (Mastra Code uses this)
-  env(): Promise<Record<string,string>>;  // sandbox env incl. GH_TOKEN*, git credential helper
-  spawn(cmd: string, args: string[], opts: { cwd: string; env: Record<string,string>;
-        signal?: AbortSignal }): SandboxProcess;   // long-lived stdio process inside the sandbox
+  checkoutDir: string; // repo path *inside* the sandbox
+  sandbox: MastraSandbox; // command/file API (Mastra Code uses this)
+  env(): Promise<Record<string, string>>; // sandbox env incl. GH_TOKEN*, git credential helper
+  spawn(
+    cmd: string,
+    args: string[],
+    opts: { cwd: string; env: Record<string, string>; signal?: AbortSignal },
+  ): SandboxProcess; // long-lived stdio process inside the sandbox
 }
-interface SandboxProcess {             // shape matches the Agent SDK's SpawnedProcess
-  stdin: Writable; stdout: Readable; stderr?: Readable;
-  readonly exitCode: number | null; readonly killed: boolean;
+interface SandboxProcess {
+  // shape matches the Agent SDK's SpawnedProcess
+  stdin: Writable;
+  stdout: Readable;
+  stderr?: Readable;
+  readonly exitCode: number | null;
+  readonly killed: boolean;
   kill(signal: NodeJS.Signals): boolean;
   on(event: 'exit', cb: (code: number | null, signal: NodeJS.Signals | null) => void): void;
 }
@@ -181,17 +205,17 @@ Runtimes never assume the checkout is on the Factory host: Claude Agent always l
 
 ### 3.6 Sandbox providers: Local + Fly.io Sprites
 
-| | Local | Sprites |
-| --- | --- | --- |
-| Provider | `LocalFactorySandbox` (existing) | `SpritesSandbox` from `@mastra/sprites` (existing, `workspaces/sprites`), wrapped as a `FactorySandbox` |
-| Isolation | none (host user) | Firecracker VM per session, persistent disk, auto-hibernate when idle |
-| `spawn` | `child_process.spawn` | `sprite.spawn()` from `@fly/sprites` — WebSocket exec with stdin/stdout/stderr, `kill`, `wait` |
-| Repo checkout | `<root>/<sessionId>/<repo>` | `/home/sprite/<repo>` (path TBD in slice), cloned by Factory's existing `materializeRepo` via `executeCommand` |
-| Claude Code binary | SDK-bundled | official installer in the sprite, **pinned to the SDK's bundled CLI version**, unmodified; installed once per sprite in the sandbox start hook |
-| Credentials into sandbox | process env | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`); never written to the sprite's disk by Factory |
-| Lifecycle | dir per session | one sprite per session, named from the session id; created lazily; destroyed when the session closes or its work item reaches Done; hibernates in between |
-| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk → `resume: sessionId` works |
-| Server config | — | `SPRITES_TOKEN` (Fly token), optional `FACTORY_SPRITES_ORG`/region; Node ≥ 24 (required by `@fly/sprites`) |
+|                              | Local                                  | Sprites                                                                                                                                                   |
+| ---------------------------- | -------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Provider                     | `LocalFactorySandbox` (existing)       | `SpritesSandbox` from `@mastra/sprites` (existing, `workspaces/sprites`), wrapped as a `FactorySandbox`                                                   |
+| Isolation                    | none (host user)                       | Firecracker VM per session, persistent disk, auto-hibernate when idle                                                                                     |
+| `spawn`                      | `child_process.spawn`                  | `sprite.spawn()` from `@fly/sprites` — WebSocket exec with stdin/stdout/stderr, `kill`, `wait`                                                            |
+| Repo checkout                | `<root>/<sessionId>/<repo>`            | `/home/sprite/<repo>` (path TBD in slice), cloned by Factory's existing `materializeRepo` via `executeCommand`                                            |
+| Claude Code binary           | SDK-bundled                            | official installer in the sprite, **pinned to the SDK's bundled CLI version**, unmodified; installed once per sprite in the sandbox start hook            |
+| Credentials into sandbox     | process env                            | spawn-time env only (`CLAUDE_CODE_OAUTH_TOKEN`, `GH_TOKEN*`); never written to the sprite's disk by Factory                                               |
+| Lifecycle                    | dir per session                        | one sprite per session, named from the session id; created lazily; destroyed when the session closes or its work item reaches Done; hibernates in between |
+| Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk → `resume: sessionId` works                                                                                 |
+| Server config                | —                                      | `SPRITES_TOKEN` (Fly token), optional `FACTORY_SPRITES_ORG`/region; Node ≥ 24 (required by `@fly/sprites`)                                                |
 
 Selection: `FACTORY_SANDBOX_PROVIDER=local|sprites` as the deployment default, overridable per
 project. Platform and E2B sandbox paths are left in place but unsupported by this fork.
@@ -201,9 +225,10 @@ Compliance note: running the unmodified Claude Code binary in a sandbox the oper
 in with the operator's own subscription, is explicitly allowed ("Nor does it prevent an end user
 from signing in to the unmodified Claude Code binary with their own Claude subscription, including
 where a platform hosts Claude Code"). The commercial-terms conditions apply to offering Claude Code
-inside a product to *other* users, which this fork does not do.
+inside a product to _other_ users, which this fork does not do.
 
 ### 3.7 Context, goals, models, credentials
+
 - **Context providers** replace Mastra state-signal input processors: work item, phase, environment,
   repo instructions. The seam evaluates them at each turn and hands them to the adapter.
 - **Goals** (`maxRuns` re-kick until the exit tool succeeds) move from Mastra's objective API into a
@@ -214,6 +239,7 @@ inside a product to *other* users, which this fork does not do.
   has none (host auth, §2).
 
 ### 3.8 UI transport
+
 Factory serves its own session API, backed by the seam:
 `GET /web/factory/sessions/:id/stream` (SSE `FactoryEvent`), `GET …/transcript`, `POST …/messages`,
 `POST …/abort`, `POST …/interactions/:iid`, `PUT …/model`. The UI's chat domain (≈45 files, incl.
@@ -223,6 +249,7 @@ Factory serves its own session API, backed by the seam:
 ## 4. Adapters
 
 ### 4.1 Mastra Code (`runtime-mastra-code`)
+
 Owns everything that is Mastra-Code-specific today: `prepareAgentControllerMount`, the
 `AgentController`, Mastra memory threads, workspace tools (`view`, `execute_command`, …), state-signal
 processors (fed by context providers), `submit_plan`/`ask_user` via suspend (bridged to the broker),
@@ -230,6 +257,7 @@ the credential resolver, OM settings. Maps `AgentControllerEvent` → `FactoryEv
 with today is the acceptance bar.
 
 ### 4.2 Claude Agent (`runtime-claude-agent`)
+
 - One live `query()` per session in streaming-input mode; registry keyed by `sessionId`; idle eviction.
 - `cwd = workspace.checkoutDir`; `env` = allow-list + `workspace.env()` + `CLAUDE_CODE_OAUTH_TOKEN`
   if set. Server secrets (`DATABASE_URL`, encryption keys, GitHub App key) never pass through —
@@ -247,12 +275,12 @@ with today is the acceptance bar.
 
 ## 5. Package layout (all fork-only paths)
 
-| Path | Package | Depends on |
-| --- | --- | --- |
-| `mastracode/agent-runtime/` | `@factory/agent-runtime` | zod, `@mastra/core/workspace` (sandbox type) |
-| `mastracode/runtime-mastra-code/` | `@factory/runtime-mastra-code` | agent-runtime, `@mastra/code-sdk`, `@mastra/core` |
-| `mastracode/runtime-claude-agent/` | `@factory/runtime-claude-agent` | agent-runtime, `@anthropic-ai/claude-agent-sdk` |
-| `mastracode/factory/` | `@mastra/factory` (modified) | agent-runtime only for agent concerns |
+| Path                               | Package                         | Depends on                                        |
+| ---------------------------------- | ------------------------------- | ------------------------------------------------- |
+| `mastracode/agent-runtime/`        | `@factory/agent-runtime`        | zod, `@mastra/core/workspace` (sandbox type)      |
+| `mastracode/runtime-mastra-code/`  | `@factory/runtime-mastra-code`  | agent-runtime, `@mastra/code-sdk`, `@mastra/core` |
+| `mastracode/runtime-claude-agent/` | `@factory/runtime-claude-agent` | agent-runtime, `@anthropic-ai/claude-agent-sdk`   |
+| `mastracode/factory/`              | `@mastra/factory` (modified)    | agent-runtime only for agent concerns             |
 
 Lint: `no-restricted-imports` in `mastracode/factory` and `factory-ui` for `@mastra/code-sdk*` and
 `@mastra/core/agent-controller`, with an allow-list that shrinks to empty by the last slice.
@@ -263,9 +291,12 @@ Each slice: implement → focused tests → manual check where noted → commit.
 
 1. **Seam package + contracts.** Interfaces, `FactoryEvent`, `TranscriptStore` (new storage domain),
    `InteractionBroker`, `RuntimeRegistry`. Unit tests. No Factory changes.
-2. **Mastra Code adapter, read path.** Wraps the existing controller; `AgentControllerEvent` →
-   `FactoryEvent` mapping; transcript persisted in parallel (shadow write). Golden tests comparing
-   mapped events/transcript to today's for recorded sessions.
+2. **Mastra Code adapter, read path.** ✅ `AgentControllerEvent` → `FactoryEvent` mapping
+   (`@factory/runtime-mastra-code`); storage-backed event log + interaction store (Factory domains
+   `agent-events`, `agent-interactions`); every Mastra Code session mirrored into the log (shadow
+   write, deltas coalesced). Verified against a real `AgentController` session driven by a mock
+   model. Finding: Mastra Code delivers typed user turns as `role: 'signal'` messages with a
+   `data-user-message` part; `data-signal` / `data-system-reminder` signals are system context.
 3. **Factory session API + UI on the seam.** New endpoints; UI chat domain moved to `FactoryEvent`.
    Manual: existing sessions render identically.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
@@ -295,6 +326,7 @@ Inventory to migrate (non-test): **67** files in `mastracode/factory/src` import
 the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 
 ## 7. Testing
+
 - Seam + adapters: Vitest, colocated; Claude adapter uses a fake `query()` (no model calls in CI).
 - Mastra Code parity: golden event/transcript tests from recorded sessions; existing focused Factory
   tests stay green each slice (per `mastracode/factory/README.md` "Development").
@@ -302,19 +334,22 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 - Manual E2E per slice 3, 8, 10 on a local self-hosted Factory.
 
 ## 8. Config
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| `FACTORY_RUNTIMES` | `mastra-code` | Enabled runtimes, e.g. `mastra-code,claude-agent` |
+
+| Setting                               | Default        | Meaning                                                                       |
+| ------------------------------------- | -------------- | ----------------------------------------------------------------------------- |
+| `FACTORY_RUNTIMES`                    | `mastra-code`  | Enabled runtimes, e.g. `mastra-code,claude-agent`                             |
 | `FACTORY_CLAUDE_AGENT_MAX_CONCURRENT` | unset (no cap) | Optional cap on live Claude processes; dispatcher `maxInFlight` still applies |
-| `FACTORY_CLAUDE_AGENT_EXECUTABLE` | bundled | Path to an installed `claude` |
-| `CLAUDE_CODE_OAUTH_TOKEN` | unset | Operator-supplied; passed through, never read/stored/logged by Factory |
+| `FACTORY_CLAUDE_AGENT_EXECUTABLE`     | bundled        | Path to an installed `claude`                                                 |
+| `CLAUDE_CODE_OAUTH_TOKEN`             | unset          | Operator-supplied; passed through, never read/stored/logged by Factory        |
 
 ## 9. Upstream
+
 After slice 3 we stop rebasing. Upstream Factory server changes are reviewed and cherry-picked or
 re-implemented; UI non-chat, integrations, boards definitions and storage remain the cheapest to
 take. `FORK.md` documents this.
 
 ## 10. Boundaries
+
 - **Always:** slices land green; new agent-facing code goes through the seam; fork notes in `FORK.md`.
 - **Ask first:** changes in `packages/core` or `packages/server`; new dependencies beyond
   `@anthropic-ai/claude-agent-sdk`; dropping a Factory feature rather than porting it.
@@ -322,40 +357,42 @@ take. `FORK.md` documents this.
   anything "Claude Code".
 
 ## 11. Decisions
+
 - Package scope: `@factory/*`.
 - Sandboxes: Local + Fly.io Sprites (§3.6).
 - Integrations: **keep GitHub, Slack** (Slack unused today, planned). **Drop Linear, GitLab, Jira,
   incident.io.**
 - Mastra-Code-era features:
 
-| Feature | Decision |
-| --- | --- |
-| Board goals (`maxRuns` re-kick) | Port as a Factory-owned loop |
-| Goals UI | Drop |
-| Observational memory | Mastra Code adapter only, defaults; drop settings UI |
-| Voice input | Drop |
-| Browser automation provider | Drop (Claude may use a browser MCP later) |
-| Knowledge runtime | Drop |
-| Scorers | Drop |
-| Task tools (`task_*`) | Mastra Code adapter only |
-| LSP tools | Mastra Code adapter only |
-| Modes / Mastra subagents | Drop (Claude native `Task` subagents allowed) |
-| Per-category tool permissions UI | Drop (broker keeps Factory-tool approvals) |
-| Thread title generation | Replace with work-item / first-message title |
-| Model packs / onboarding | Trim to Mastra Code settings |
-| Custom providers (OpenAI-compatible) | Keep |
-| Encrypted model API keys | Keep (Mastra Code) |
-| Thinking level | Port (→ Claude `effort`) |
-| Workspace `skill` tool | Mastra Code adapter only; board skills delivered to both as kickoff |
-| Workspace viewer, sandbox port URLs, recreate sandbox | Keep |
-| Factory MCP endpoint | Keep |
-| Mastra Connect / custom tools in sessions | Keep via `FactoryToolDef` |
-| Product telemetry (PostHog) | Remove |
-| Health metrics | Keep, untouched |
-| Mastra platform paths (auth, integrations, polling workers, sandbox) | Drop |
-| TUI remote controller | Drop |
+| Feature                                                              | Decision                                                            |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------- |
+| Board goals (`maxRuns` re-kick)                                      | Port as a Factory-owned loop                                        |
+| Goals UI                                                             | Drop                                                                |
+| Observational memory                                                 | Mastra Code adapter only, defaults; drop settings UI                |
+| Voice input                                                          | Drop                                                                |
+| Browser automation provider                                          | Drop (Claude may use a browser MCP later)                           |
+| Knowledge runtime                                                    | Drop                                                                |
+| Scorers                                                              | Drop                                                                |
+| Task tools (`task_*`)                                                | Mastra Code adapter only                                            |
+| LSP tools                                                            | Mastra Code adapter only                                            |
+| Modes / Mastra subagents                                             | Drop (Claude native `Task` subagents allowed)                       |
+| Per-category tool permissions UI                                     | Drop (broker keeps Factory-tool approvals)                          |
+| Thread title generation                                              | Replace with work-item / first-message title                        |
+| Model packs / onboarding                                             | Trim to Mastra Code settings                                        |
+| Custom providers (OpenAI-compatible)                                 | Keep                                                                |
+| Encrypted model API keys                                             | Keep (Mastra Code)                                                  |
+| Thinking level                                                       | Port (→ Claude `effort`)                                            |
+| Workspace `skill` tool                                               | Mastra Code adapter only; board skills delivered to both as kickoff |
+| Workspace viewer, sandbox port URLs, recreate sandbox                | Keep                                                                |
+| Factory MCP endpoint                                                 | Keep                                                                |
+| Mastra Connect / custom tools in sessions                            | Keep via `FactoryToolDef`                                           |
+| Product telemetry (PostHog)                                          | Remove                                                              |
+| Health metrics                                                       | Keep, untouched                                                     |
+| Mastra platform paths (auth, integrations, polling workers, sandbox) | Drop                                                                |
+| TUI remote controller                                                | Drop                                                                |
 
 Dropped features are removed in the slice that would otherwise have to port them.
 
 ## 12. Open questions
+
 None currently.

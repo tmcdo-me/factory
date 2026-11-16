@@ -38,9 +38,11 @@ export class SessionEventHub {
         return envelopes;
       });
     this.#tails.set(sessionId, next);
-    void next.finally(() => {
+    const cleanup = () => {
       if (this.#tails.get(sessionId) === next) this.#tails.delete(sessionId);
-    });
+    };
+    // Settle-only handler: the caller still receives the rejection through `next`.
+    next.then(cleanup, cleanup);
     return next;
   }
 
