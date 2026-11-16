@@ -31,6 +31,8 @@ export const FACTORY_TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
   factory_signal_session: { ...additive, openWorldHint: true, title: 'Message a running session' },
   factory_message_origin: { ...additive, title: 'Reply to the session that started this one' },
   factory_answer_approval: { ...changes, openWorldHint: true, title: 'Answer a session approval request' },
+  // fork(claude-agent)
+  factory_answer_question: { ...changes, openWorldHint: true, title: 'Answer a question a session asked' },
   search: { ...read, title: 'Search work items' },
   fetch: { ...read, title: 'Fetch a work item' },
 };

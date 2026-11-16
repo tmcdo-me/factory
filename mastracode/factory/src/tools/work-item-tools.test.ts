@@ -407,6 +407,7 @@ describe('approval', () => {
         'factory_message_origin',
         'factory_start_session',
         'factory_answer_approval',
+        'factory_answer_question', // fork(claude-agent)
         'factory_switch_session_model',
         'factory_recreate_sandbox',
         'factory_sandbox_port_url',

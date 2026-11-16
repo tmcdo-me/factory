@@ -1692,6 +1692,7 @@ describe('MastraFactory.prepare', () => {
       'factory_unsubscribe_work_item',
       'factory_start_session',
       'factory_answer_approval',
+      'factory_answer_question', // fork(claude-agent)
       'factory_switch_session_model',
       'factory_subscribe_session',
       'factory_unsubscribe_session',
@@ -1710,6 +1711,7 @@ describe('MastraFactory.prepare', () => {
       'factory_message_origin',
       'factory_start_session',
       'factory_answer_approval',
+      'factory_answer_question', // fork(claude-agent)
       'factory_switch_session_model',
       'factory_list_side_sessions',
       'factory_subscribe_session',

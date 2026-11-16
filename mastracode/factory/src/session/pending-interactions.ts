@@ -3,6 +3,7 @@ import type { InteractionRecord, InteractionRequest, InteractionStore } from '@f
 
 import type { FactoryRunOutcome } from '../tools/reports.js';
 import type { LiveSessions, ParkedRun, ParkedRunSource } from './live-sessions.js';
+import { brokerInteraction } from './parked-interaction.js';
 
 /** The Factory project a session works in. */
 export interface SessionProject {
@@ -132,7 +133,13 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }
-    return oldest ? { toolName: interactionToolName(oldest.record.request), suspendedAt: oldest.stamp } : undefined;
+    if (!oldest) return undefined;
+    const interaction = brokerInteraction(oldest.record);
+    return {
+      toolName: interactionToolName(oldest.record.request),
+      suspendedAt: oldest.stamp,
+      ...(interaction ? { interaction } : {}),
+    };
   }
 
   parkedIn(factoryProjectId: string): Array<{ sessionId: string; run: ParkedRun }> {

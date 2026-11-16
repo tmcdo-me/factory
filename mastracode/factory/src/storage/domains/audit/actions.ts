@@ -4,7 +4,8 @@
  */
 export const AUDIT_ACTIONS = {
   work_item: ['created', 'updated', 'deleted', 'stage_moved', 'transition_rejected', 'labels_reconciled'],
-  run: ['started', 'ended', 'approved', 'dismissed', 'retry', 'queued', 'rejected'],
+  // fork(claude-agent): `answered` — a person answered a run's question from outside its session.
+  run: ['started', 'ended', 'approved', 'dismissed', 'retry', 'queued', 'rejected', 'answered'],
   git: ['commit', 'push', 'pr_opened'],
   agent: ['commit', 'push', 'pr_opened', 'signaled'],
   intake: ['config_updated', 'binding_updated', 'label_route_updated'],

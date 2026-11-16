@@ -34,7 +34,8 @@ import type {
   SourceControlStorageHandle,
 } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
-import { answerParkedCall } from '../tools/approval-tools.js';
+import { answerParkedCall, answerParkedQuestion, questionAnswerSchema } from '../tools/approval-tools.js';
+import type { AnsweredQuestion } from '../tools/approval-tools.js'; // fork(claude-agent)
 import type { FactoryRuntimeDelivery } from '../tools/deliver.js'; // fork(claude-agent)
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
@@ -116,6 +117,58 @@ const parkedApprovalAnswerSchema = z
     toolCallId: z.string().trim().min(1).max(200).optional(),
   })
   .strict();
+
+// fork(claude-agent)
+const parkedQuestionAnswerSchema = z
+  .object({
+    answer: questionAnswerSchema,
+    toolCallId: z.string().trim().min(1).max(200).optional(),
+    /** A question a Claude Agent run's turn ended on in plain text has no tool call: its interaction names it. */
+    interactionId: z.string().trim().min(1).max(200).optional(),
+  })
+  .strict();
+
+/**
+ * fork(claude-agent): the session the viewer may answer a parked call or question of: its owner and org
+ * admins may; so may the person who filed its card and anyone whose session follows it.
+ */
+async function parkedAnswerer(
+  c: Context,
+  options: SourceControlSessionRoutesOptions,
+  tenant: { orgId: string; userId: string },
+): Promise<
+  | { response: Response }
+  | {
+      session: SourceControlSession;
+      binding: { workItemId: string } | null;
+      controller: NonNullable<SourceControlSessionRoutesOptions['controller']>;
+    }
+> {
+  const sessionId = c.req.param('sessionId');
+  const session = sessionId ? (await resolveSession(options.sourceControls, sessionId))?.session : undefined;
+  if (!session) return { response: c.json({ error: 'Session not found' }, 404) };
+  const permission = await sessionManagePermission(loose(c), options.auth, tenant, session);
+  if (permission === 'not-found') return { response: c.json({ error: 'Session not found' }, 404) };
+  const binding =
+    session.factoryProjectId && options.workItems?.findActiveRunBindingForSession
+      ? await options.workItems.findActiveRunBindingForSession({
+          orgId: session.orgId,
+          factoryProjectId: session.factoryProjectId,
+          sessionId: session.sessionId,
+        })
+      : null;
+  if (permission !== 'allowed' && !(await followsCard(options, binding?.workItemId, tenant))) {
+    return {
+      response: c.json(
+        { error: "Only the session's owner, an organization admin, or someone following its card can answer." },
+        403,
+      ),
+    };
+  }
+  const controller = options.controller;
+  if (!controller) return { response: c.json({ error: 'Sessions are not available on this server.' }, 503) };
+  return { session, binding, controller };
+}
 
 /** Whether the viewer asked for the card's work: they filed it, or a session of theirs follows it. */
 async function followsCard(
@@ -634,27 +687,10 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
             400,
           );
         }
-        const match = await resolveSession(options.sourceControls, c.req.param('sessionId'));
-        const session = match?.session;
-        if (!session) return c.json({ error: 'Session not found' }, 404);
-        const permission = await sessionManagePermission(loose(c), options.auth, resolved.tenant, session);
-        if (permission === 'not-found') return c.json({ error: 'Session not found' }, 404);
-        const binding =
-          session.factoryProjectId && options.workItems?.findActiveRunBindingForSession
-            ? await options.workItems.findActiveRunBindingForSession({
-                orgId: session.orgId,
-                factoryProjectId: session.factoryProjectId,
-                sessionId: session.sessionId,
-              })
-            : null;
-        if (permission !== 'allowed' && !(await followsCard(options, binding?.workItemId, resolved.tenant))) {
-          return c.json(
-            { error: "Only the session's owner, an organization admin, or someone following its card can answer." },
-            403,
-          );
-        }
-        const controller = options.controller;
-        if (!controller) return c.json({ error: 'Sessions are not available on this server.' }, 503);
+        // fork(claude-agent): shared with the question route.
+        const allowed = await parkedAnswerer(c, options, resolved.tenant);
+        if ('response' in allowed) return allowed.response;
+        const { session, binding, controller } = allowed;
         const { decision, reason } = body.data;
         // fork(claude-agent): a Claude Agent session's approvals are answered through its runtime.
         const runtime = options.runtimeSessions;
@@ -687,6 +723,63 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
           metadata: { toolCallId, toolName, sessionId: session.sessionId, decision, cause: 'web' },
         });
         return c.json({ answered: decision, sessionId: session.sessionId, toolCallId, toolName });
+      },
+    }),
+    // fork(claude-agent): answer the question (ask_user) a card's phase session waits on, from
+    // outside it, on either runtime. The same people may as for an approval; the run carries on
+    // as the session's owner.
+    registerApiRoute('/web/user-sessions/:sessionId/parked-question', {
+      method: 'POST',
+      requiresAuth: false,
+      handler: async c => {
+        const resolved = await resolveOrgTenant(loose(c), options.auth);
+        if ('response' in resolved) return resolved.response;
+        const body = parkedQuestionAnswerSchema.safeParse(await c.req.json().catch(() => null));
+        if (!body.success) {
+          return c.json(
+            {
+              error:
+                'Send an answer (text, or the labels of the options picked), and optionally the toolCallId or interactionId.',
+            },
+            400,
+          );
+        }
+        const allowed = await parkedAnswerer(c, options, resolved.tenant);
+        if ('response' in allowed) return allowed.response;
+        const { session, binding, controller } = allowed;
+        const runtime = options.runtimeSessions;
+        let answered: AnsweredQuestion;
+        try {
+          answered = await answerParkedQuestion(
+            { messaging: async () => ({ controller, ...(runtime ? { runtime } : {}) }) as never },
+            {
+              session,
+              ...(body.data.toolCallId ? { toolCallId: body.data.toolCallId } : {}),
+              ...(body.data.interactionId ? { interactionId: body.data.interactionId } : {}),
+              answer: body.data.answer,
+              answeredBy: resolved.tenant.userId,
+            },
+          );
+        } catch (error) {
+          return c.json({ error: error instanceof Error ? error.message : String(error) }, 409);
+        }
+        const ids = {
+          ...(answered.toolCallId ? { toolCallId: answered.toolCallId } : {}),
+          ...(answered.interactionId ? { interactionId: answered.interactionId } : {}),
+        };
+        await options.audit?.record({
+          orgId: session.orgId,
+          actorId: resolved.tenant.userId,
+          actorType: 'human',
+          action: 'factory.run.answered',
+          ...(session.factoryProjectId ? { factoryProjectId: session.factoryProjectId } : {}),
+          targets: [
+            { type: 'session', id: session.sessionId },
+            ...(binding ? [{ type: 'work_item' as const, id: binding.workItemId }] : []),
+          ],
+          metadata: { ...ids, toolName: answered.toolName, sessionId: session.sessionId, cause: 'web' },
+        });
+        return c.json({ answered: true, sessionId: session.sessionId, ...ids, toolName: answered.toolName });
       },
     }),
     ...projectSessionRoutes('/web/source-control/projects/:id/sessions', options, resolveOwnerProfiles),

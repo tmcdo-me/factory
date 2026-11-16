@@ -12,6 +12,7 @@ import { rememberedBoardPath } from '../services/boardViews';
 import { useOverlays } from '../../../lib/overlays';
 import { SidebarEmptyNote, SidebarLoadError } from '../../../ui/LoadErrorState';
 import { SidebarNavigationSkeleton } from '../../../ui/SidebarNavigationSkeleton';
+import { SidebarWaitingLink } from './waiting/SidebarWaitingLink'; // fork(claude-agent)
 import { IconBrain } from '@mastra/playground-ui/icons/central/IconBrain';
 import { IconKanbanView } from '@mastra/playground-ui/icons/central/IconKanbanView';
 import { IconSettingsSliderHor } from '@mastra/playground-ui/icons/central/IconSettingsSliderHor';
@@ -100,6 +101,10 @@ export function FactorySection() {
           {canAddBoard && <FactoryLink to={newBoardPath(factoryId)} icon={IconPlusMedium} label="New board" />}
         </Sidebar.NavList>
       </section>
+      {/* fork(claude-agent): sessions waiting on a person, answered without opening them. */}
+      <Sidebar.NavList>
+        <SidebarWaitingLink factoryId={factoryId} />
+      </Sidebar.NavList>
       {features.data?.knowledge ? (
         <Sidebar.NavList>
           <FactoryLink to={`/factories/${factoryId}/knowledge`} icon={IconBrain} label="Knowledge" />

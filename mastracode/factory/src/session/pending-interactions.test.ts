@@ -44,7 +44,12 @@ describe('PendingInteractions', () => {
     await vi.waitFor(() => expect(changed).toEqual(['s-plan@project-1']));
 
     const parked = pending.parked('s-plan');
-    expect(parked).toEqual({ toolName: 'submit_plan', suspendedAt: expect.any(Number) });
+    // What it asks comes with it, so it can be answered from outside the session.
+    expect(parked).toEqual({
+      toolName: 'submit_plan',
+      suspendedAt: expect.any(Number),
+      interaction: { toolCallId: 'toolu_plan', interactionId: expect.any(String), request: plan },
+    });
     expect(pending.parkedIn('project-1')).toEqual([{ sessionId: 's-plan', run: parked }]);
     expect(pending.parkedIn('project-2')).toEqual([]);
     // Its followers hear once, as it asks.
@@ -87,7 +92,7 @@ describe('PendingInteractions', () => {
     await pending.load();
     await vi.waitFor(() => expect(changed).toEqual(['s-plan@project-1']));
 
-    expect(pending.parked('s-plan')).toEqual({
+    expect(pending.parked('s-plan')).toMatchObject({
       toolName: 'submit_plan',
       suspendedAt: new Date('2030-01-01T00:00:00.000Z').getTime(),
     });
@@ -110,6 +115,19 @@ describe('PendingInteractions', () => {
     await vi.waitFor(() => expect(changed).toContain('s-other@project-2'));
     expect(pending.parkedIn('project-2')).toHaveLength(1);
     warn.mockRestore();
+  });
+
+  // fork(claude-agent): a question a run's turn ended on in plain text was asked by no tool call.
+  it('names a question no tool call asked by its interaction, so it can still be answered from outside', async () => {
+    const { pending, broker } = setup();
+    void broker.request('s-ask', question);
+    await vi.waitFor(() => expect(pending.parked('s-ask')).toBeDefined());
+    const [record] = await broker.listPending({ sessionId: 's-ask' });
+    expect(pending.parked('s-ask')).toEqual({
+      toolName: 'ask_user',
+      suspendedAt: expect.any(Number),
+      interaction: { interactionId: record!.id, request: question },
+    });
   });
 
   it('adds Claude Agent sessions to the live registry, beside the controller sessions it parks', async () => {
@@ -234,7 +252,7 @@ describe('PendingInteractions', () => {
     });
     await pending.load();
 
-    expect(pending.parked('s-plan')).toEqual({
+    expect(pending.parked('s-plan')).toMatchObject({
       toolName: 'submit_plan',
       suspendedAt: Date.parse('2030-01-01T00:00:01.000Z'),
     });

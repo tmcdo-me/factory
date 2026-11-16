@@ -90,6 +90,8 @@ const CreateFactoryPage = lazyPage(
   <AppPageLoader />,
 );
 const RulesPage = lazyPage(() => import('./pages/RulesPage').then(module => module.RulesPage), <AppPageLoader />);
+// fork(claude-agent)
+const WaitingPage = lazyPage(() => import('./pages/WaitingPage').then(module => module.WaitingPage), <AppPageLoader />);
 const OnboardingPage = lazyPage(
   () => import('./pages/OnboardingPage').then(module => module.OnboardingPage),
   <AuthPendingSkeleton label="Loading page" />,
@@ -303,6 +305,8 @@ export function createAppRoutes(services?: RouteLoaderServices): RouteObject[] {
                         { path: 'metrics', element: <FactoryHomeRedirect /> },
                         { path: 'audit', element: <FactoryHomeRedirect /> },
                         { path: 'rules', ...lazyRoute(RulesPage, prefetchRuleDecisions) },
+                        // fork(claude-agent): sessions waiting on a person, answered without opening them.
+                        { path: 'waiting', ...lazyRoute(WaitingPage) },
                         // No preload: the page redirects away unless the server enables Knowledge.
                         { path: 'knowledge', element: <KnowledgeRoute /> },
                         {

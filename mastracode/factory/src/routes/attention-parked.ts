@@ -1,6 +1,7 @@
 /** Sessions parked on a tool, read live from the registry: the item exists exactly as long as an answer is owed. */
 
 import type { LiveSessions } from '../session/live-sessions.js';
+import type { ParkedInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
 import type {
   FactoryAttentionIdentity,
   FactoryAttentionReceiptRecord,
@@ -28,6 +29,8 @@ interface ParkedSession {
   toolName: string;
   occurredAt: Date;
   identity: FactoryAttentionIdentity;
+  /** fork(claude-agent): what it asks, so the inbox can answer it. */
+  interaction?: ParkedInteraction;
 }
 
 interface ReceiptedParkedSession {
@@ -61,6 +64,8 @@ function toItem(scope: AttentionScope, { entry, receipt }: ReceiptedParkedSessio
     read: receipt !== undefined,
     archived: receipt?.state === 'archived',
     target: { kind: 'thread' as const, sessionId: entry.sessionId, threadId: entry.threadId },
+    // fork(claude-agent): the call it waits on and what it asks (a question and its options, a plan).
+    ...(entry.interaction ? { interaction: entry.interaction } : {}),
   };
 }
 
@@ -100,6 +105,7 @@ export class ParkedRunAttentionProvider implements AttentionProvider {
           toolName: run.toolName,
           occurredAt: new Date(run.suspendedAt),
           identity: factoryAgentWaitingAttentionIdentity(ref.sessionId, run.suspendedAt),
+          ...(run.interaction ? { interaction: run.interaction } : {}), // fork(claude-agent)
         });
       }
     }

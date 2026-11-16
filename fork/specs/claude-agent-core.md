@@ -426,7 +426,20 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `factory_list_attention`, the board and the session lists, and its followers get the
      `blocked` notice naming the call; a plan is answered from the card or inbox button or
      `factory_answer_approval` through the broker, the run carrying on as the session's owner.
-     A question still takes its typed answer in the session, as in Mastra Code.
+     Questions are answered outside the session too, on both runtimes: a parked run carries what
+     it asks (`session/parked-interaction.ts`: the tool call or broker interaction, the question
+     and its options, or the plan) into `factory_list_attention` (with `answerWith`, the tool that
+     answers it) and the inbox's `agent-waiting` items; `factory_answer_question` and
+     `POST /web/user-sessions/:id/parked-question` take the answer, with the same authorization as
+     a plan (the session's owner, an org admin, the card's filer or a follower; for the tool, its
+     origin or a follower), the run carrying on as the session's owner and the answer audited as
+     `factory.run.answered`. A Mastra Code `ask_user` resumes through the controller's claimed
+     suspension; a Claude Agent question (an `ask_user` call, or a question a board run's turn
+     ended on in plain text, named by its interaction id) resolves through the broker. The UI's
+     Waiting page (`/factories/:id/waiting`, sidebar count) lists every card session waiting on a
+     person and every proposal, and answers each in place with the session's own ask-user and
+     plan cards (a Mastra Code plan is read from that session's workspace); a proposal is approved
+     or dismissed through the decision route, which decides who may.
    - **6e** ✅ Factory messages to Claude Agent sessions are kept (fork-only `agent-messages`
      domain): one held for the session's next turn survives a restart (still at most 20 per
      session, the rest dropped and counted); each session-to-session notification carries its

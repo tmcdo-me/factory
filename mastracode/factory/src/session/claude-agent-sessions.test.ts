@@ -20,7 +20,7 @@ import { FACTORY_INTERACTIVE_KEY } from '../auth.js';
 import { AgentMessagesStorage } from '../storage/domains/agent-messages/base.js';
 import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
-import { answerParkedCall } from '../tools/approval-tools.js';
+import { answerParkedCall, answerParkedQuestion } from '../tools/approval-tools.js';
 import { FACTORY_SKILLS_MOUNT, FactorySkillSource } from '../workspace.js';
 import { ClaudeAgentConcurrency } from './claude-agent-concurrency.js';
 import {
@@ -1471,6 +1471,121 @@ describe('ClaudeAgentSessions approvals from outside the session', () => {
   });
 });
 
+describe('ClaudeAgentSessions questions answered from outside the session', () => {
+  const owner = () => hostContext('user-a', false);
+
+  function asking() {
+    const replies: { isError?: boolean; content: { text: string }[] }[] = [];
+    const fake = toolCallingQuery(async client => {
+      replies.push(
+        await client.call(
+          'ask_user',
+          { question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'SQLite' }] },
+          'toolu_ask',
+        ),
+      );
+      replies.push(await client.call('submit_plan', { path: 'plan.md' }, 'toolu_plan'));
+    });
+    return { fake, replies, ...toolSetup(fake.fn) };
+  }
+
+  const answer = (sessions: ClaudeAgentSessions, reply: string | string[], toolCallId?: string) => {
+    const getSession = vi.fn(async () => null);
+    return {
+      getSession,
+      answered: answerParkedQuestion(
+        { messaging: async () => ({ controller: { getSession }, runtime: sessions.runtimeSessions() }) as never },
+        {
+          session: { sessionId: 's1', userId: 'user-a', orgId: 'org-1' },
+          ...(toolCallId ? { toolCallId } : {}),
+          answer: reply,
+          answeredBy: 'user-b',
+        },
+      ),
+    };
+  };
+
+  it("answers the question through factory_answer_question's path, recording who answered, and Claude carries on with it", async () => {
+    const { sessions, store, replies } = asking();
+    await sessions.commands().send('s1', { text: 'plan it' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+    const runs = sessions.runtimeSessions();
+    expect(await runs.questions!.waiting('s1')).toEqual([
+      { toolCallId: 'toolu_ask', interactionId: expect.any(String), toolName: 'ask_user' },
+    ]);
+    // A question is not a yes or no: the approval path doesn't list it.
+    expect(await runs.approvals!.waiting('s1')).toEqual([]);
+    const [asked] = await store.listPending({ sessionId: 's1' });
+
+    const { getSession, answered } = answer(sessions, 'Postgres');
+    await expect(answered).resolves.toEqual({
+      toolCallId: 'toolu_ask',
+      interactionId: asked!.id,
+      toolName: 'ask_user',
+    });
+
+    await vi.waitFor(() => expect(replies).toHaveLength(1));
+    expect(replies[0]!.isError).toBeFalsy();
+    expect(replies[0]!.content[0]!.text).toContain('Postgres');
+    expect(getSession).not.toHaveBeenCalled();
+    expect(await store.get(asked!.id)).toMatchObject({
+      status: 'resolved',
+      resolvedBy: 'user-b',
+      response: { kind: 'question', answer: 'Postgres' },
+    });
+    // The plan that follows is still the approval path's, and no question waits any more.
+    await vi.waitFor(async () => expect(await runs.approvals!.waiting('s1')).toHaveLength(1));
+    expect(await runs.questions!.waiting('s1')).toEqual([]);
+    await expect(answer(sessions, 'Yes').answered).rejects.toThrow(
+      'This session is not waiting on a question. Open it to see what it needs.',
+    );
+  });
+
+  it('refuses a second answer to a question already answered', async () => {
+    const { sessions, store } = asking();
+    await sessions.commands().send('s1', { text: 'plan it' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
+
+    const results = await Promise.allSettled([
+      answer(sessions, 'Postgres', 'toolu_ask').answered,
+      answer(sessions, 'SQLite', 'toolu_ask').answered,
+    ]);
+
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+  });
+
+  it('delivers an answer nobody waits for any more (a restart) to the conversation as a message', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const { sessions, store, log } = toolSetup(fake.fn);
+    const record: InteractionRecord = {
+      id: 'int-q',
+      sessionId: 's1',
+      callId: 'toolu_old_ask',
+      request: { kind: 'question', question: 'Which database?' },
+      requestedAt: new Date(0).toISOString(),
+      status: 'pending',
+    };
+    await store.create(record);
+    const runs = sessions.runtimeSessions();
+
+    expect(
+      await runs.questions!.answer(
+        's1',
+        { toolCallId: 'toolu_old_ask' },
+        { answer: 'Postgres', answeredBy: 'user-b' },
+        owner(),
+      ),
+    ).toBe('answered');
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(1),
+    );
+    expect(fake.seen).toMatchObject([
+      { message: { content: lateAnswer(record, { kind: 'question', answer: 'Postgres' }) } },
+    ]);
+    expect(await store.get('int-q')).toMatchObject({ status: 'resolved', resolvedBy: 'user-b' });
+  });
+});
+
 describe('ClaudeAgentSessions messages that wait', () => {
   const owner = () => hostContext('user-a', false);
   const userText = (message: unknown) => (message as { message: { content: string } }).message.content;
@@ -1629,7 +1744,7 @@ describe('ClaudeAgentSessions: a turn that ends asking the person in plain text'
       waitingJudge,
     });
     onTestFinished(() => sessions.shutdown());
-    return { sessions, broker, fake, waitingJudge, runs: sessions.runtimeSessions() };
+    return { sessions, broker, store, fake, waitingJudge, runs: sessions.runtimeSessions() };
   }
 
   const owner = () => hostContext('user-a', false);
@@ -1662,6 +1777,38 @@ describe('ClaudeAgentSessions: a turn that ends asking the person in plain text'
     expect(await parked!.resumed).toMatchObject({ reason: 'complete' });
     expect(fake.seen.at(-1)).toBe('Staging');
     expect(await broker.listPending({ sessionId: 's1' })).toEqual([]);
+  });
+
+  it("answers the question from outside the session through factory_answer_question's path, named by its interaction", async () => {
+    const { broker, store, fake, runs } = questionSetup([
+      'Which one should the importer write to: staging or production?',
+      'Imported into production.',
+    ]);
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
+    const [pending] = await broker.listPending({ sessionId: 's1' });
+    // No tool call asked it: only its interaction names it.
+    expect(await runs.questions!.waiting('s1')).toEqual([{ interactionId: pending!.id, toolName: 'ask_user' }]);
+
+    const getSession = vi.fn(async () => null);
+    await expect(
+      answerParkedQuestion(
+        { messaging: async () => ({ controller: { getSession }, runtime: runs }) as never },
+        {
+          session: { sessionId: 's1', userId: 'user-a', orgId: 'org-1' },
+          interactionId: pending!.id,
+          answer: 'production',
+          answeredBy: 'user-b',
+        },
+      ),
+    ).resolves.toEqual({ interactionId: pending!.id, toolName: 'ask_user' });
+
+    expect(await parked!.resumed).toMatchObject({ reason: 'complete' });
+    expect(fake.seen.at(-1)).toBe('production');
+    expect(getSession).not.toHaveBeenCalled();
+    expect(await store.get(pending!.id)).toMatchObject({ status: 'resolved', resolvedBy: 'user-b' });
   });
 
   it('takes a message the person types in the session as the reply, and drops the question', async () => {

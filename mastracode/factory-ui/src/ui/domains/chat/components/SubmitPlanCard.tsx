@@ -38,13 +38,24 @@ export interface SubmitPlanCardProps {
   output?: unknown;
   isSubmitting?: boolean;
   onRespond?: (response: PlanResume) => void;
+  /** fork(claude-agent): the session whose workspace holds the plan, when the card is shown outside its thread. */
+  sessionId?: string;
 }
 
-export function SubmitPlanCard({ toolCallId, input, output, isSubmitting = false, onRespond }: SubmitPlanCardProps) {
+export function SubmitPlanCard({
+  toolCallId,
+  input,
+  output,
+  isSubmitting = false,
+  onRespond,
+  sessionId,
+}: SubmitPlanCardProps) {
   const inline = resolveInlinePlan(input, output);
   const path = inline.path;
 
-  const workspace = useThreadWorkspacePath();
+  const routed = useThreadWorkspacePath();
+  // fork(claude-agent): outside the thread's route the caller names the session.
+  const workspace = sessionId ? { workspacePath: sessionId, isPending: false } : routed;
   // Normalize absolute paths against the server's authoritative workspace or
   // checkout `.artifacts` root before fetching a workspace-relative file.
   const needsRoot = inline.plan === undefined && Boolean(path?.startsWith('/'));

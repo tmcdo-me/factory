@@ -1,9 +1,11 @@
+import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { describe, expect, it, vi } from 'vitest';
 import { createTriageWorkRegistry } from '../boards/test-utils.js';
 
 import { LiveSessions } from '../session/live-sessions.js';
 import type { LiveSession } from '../session/live-sessions.js';
+import { PendingInteractions, alsoParked } from '../session/pending-interactions.js';
 import type { AuditEventRow } from '../storage/domains/audit/base.js';
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import type {
@@ -529,6 +531,57 @@ describe('factory_list_attention', () => {
         toolName: 'submit_plan',
         label: 'Plan waiting for review',
         waitingSince: expect.any(String),
+      },
+    ]);
+  });
+
+  // fork(claude-agent): a waiting run says what it asks and which tool answers it, so another
+  // session can answer it without opening it.
+  it('names the call a waiting run asks on, what it asks and the tool that answers it', async () => {
+    const pending = new PendingInteractions({
+      store: new InMemoryInteractionStore(),
+      projectOf: async () => ({ orgId: 'org-1', factoryProjectId: 'project-1' }),
+    });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    const liveSessions = alsoParked(
+      new LiveSessions({ onSessionCreated: () => () => {}, onSessionDeleted: () => () => {} }),
+      pending,
+    );
+    const { deps, run } = setup({ items: [item({ id: 'x' })] });
+    deps.liveSessions = () => liveSessions;
+    void broker.request(
+      'session-asking',
+      { kind: 'question', question: 'Which database?', options: [{ label: 'Postgres' }], selection: 'single' },
+      { callId: 'toolu_ask' },
+    );
+    void broker.request('session-planning', { kind: 'plan_approval', planPath: 'plan.md' }, { callId: 'toolu_plan' });
+    await vi.waitFor(() => expect(liveSessions.parkedIn('project-1')).toHaveLength(2));
+
+    const result = await run<{ waiting: Array<Record<string, unknown>> }>('factory_list_attention', {});
+    expect(result.waiting).toEqual([
+      {
+        sessionId: 'session-asking',
+        toolName: 'ask_user',
+        label: 'Agent is waiting for an answer',
+        waitingSince: expect.any(String),
+        toolCallId: 'toolu_ask',
+        interactionId: expect.any(String),
+        kind: 'question',
+        answerWith: 'factory_answer_question',
+        question: 'Which database?',
+        options: [{ label: 'Postgres' }],
+        selection: 'single',
+      },
+      {
+        sessionId: 'session-planning',
+        toolName: 'submit_plan',
+        label: 'Plan waiting for review',
+        waitingSince: expect.any(String),
+        toolCallId: 'toolu_plan',
+        interactionId: expect.any(String),
+        kind: 'plan_approval',
+        answerWith: 'factory_answer_approval',
+        planPath: 'plan.md',
       },
     ]);
   });

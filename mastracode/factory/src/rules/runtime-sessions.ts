@@ -135,6 +135,33 @@ export interface FactoryRuntimeSessions {
    * Mastra Code run's approvals are answered from the inbox, the card, or `factory_answer_approval`.
    */
   approvals?: RuntimeApprovals;
+  /** The questions a session waits on (its `ask_user` calls), answered from outside it with an answer. */
+  questions?: RuntimeQuestions;
+}
+
+/** A session's questions still waiting (`ask_user`, or a run's turn that ended asking in plain text), and how each is answered. */
+export interface RuntimeQuestions {
+  /**
+   * Oldest first, each named by its interaction id and, when a tool call asked it, that call's id.
+   */
+  waiting(sessionId: string): Promise<WaitingQuestion[]>;
+  /**
+   * Answer one, named by its tool call or interaction id. The run carries on as `requestContext` (the
+   * session's owner); `answeredBy` is who answered. `not_pending` when nothing waits on it any more.
+   */
+  answer(
+    sessionId: string,
+    target: { toolCallId?: string; interactionId?: string },
+    answer: { answer: string | string[]; answeredBy?: string },
+    requestContext: RequestContext,
+  ): Promise<'answered' | 'not_pending'>;
+}
+
+/** A question a session waits on. */
+export interface WaitingQuestion {
+  toolCallId?: string;
+  interactionId?: string;
+  toolName: string;
 }
 
 /** A session's calls that wait on a person's yes or no, and how each is answered. */
