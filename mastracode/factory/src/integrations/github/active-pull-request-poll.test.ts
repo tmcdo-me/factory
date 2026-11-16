@@ -2,16 +2,24 @@
 // for a Factory GitHub can't reach (no webhooks).
 import { createHash } from 'node:crypto';
 
-import { describe, expect, it, vi } from 'vitest';
+import { LibSQLFactoryStorage } from '@mastra/libsql';
+import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { createTriageWorkRegistry } from '../../boards/test-utils.js';
+import { GithubEventsSeenStorage } from '../../storage/domains/github-events/base.js';
 import { createFactoryStorageForTests } from '../../storage/test-utils.js';
-import { createActivePullRequestPoll } from './active-pull-request-poll.js';
+import {
+  GithubActivePullRequestPollWorker,
+  GithubRateLimited,
+  createActivePullRequestPoll,
+  rateLimitResumeAt,
+} from './active-pull-request-poll.js';
 import type { ConditionalGithubGet } from './active-pull-request-poll.js';
 import { resolveGithubRules } from './default-rules.js';
 import type { GithubIntegration } from './integration.js';
 import { GithubRules, createGithubPullRequestReconciler } from './rules.js';
 import type { GithubRulesOptions } from './rules.js';
+import { processGithubEvent } from './webhook.js';
 import type { ParsedGithubWebhook } from './webhook.js';
 
 const repository = { id: 10, fullName: 'acme/repo', installationId: 7 };
@@ -38,9 +46,13 @@ function fakeGithub(now: () => number) {
   const reviews: Record<string, unknown>[] = [];
   const comments: Record<string, unknown>[] = [];
   const reads: Array<{ path: string; status: number }> = [];
+  const limits = { pageSize: 100, rateLimitedUntil: 0 };
   const resource = (path: string): unknown => {
     if (path === '/repos/acme/repo/pulls/17') return pull;
-    if (path === '/repos/acme/repo/pulls/17/reviews?per_page=100') return reviews;
+    if (path.startsWith('/repos/acme/repo/pulls/17/reviews?per_page=100')) {
+      const page = Number(new URLSearchParams(path.split('?')[1]).get('page') ?? '1');
+      return reviews.slice((page - 1) * limits.pageSize, page * limits.pageSize);
+    }
     if (path.startsWith('/repos/acme/repo/issues/17/comments?per_page=100&since=')) {
       const since = Date.parse(decodeURIComponent(path.split('since=')[1]!));
       return comments.filter(comment => Date.parse(String(comment.created_at)) >= since);
@@ -48,6 +60,7 @@ function fakeGithub(now: () => number) {
     throw Object.assign(new Error(`Not Found: ${path}`), { status: 404 });
   };
   const get: ConditionalGithubGet = async ({ path, etag }) => {
+    if (now() < limits.rateLimitedUntil) throw new GithubRateLimited(limits.rateLimitedUntil);
     const body = resource(path);
     const current = `"${createHash('sha1').update(JSON.stringify(body)).digest('hex')}"`;
     if (etag === current) {
@@ -55,17 +68,41 @@ function fakeGithub(now: () => number) {
       return { status: 304 };
     }
     reads.push({ path, status: 200 });
-    return { status: 200, etag: current, data: structuredClone(body) };
+    // Reviews come a page at a time, the next one named in `Link`, as GitHub's do.
+    let link: string | undefined;
+    if (path.startsWith('/repos/acme/repo/pulls/17/reviews')) {
+      const page = Number(new URLSearchParams(path.split('?')[1]).get('page') ?? '1');
+      if (reviews.length > page * limits.pageSize) {
+        link = `<https://api.github.com/repos/acme/repo/pulls/17/reviews?per_page=100&page=${page + 1}>; rel="next"`;
+      }
+    }
+    return { status: 200, etag: current, ...(link ? { link } : {}), data: structuredClone(body) };
   };
   return {
     get,
     reads,
+    limits,
     pull,
     review: (id: number, state: string, submittedAt = new Date(now()).toISOString()) =>
       reviews.push({ id, state, body: 'Please fix the tests.', submitted_at: submittedAt, user: { login: 'reviewer' } }),
     comment: (id: number, createdAt = new Date(now()).toISOString()) =>
-      comments.push({ id, body: 'Looks close.', created_at: createdAt, user: { login: 'reviewer' } }),
+      comments.push({
+        id,
+        body: 'Looks close.',
+        created_at: createdAt,
+        updated_at: createdAt,
+        user: { login: 'reviewer' },
+      }),
   };
+}
+
+/** The events Factory handled, kept in storage, as a server keeps them. */
+async function eventClaims() {
+  const storage = new LibSQLFactoryStorage({ id: 'github-events-test', url: ':memory:' });
+  const claims = storage.registerDomain(new GithubEventsSeenStorage());
+  await storage.init();
+  onTestFinished(() => storage.close());
+  return claims;
 }
 
 async function setup(stages: string[] = ['review'], enteredAt = '2030-01-01T00:00:00Z') {
@@ -136,13 +173,29 @@ async function setup(stages: string[] = ['review'], enteredAt = '2030-01-01T00:0
   };
   // The webhook path: the board's rules ingress (then, in the server, the subscribed sessions).
   const rules = new GithubRules(options);
+  const claims = await eventClaims();
+  // What reached the subscribed sessions; `failing` makes the next deliveries fail, as a session can.
   const delivered: ParsedGithubWebhook[] = [];
+  const failing = { next: 0 };
+  // As the server handles an event: once per event, whether the webhook or the poll brought it.
+  const handle = (event: ParsedGithubWebhook) =>
+    processGithubEvent(event, {
+      claims,
+      ingest: parsed => rules.ingest(parsed),
+      dispatch: async parsed => {
+        if (failing.next > 0) {
+          failing.next -= 1;
+          return { failed: 1 };
+        }
+        delivered.push(parsed);
+        return { failed: 0 };
+      },
+    });
   const deliver = async (event: ParsedGithubWebhook) => {
-    delivered.push(event);
-    await rules.ingest(event);
+    await handle(event);
   };
   const decisions = () => seeded.workItems.listDeferredDecisions('org-1', project.id);
-  return { options, deliver, delivered, decisions, card, workItems: seeded.workItems };
+  return { options, deliver, handle, delivered, failing, decisions, card, workItems: seeded.workItems, claims };
 }
 
 describe('the active pull request poll', () => {
@@ -177,7 +230,9 @@ describe('the active pull request poll', () => {
       pull_request: { number: 17, head: { ref: 'feature' } },
     });
     expect(context.delivered[1]!.payload).toMatchObject({ issue: { number: 17, pull_request: expect.any(Object) } });
-    // Read again: each is delivered once.
+    // Read again: each is delivered once. Comments are read from the newest one on now (one read).
+    clock += 60_000;
+    expect(await poll([repository])).toMatchObject({ delivered: 0, notModified: 2, fetched: 1 });
     clock += 60_000;
     expect(await poll([repository])).toMatchObject({ delivered: 0, notModified: 3 });
 
@@ -233,5 +288,188 @@ describe('the active pull request poll', () => {
 
     await poll([repository]);
     expect(context.delivered.map(event => event.deliveryId)).toEqual(['poll:10:pull-request:17:review:2']);
+  });
+
+  it('hands on a review the webhook already brought only once, and after a restart not again', async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await poll([repository]);
+
+    // The review arrives by webhook first (GitHub's own delivery id), then the poll sees it too.
+    clock += 30_000;
+    github.review(900, 'CHANGES_REQUESTED');
+    const [review] = (await github.get({ installationId: 7, path: '/repos/acme/repo/pulls/17/reviews?per_page=100' }))
+      .data as Record<string, unknown>[];
+    expect(
+      await context.handle({
+        event: 'pull_request_review',
+        deliveryId: '72d3162e-cc78-11e3-81ab-4c9367dc0958',
+        payload: {
+          action: 'submitted',
+          installation: { id: 7 },
+          repository: { id: 10, full_name: 'acme/repo' },
+          sender: { login: 'reviewer' },
+          review,
+          pull_request: github.pull,
+        },
+      }),
+    ).toBe('handled');
+    clock += 30_000;
+    expect(await poll([repository])).toMatchObject({ delivered: 1 });
+    expect(context.delivered.map(event => event.deliveryId)).toEqual(['72d3162e-cc78-11e3-81ab-4c9367dc0958']);
+
+    // A restart forgets the poll's own state, not what was handled.
+    const restarted = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await restarted([repository]);
+    expect(context.delivered).toHaveLength(1);
+  });
+
+  it('reads an answer again when one of its deliveries failed, and delivers it then', async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await poll([repository]);
+    github.review(901, 'COMMENTED');
+    clock += 60_000;
+    context.failing.next = 1;
+    expect(await poll([repository])).toMatchObject({ failed: 1, delivered: 0 });
+    clock += 60_000;
+    // Not a 304: the failed answer's ETag was not kept.
+    expect(await poll([repository])).toMatchObject({ delivered: 1, failed: 0 });
+    expect(context.delivered.map(event => event.deliveryId)).toEqual(['poll:10:pull-request:17:review:901']);
+  });
+
+  it('follows the pages of a long review list, and reads comments from the newest one seen on', async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    github.limits.pageSize = 2;
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    await poll([repository]);
+    clock += 60_000;
+    for (const id of [1, 2, 3, 4, 5]) github.review(id, 'COMMENTED');
+    github.comment(70);
+    clock += 60_000;
+    await poll([repository]);
+    expect(context.delivered.map(event => event.deliveryId)).toEqual([
+      ...[1, 2, 3, 4, 5].map(id => `poll:10:pull-request:17:review:${id}`),
+      'poll:10:pull-request:17:comment:70',
+    ]);
+    const commentReads = github.reads.filter(read => read.path.includes('/comments'));
+    clock += 60_000;
+    await poll([repository]);
+    const next = github.reads.filter(read => read.path.includes('/comments')).slice(commentReads.length);
+    // The next read starts at the newest comment's time.
+    expect(next[0]!.path).toContain('since=2030-01-01T01:01:00.000Z');
+  });
+
+  it("stops at GitHub's rate limit and reads nothing before it says to resume", async () => {
+    let clock = Date.parse('2030-01-01T01:00:00Z');
+    const now = () => clock;
+    const github = fakeGithub(now);
+    const context = await setup(['review']);
+    const poll = createActivePullRequestPoll(context.options, { get: github.get, deliver: context.deliver, now });
+    github.limits.rateLimitedUntil = clock + 5 * 60_000;
+    expect(await poll([repository])).toMatchObject({ rateLimitedUntil: clock + 5 * 60_000, fetched: 0 });
+    clock += 60_000;
+    github.limits.rateLimitedUntil = 0;
+    const reads = github.reads.length;
+    expect(await poll([repository])).toMatchObject({ rateLimitedUntil: expect.any(Number) });
+    expect(github.reads).toHaveLength(reads);
+    clock += 5 * 60_000;
+    expect(await poll([repository])).toMatchObject({ fetched: 3 });
+  });
+});
+
+describe('rateLimitResumeAt', () => {
+  it("reads GitHub's own say on when to resume", () => {
+    expect(rateLimitResumeAt(403, { 'retry-after': '30' }, 1_000)).toBe(31_000);
+    expect(rateLimitResumeAt(403, { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1700000000' })).toBe(
+      1_700_000_000_000,
+    );
+    expect(rateLimitResumeAt(429, {}, 1_000)).toBe(61_000);
+    // A 403 that is not the rate limit (no access) is not waited out.
+    expect(rateLimitResumeAt(403, { 'x-ratelimit-remaining': '4000' })).toBeUndefined();
+    expect(rateLimitResumeAt(404, {})).toBeUndefined();
+  });
+});
+
+describe('GithubEventsSeenStorage', () => {
+  it('lets one caller handle an event, gives it back when that failed, and keeps it once handled', async () => {
+    const claims = await eventClaims();
+    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(true);
+    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(false);
+    await claims.release('github:10:pull-request:17:review:1');
+    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(true);
+    await claims.done('github:10:pull-request:17:review:1');
+    await claims.release('github:10:pull-request:17:review:1');
+    expect(await claims.claim('github:10:pull-request:17:review:1')).toBe(false);
+  });
+});
+
+describe('GithubActivePullRequestPollWorker', () => {
+  /** A lease shared by the replicas, as the pubsub's lease provider keeps it. */
+  function sharedLease() {
+    let owner: string | undefined;
+    const calls: string[] = [];
+    return {
+      calls,
+      provider: {
+        acquireLease: async (_key: string, who: string) => {
+          calls.push('acquire');
+          if (owner && owner !== who) return { acquired: false, owner };
+          owner = who;
+          return { acquired: true, owner };
+        },
+        renewLease: async (_key: string, who: string) => {
+          calls.push('renew');
+          return owner === who;
+        },
+        releaseLease: async (_key: string, who: string) => {
+          calls.push('release');
+          if (owner === who) owner = undefined;
+        },
+        getLeaseOwner: async () => owner,
+        transferLease: async () => false,
+      },
+    };
+  }
+  const worker = async (lease: ReturnType<typeof sharedLease>, preferred?: () => Promise<boolean>) => {
+    const poll = vi.fn(async () => ({ pullRequests: 0, fetched: 0, notModified: 0, delivered: 0, failed: 0, errors: [] }));
+    const instance = new GithubActivePullRequestPollWorker({
+      poll,
+      sourceControl: {
+        projectRepositories: { listConfiguredExternalKeys: async () => [], listByExternalRepository: async () => [] },
+        repositories: { findByExternalId: async () => null },
+      },
+      intervalMs: 60_000,
+      ...(preferred ? { preferred } : {}),
+    });
+    await instance.init({ pubsub: lease.provider, logger: { debug() {}, info() {}, warn() {}, error() {} } } as never);
+    await instance.start();
+    onTestFinished(() => instance.stop());
+    return { instance, poll };
+  };
+
+  it('keeps its lease from tick to tick, and leaves it to the preferred process at first', async () => {
+    const lease = sharedLease();
+    const other = await worker(lease, async () => false);
+    // Not the process running Claude Agent sessions: it waits before taking the poll.
+    expect(await other.instance.tick()).toBeUndefined();
+    expect(lease.calls).toEqual([]);
+
+    const host = await worker(lease, async () => true);
+    expect(await host.instance.tick()).toBeDefined();
+    expect(await host.instance.tick()).toBeDefined();
+    expect(lease.calls).toEqual(['acquire', 'renew']);
+    expect(host.poll).toHaveBeenCalledTimes(2);
+    await host.instance.stop();
+    expect(lease.calls.at(-1)).toBe('release');
   });
 });

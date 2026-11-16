@@ -47,11 +47,14 @@ import type {
   ReviewComment,
   VersionControl,
 } from '../../capabilities/version-control.js';
+import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
 import {
   GithubActivePullRequestPollWorker,
+  GithubRateLimited,
   activePullRequestPollInterval,
   createActivePullRequestPoll,
+  rateLimitResumeAt,
 } from './active-pull-request-poll.js';
 import type { ConditionalGithubGet } from './active-pull-request-poll.js';
 import type { GithubEventRules, GithubRuleOverrides } from './default-rules.js';
@@ -76,7 +79,7 @@ import {
 } from './session-subscriptions.js';
 import { settleOrAbort } from './settle-or-abort.js';
 import type { GithubSubscriptionStorage } from './subscriptions.js';
-import { dispatchGithubWebhook } from './webhook.js';
+import { dispatchGithubWebhook, processGithubEvent } from './webhook.js';
 import type { ParsedGithubWebhook } from './webhook.js';
 
 type InputOf<TMethod extends keyof VersionControl> =
@@ -1397,25 +1400,45 @@ export class GithubIntegration implements FactoryIntegration {
     const options = githubRulesOptions(this, ctx);
     if (!intervalMs || !options) return undefined;
     const ingest = attachGithubRules(this, ctx);
+    const controller = ctx.controller;
+    // As a webhook delivery is handled, once per event: one the webhook brought first is a duplicate.
     const deliver = async (event: ParsedGithubWebhook) => {
-      const ingested = (await ingest?.(event)) as { status?: string } | undefined;
-      // Already delivered (a restart polling it again, or the reconcile sweep first): sessions heard it.
-      if (ingested?.status === 'replayed' || !ctx.controller) return;
-      const result = await dispatchGithubWebhook(event, {
-        github: this,
-        controller: ctx.controller,
-        ...(ctx.runtimeSessions ? { runtimeSessions: ctx.runtimeSessions } : {}),
-        onTargetError: (subscription, error) =>
-          console.warn(`[GitHub poll] Delivery failed for subscription ${subscription.id}.`, error),
+      await processGithubEvent(event, {
+        ...(this.eventClaims ? { claims: this.eventClaims } : {}),
+        ...(ingest ? { ingest } : {}),
+        ...(controller
+          ? {
+              dispatch: (polled: ParsedGithubWebhook) =>
+                dispatchGithubWebhook(polled, {
+                  github: this,
+                  controller,
+                  ...(ctx.runtimeSessions ? { runtimeSessions: ctx.runtimeSessions } : {}),
+                  onTargetError: (subscription, error) =>
+                    console.warn(`[GitHub poll] Delivery failed for subscription ${subscription.id}.`, error),
+                }),
+            }
+          : {}),
       });
-      if (result.failed > 0) console.warn(`[GitHub poll] ${result.failed} target(s) failed for ${event.deliveryId}.`);
     };
     return new GithubActivePullRequestPollWorker({
       poll: createActivePullRequestPoll(options, { get: input => this.conditionalGet(input), deliver }),
       sourceControl: ctx.storage.sourceControl,
       intervalMs,
+      ...(this.activePollPreferred ? { preferred: this.activePollPreferred } : {}),
     });
   }
+
+  /**
+   * fork(claude-agent): GitHub events already handled, by what they are (`githubEventContentKey`), kept
+   * in storage, so the webhook and the active pull request poll handle each one once. Set by the host.
+   */
+  eventClaims: GithubEventClaims | undefined;
+
+  /**
+   * fork(claude-agent): whether this process should run the active pull request poll first (the one
+   * running Claude Agent sessions); another takes the poll's lease only once it was left free.
+   */
+  activePollPreferred: (() => Promise<boolean>) | undefined;
 
   /** fork(claude-agent): a REST read conditional on its last ETag; a `304` is free against the rate limit. */
   readonly conditionalGet: ConditionalGithubGet = async ({ installationId, path, etag }) => {
@@ -1427,10 +1450,19 @@ export class GithubIntegration implements FactoryIntegration {
       });
       if ((response.status as number) === 304) return { status: 304 };
       const header = response.headers.etag;
-      return { status: 200, ...(typeof header === 'string' ? { etag: header } : {}), data: response.data };
+      const link = response.headers.link;
+      return {
+        status: 200,
+        ...(typeof header === 'string' ? { etag: header } : {}),
+        ...(typeof link === 'string' ? { link } : {}),
+        data: response.data,
+      };
     } catch (error) {
+      const failed = error as { status?: unknown; response?: { headers?: Record<string, unknown> } };
       // Octokit reports a 304 as an error.
-      if ((error as { status?: unknown }).status === 304) return { status: 304 };
+      if (failed.status === 304) return { status: 304 };
+      const resumeAt = rateLimitResumeAt(failed.status, failed.response?.headers);
+      if (resumeAt !== undefined) throw new GithubRateLimited(resumeAt);
       throw error;
     }
   };

@@ -1,5 +1,5 @@
 // fork(claude-agent): Factory's live Claude Agent sessions.
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -38,6 +38,7 @@ import type {
   WaitingVerdict,
 } from '@factory/runtime-claude-agent';
 import type { RequestContext } from '@mastra/core/request-context';
+import { UniqueViolationError } from '@mastra/core/storage';
 
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeRunUsage } from '../rules/runtime-sessions.js';
@@ -755,7 +756,7 @@ export class ClaudeAgentSessions {
     const { delivery } = message;
     this.#lastMessageAt = Math.max(Date.now(), this.#lastMessageAt + 1);
     return {
-      id: delivery?.id ?? randomUUID(),
+      id: delivery?.id ?? (message.dedupeKey ? dedupedMessageId(sessionId, message.dedupeKey) : randomUUID()),
       sessionId,
       source: message.source,
       text: message.text,
@@ -956,9 +957,17 @@ export class ClaudeAgentSessions {
       },
       message: async (sessionId, message, requestContext) => {
         const kept = this.#message(sessionId, message);
+        // fork(claude-agent): told this already (the same event by another way, or before a restart).
+        if (message.dedupeKey && !message.delivery && (await this.#messages.get(sessionId, kept.id))) return {};
+        // Two of the same at once: the one whose write lands second is the duplicate.
+        const duplicate = (error: unknown) => Boolean(message.dedupeKey) && error instanceof UniqueViolationError;
         if (!message.wake) {
           // Kept for the session's next turn, dropping the oldest past the cap; a restart keeps it too.
-          await this.#messages.hold(kept, MAX_WAITING_MESSAGES);
+          try {
+            await this.#messages.hold(kept, MAX_WAITING_MESSAGES);
+          } catch (error) {
+            if (!duplicate(error)) throw error;
+          }
           return {};
         }
         const session = await this.#ready(sessionId, requestContext);
@@ -968,7 +977,12 @@ export class ClaudeAgentSessions {
         const { text, ...shown } = factoryMessage(kept.text, kept.source, kept.attributes);
         // Kept before Claude reads it, so the session can answer it and the sender's limit counts it;
         // a message that can't be kept isn't sent, and one whose turn never started is forgotten.
-        await this.#messages.told(kept);
+        try {
+          await this.#messages.told(kept);
+        } catch (error) {
+          if (duplicate(error)) return {};
+          throw error;
+        }
         try {
           return { runId: await this.#send(session, { text, notice: shown }, requestContext) };
         } catch (error) {
@@ -1196,6 +1210,11 @@ interface OpenSession {
   skills: readonly string[];
   /** Factory's request context for a turn sent with a host context. */
   requestContext?: (hostContext: unknown) => RequestContext;
+}
+
+/** fork(claude-agent): the id a deduplicated message is kept under: one per session and key. */
+function dedupedMessageId(sessionId: string, key: string): string {
+  return `dedupe-${createHash('sha256').update(`${sessionId}\u0000${key}`).digest('hex').slice(0, 40)}`;
 }
 
 function contextNotice({ kind, tag, text, attributes }: ClaudeAgentContextBlock): ClaudeTurnNotice {
