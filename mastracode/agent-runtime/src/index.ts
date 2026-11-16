@@ -9,6 +9,8 @@ export type { EventLog } from './event-log';
 export { defineFactoryTool } from './tools';
 export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
+export { SessionPublisher } from './session-publisher';
+export type { SessionPublisherOptions } from './session-publisher';
 export { InteractionBroker, InteractionCancelledError } from './interaction-broker';
 export type { InteractionBrokerOptions, ResolveOutcome } from './interaction-broker';
 export { InMemoryInteractionStore } from './interaction-store-memory';

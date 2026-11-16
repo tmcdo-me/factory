@@ -43,3 +43,32 @@ jobs:
 
       - name: Build
         run: pnpm --filter "@factory/*" build
+
+  # Factory itself: typecheck, and run every test file that carries the fork marker (our seams).
+  factory-seams:
+    if: github.repository == 'tmcdo-me/factory'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@e8d4307400f9427dba7cb98e488d6ab85f1cec5f
+
+      - name: Setup pnpm and Node.js
+        uses: ./.github/actions/setup-pnpm-node
+        with:
+          install-dependencies: 'false'
+
+      - name: Install @mastra/factory and its dependencies
+        run: pnpm install --frozen-lockfile --filter "@mastra/factory..."
+
+      - name: Build dependencies of @mastra/factory
+        run: pnpm turbo build --filter "@mastra/factory^..."
+
+      - name: Typecheck
+        run: pnpm --filter @mastra/factory check
+
+      - name: Fork-marked tests
+        working-directory: mastracode/factory
+        run: |
+          files=$(git grep -l 'fork(claude-agent)' -- 'src/*.test.ts')
+          echo "$files"
+          pnpm exec vitest run $files --reporter=dot

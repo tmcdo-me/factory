@@ -25,7 +25,8 @@ export type ToolExecutor = 'runtime' | 'factory';
 export type RunEndReason = 'complete' | 'aborted' | 'error' | 'awaiting_interaction';
 
 export type FactoryEvent =
-  | { type: 'run.started'; runId: string; input: TurnInput }
+  /** `input` is absent when the runtime started the run itself or the adapter can't attribute it. */
+  | { type: 'run.started'; runId: string; input?: TurnInput }
   | { type: 'run.ended'; runId: string; reason: RunEndReason; error?: string }
   | { type: 'message.started'; messageId: string; role: 'assistant' | 'user'; runId?: string }
   | { type: 'message.delta'; messageId: string; part: 'text' | 'reasoning'; delta: string }

@@ -18,7 +18,7 @@ export type TranscriptItem = RunItem | MessageItem | ToolItem | InteractionItem 
 export interface RunItem {
   kind: 'run';
   runId: string;
-  input: TurnInput;
+  input?: TurnInput;
   status: 'running' | RunEndReason;
   error?: string;
   startedAt: string;

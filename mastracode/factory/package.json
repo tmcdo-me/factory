@@ -60,6 +60,8 @@
     "url": "https://github.com/mastra-ai/mastra/issues"
   },
   "dependencies": {
+    "@factory/agent-runtime": "workspace:*",
+    "@factory/runtime-mastra-code": "workspace:*",
     "@mastra/auth-studio": "workspace:*",
     "@mastra/auth-workos": "workspace:*",
     "@mastra/code-sdk": "workspace:*",
