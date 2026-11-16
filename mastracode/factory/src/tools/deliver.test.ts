@@ -324,3 +324,59 @@ describe('resolveSessionThread', () => {
     await expect(threadSetup()).resolves.toBeNull();
   });
 });
+
+// fork(claude-agent)
+describe('deliverFactorySessionNotification to a Claude Agent session', () => {
+  function onRuntime(running = false) {
+    const { controller, sessions, agent, calls } = setup();
+    const message = vi.fn(async (..._args: unknown[]) => {});
+    const runtime = { runs: vi.fn(async () => true), isRunning: () => running, message };
+    const deliver = (
+      notification: Parameters<typeof deliverFactorySessionNotification>[0]['notification'],
+      onlyIfLive = false,
+    ) =>
+      deliverFactorySessionNotification({
+        controller: controller as unknown as FactoryDeliveryController,
+        sessions,
+        runs: RUNS,
+        target: { sessionId: 'session-b', threadId: 'thread-stored' },
+        notification,
+        onlyIfLive,
+        runtime,
+      });
+    return { deliver, message, agent, calls, controller };
+  }
+
+  it('wakes it through its runtime, as its row owner, with what the message says about itself', async () => {
+    const { deliver, message, agent, calls } = onRuntime();
+    const result = await deliver({ ...MESSAGE, attributes: { 'from-session': 'session-a' } });
+
+    expect(result).toMatchObject({ delivered: 'woken', notificationId: expect.any(String) });
+    const [sessionId, sent, requestContext] = message.mock.calls[0] as [
+      string,
+      Record<string, unknown>,
+      { get(key: string): unknown },
+    ];
+    expect(sessionId).toBe('session-b');
+    expect(sent).toEqual({
+      text: 'Can you check the failing test?',
+      source: 'factory-session',
+      wake: true,
+      attributes: { kind: 'message', 'from-session': 'session-a' },
+    });
+    expect(requestContext.get('user')).toEqual({ workosId: 'user-b', organizationId: 'org-1' });
+    // The controller session is never woken or created.
+    expect(agent.sendNotificationSignal).not.toHaveBeenCalled();
+    expect(calls).toEqual([]);
+  });
+
+  it('reaches a busy session with its next turn, and leaves low-priority news and stage notices for later', async () => {
+    const busy = onRuntime(true);
+    await expect(busy.deliver(MESSAGE)).resolves.toMatchObject({ delivered: 'mid-run' });
+
+    const later = onRuntime();
+    await expect(later.deliver({ ...MESSAGE, priority: 'low' })).resolves.toMatchObject({ delivered: 'persisted' });
+    await expect(later.deliver({ ...MESSAGE, kind: 'stage' }, true)).resolves.toMatchObject({ delivered: 'persisted' });
+    expect(later.message.mock.calls.map(call => (call[1] as { wake: boolean }).wake)).toEqual([false, false]);
+  });
+});

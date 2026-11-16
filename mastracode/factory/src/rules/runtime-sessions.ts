@@ -61,7 +61,13 @@ export interface FactoryRuntimeSessions {
    */
   message(
     sessionId: string,
-    message: { text: string; source: string; wake: boolean },
+    message: {
+      text: string;
+      source: string;
+      wake: boolean;
+      /** What the message says about itself (its kind, who sent it), for Claude to read. */
+      attributes?: Record<string, string | number | boolean>;
+    },
     requestContext: RequestContext,
   ): Promise<void>;
   abort(sessionId: string, requestContext: RequestContext): Promise<void>;

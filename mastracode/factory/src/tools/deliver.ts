@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import type { MountedMastraCode } from '@mastra/code-sdk';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
+import { RequestContext } from '@mastra/core/request-context';
 
 import { createSessionAsRowOwner } from '../integrations/subscription-session.js';
+import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { listFactorySessionThreads, sessionMemoryResourceId, sessionStampCounts } from '../session/session-threads.js';
 import type { FactorySessionOwnership, SessionRunBindings } from '../session/session-threads.js';
@@ -20,6 +24,9 @@ export type FactoryDeliveryController = Pick<
   | 'createSession'
   | 'getCurrentAgent'
 >;
+
+/** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
+export type FactoryRuntimeDelivery = Pick<FactoryRuntimeSessions, 'runs' | 'isRunning' | 'message'>;
 
 export interface FactoryDeliveryTarget {
   /** The target's source-control session id. */
@@ -61,6 +68,7 @@ export async function deliverFactorySessionNotification({
   notification,
   onlyIfLive = false,
   runs,
+  runtime,
 }: {
   controller: FactoryDeliveryController;
   sessions: Pick<SourceControlSessionLookup, 'getBySessionId'>;
@@ -70,6 +78,8 @@ export async function deliverFactorySessionNotification({
   notification: Omit<SendNotificationSignalInput, 'source'>;
   /** Skip, without creating anything, when no live session owns the target (stage notices). */
   onlyIfLive?: boolean;
+  /** fork(claude-agent): sessions on another runtime, which never run on the controller session. */
+  runtime?: FactoryRuntimeDelivery;
 }): Promise<FactoryDeliveryResult> {
   const thread = await controller.queryThreadById({ threadId: target.threadId });
   if (!thread) return { delivered: 'skipped', reason: 'thread-not-found' };
@@ -83,6 +93,12 @@ export async function deliverFactorySessionNotification({
     return { delivered: 'skipped', reason: 'thread-not-owned' };
   }
   const ownerResourceId = thread.resourceId || target.sessionId;
+  // fork(claude-agent)
+  if (runtime && (await runtime.runs(target.sessionId))) {
+    const row = await loadRow();
+    if (!row) return { delivered: 'skipped', reason: 'session-not-found' };
+    return deliverOnRuntime(runtime, target.sessionId, row, notification, onlyIfLive);
+  }
 
   // No request context: without a user the controller's access check is a no-op,
   // and this is a server-side lookup on the target's behalf, not the sender's.
@@ -126,6 +142,32 @@ export async function deliverFactorySessionNotification({
     default:
       return { delivered: 'persisted', notificationId, ...reason };
   }
+}
+
+/**
+ * fork(claude-agent): a notification for a session on another runtime. It acts as its row's owner,
+ * as a woken Mastra Code session does. Priority decides, as Mastra Code's inbox does: `low` waits
+ * for the session's next turn, anything else wakes an idle session or reaches a busy one with its
+ * next turn. A stage notice never wakes anyone.
+ */
+async function deliverOnRuntime(
+  runtime: FactoryRuntimeDelivery,
+  sessionId: string,
+  row: { userId: string; orgId: string },
+  notification: Omit<SendNotificationSignalInput, 'source'>,
+  onlyIfLive: boolean,
+): Promise<FactoryDeliveryResult> {
+  const wake = !onlyIfLive && notification.priority !== 'low';
+  const running = runtime.isRunning(sessionId);
+  const requestContext = new RequestContext();
+  requestContext.set('user', { workosId: row.userId, organizationId: row.orgId });
+  const attributes: Record<string, string> = { kind: notification.kind, ...notification.attributes };
+  await runtime.message(
+    sessionId,
+    { text: notification.summary, source: FACTORY_SESSION_NOTIFICATION_SOURCE, wake, attributes },
+    requestContext,
+  );
+  return { delivered: wake ? (running ? 'mid-run' : 'woken') : 'persisted', notificationId: randomUUID() };
 }
 
 export interface FactorySessionActivity {

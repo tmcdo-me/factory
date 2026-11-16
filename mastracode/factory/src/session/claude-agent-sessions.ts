@@ -590,7 +590,7 @@ export class ClaudeAgentSessions {
         return { ended };
       },
       message: async (sessionId, message, requestContext) => {
-        const notice = factoryMessage(message.text, message.source);
+        const notice = factoryMessage(message.text, message.source, message.attributes);
         if (!message.wake) {
           this.#hold(sessionId, notice);
           return;
@@ -719,8 +719,12 @@ function contextNotice({ kind, tag, text, attributes }: ClaudeAgentContextBlock)
 }
 
 /** Something Factory tells the session, shown as Factory's in the transcript. */
-function factoryMessage(text: string, source: string): ClaudeTurnNotice {
-  return { kind: 'reactive', tag: 'factory-message', text, attributes: { source } };
+function factoryMessage(
+  text: string,
+  source: string,
+  attributes?: Record<string, string | number | boolean>,
+): ClaudeTurnNotice {
+  return { kind: 'reactive', tag: 'factory-message', text, attributes: { ...attributes, source } };
 }
 
 /** A request context's `get`, or none (tests and hosts may pass anything). */

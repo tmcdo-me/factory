@@ -3,6 +3,7 @@ import type { MountedMastraCode } from '@mastra/code-sdk';
 import type { NotificationPriority } from '@mastra/core/notifications';
 import type { Context } from 'hono';
 import { requestsChangesVerdict } from '../../review-verdict.js';
+import type { FactoryRuntimeSessions } from '../../rules/runtime-sessions.js';
 import { announcePullRequest } from '../channel-thread-announcements.js';
 import { resolveSubscriptionSession, subscriptionRunContext } from '../subscription-session.js';
 import type { FactorySessionOwner } from '../subscription-session.js';
@@ -101,6 +102,8 @@ export interface GithubWebhookDispatchIntegration {
 
 export interface GithubWebhookDispatchDependencies {
   controller: MountedMastraCode['controller'];
+  /** fork(claude-agent): subscribed sessions on another agent runtime take their notifications through it. */
+  runtimeSessions?: Pick<FactoryRuntimeSessions, 'runs' | 'message'>;
   /**
    * Integration used by the default sender-authorization check (collaborator
    * permission lookup) and to resolve the owner of a session being recreated.
@@ -546,6 +549,41 @@ export async function dispatchGithubWebhook(
       continue;
     }
     try {
+      // fork(claude-agent): a Claude Agent session hears its pull request through its runtime; its
+      // controller session never runs.
+      if (subscription.sessionId && (await dependencies.runtimeSessions?.runs(subscription.sessionId))) {
+        const runContext = await subscriptionRunContext(subscription, dependencies.github?.sourceControlStorage);
+        if (!runContext) {
+          throw new Error(`GitHub subscription ${subscription.id} has no resolvable tenant identity; not delivered.`);
+        }
+        const overrides = managedInlineReviewOverrides(notification, subscription);
+        await dependencies.runtimeSessions!.message(
+          subscription.sessionId,
+          {
+            text: overrides?.summary ?? notification.summary,
+            source: 'github',
+            wake: notification.priority !== 'low',
+            attributes: {
+              kind: notification.kind,
+              ...(notification.metadata.repository ? { repository: notification.metadata.repository } : {}),
+              ...(notification.metadata.pullRequestNumber !== undefined
+                ? { 'pull-request': notification.metadata.pullRequestNumber }
+                : {}),
+              ...(notificationTargetUrl(parsed.event, parsed.payload)
+                ? { url: notificationTargetUrl(parsed.event, parsed.payload)! }
+                : {}),
+            },
+          },
+          runContext,
+        );
+        if (notification.terminal) {
+          await retireSubscription(subscription.id, notification.kind === 'pull-request-merged' ? 'merged' : 'closed');
+        } else if (notification.action === 'reopened') {
+          await retireSubscription(subscription.id, 'open');
+        }
+        delivered += 1;
+        continue;
+      }
       const session = await resolveSubscriptionSession(dependencies.controller, subscription, {
         label: 'GitHub',
         sourceControl: dependencies.github?.sourceControlStorage,

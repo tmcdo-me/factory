@@ -104,6 +104,8 @@ export interface IntegrationContext {
   baseUrl?: string;
   /** Mounted agent controller for webhook → session signal delivery. */
   controller?: MountedMastraCode['controller'];
+  /** fork(claude-agent): sessions on another agent runtime, which take webhook notifications through it. */
+  runtimeSessions?: import('../rules/runtime-sessions.js').FactoryRuntimeSessions;
   /**
    * Shared OAuth state signer created by the factory. One signer per boot, so
    * every integration's OAuth flow signs and verifies with the same secret.

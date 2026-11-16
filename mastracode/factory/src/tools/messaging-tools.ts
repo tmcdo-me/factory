@@ -25,7 +25,7 @@ import {
   deliverFactorySessionNotification,
   resolveSessionThread,
 } from './deliver.js';
-import type { FactoryDeliveryController, FactoryDeliveryResult } from './deliver.js';
+import type { FactoryDeliveryController, FactoryDeliveryResult, FactoryRuntimeDelivery } from './deliver.js';
 import { reportNotification, workItemReportAttributes, workItemReportRecipients } from './reports.js';
 import { requirePerson } from './scope.js';
 import type { FactoryToolScope } from './scope.js';
@@ -76,6 +76,8 @@ const queueKey = (owner: object, senderSessionId: string, threadId: string): str
 };
 export interface FactoryMessaging {
   controller: FactoryDeliveryController;
+  /** fork(claude-agent): sessions on another agent runtime, which take their messages through it. */
+  runtime?: FactoryRuntimeDelivery;
   notifications: Pick<NotificationsStorage, 'listNotifications' | 'getNotification'>;
 }
 
@@ -196,6 +198,7 @@ export function createFactoryMessagingTools(
     if (counted.length < SIGNAL_RATE_LIMIT) {
       const result = await deliverFactorySessionNotification({
         controller: messaging.controller,
+        ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
         sessions: deps.sessions,
         runs: deps.workItems,
         target,
@@ -262,6 +265,7 @@ export function createFactoryMessagingTools(
     if (queue.length === 0) pendingQueues.delete(key);
     const result = await deliverFactorySessionNotification({
       controller: messaging.controller,
+      ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
       sessions: deps.sessions,
       runs: deps.workItems,
       target: head.target,
@@ -528,6 +532,7 @@ export function createFactoryMessagingTools(
       }
       const result = await deliverFactorySessionNotification({
         controller: messaging.controller,
+        ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
         sessions: deps.sessions,
         runs: deps.workItems,
         target: recipient,

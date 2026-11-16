@@ -1307,6 +1307,7 @@ export class GithubIntegration implements FactoryIntegration {
       stateSigner: ctx.stateSigner,
       baseUrl: ctx.baseUrl,
       controller: ctx.controller,
+      ...(ctx.runtimeSessions ? { runtimeSessions: ctx.runtimeSessions } : {}), // fork(claude-agent)
       memorySettings: ctx.storage.memorySettings,
       emitAudit: ctx.hooks?.emitAudit,
       projects: ctx.storage.projects,

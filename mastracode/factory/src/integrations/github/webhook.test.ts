@@ -859,3 +859,44 @@ describe('dispatchGithubWebhook org seeding', () => {
     expect(state.factoryOrgId).toBeUndefined();
   });
 });
+
+// fork(claude-agent)
+describe('dispatchGithubWebhook to Claude Agent sessions', () => {
+  it("tells a Claude Agent session its pull request's news through its runtime, never its controller session", async () => {
+    const message = vi.fn(async (..._args: unknown[]) => {});
+    const getSession = vi.fn();
+    const createSession = vi.fn();
+    const retireSubscription = vi.fn(async () => {});
+    const result = await dispatchGithubWebhook(
+      parsed('pull_request', 'closed', { pull_request: { number: 34, merged: true } }),
+      {
+        controller: controllerStub({ getSession, createSession }),
+        github: githubWithSessionRow({ userId: 'user-1', orgId: 'org-1' }),
+        listSubscriptions: async () => [subscription('claude')],
+        retireSubscription,
+        isAuthorizedSender: async () => true,
+        runtimeSessions: { runs: async sessionId => sessionId === 'session-claude', message },
+      },
+    );
+
+    expect(result).toEqual({ delivered: 1, failed: 0, skipped: 0, ignored: false });
+    expect(getSession).not.toHaveBeenCalled();
+    expect(createSession).not.toHaveBeenCalled();
+    const [sessionId, sent, requestContext] = message.mock.calls[0] as [
+      string,
+      { text: string; source: string; wake: boolean; attributes: Record<string, unknown> },
+      RequestContext,
+    ];
+    expect(sessionId).toBe('session-claude');
+    expect(sent).toMatchObject({
+      source: 'github',
+      wake: true,
+      attributes: { kind: 'pull-request-merged', repository: 'octo/hello', 'pull-request': 34 },
+    });
+    expect(sent.text).toBeTruthy();
+    // It runs as the person who subscribed the session.
+    expect(requestContext.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
+    // A merge ends the subscription, as for any session.
+    expect(retireSubscription).toHaveBeenCalledWith('claude', 'merged');
+  });
+});
