@@ -47,6 +47,8 @@ export function useFactoryChatConnection({
     enabled: mastraCode && resourceReady && Boolean(session),
     staleTime: Infinity,
     refetchOnWindowFocus: false,
+    // A read that failed is tried again, so the model picker doesn't stay blank.
+    refetchInterval: query => (query.state.status === 'error' ? 5_000 : false),
   });
   const modelId = runtime?.runtimeId === CLAUDE_AGENT_RUNTIME ? runtime.modelId : mastraState.data?.modelId;
 

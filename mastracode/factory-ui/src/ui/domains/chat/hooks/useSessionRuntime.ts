@@ -51,10 +51,15 @@ export function useSessionRuntimeQuery(sessionId: string | undefined) {
     queryKey: runtimeKeys.session(sessionId ?? ''),
     queryFn: () => fetchSessionRuntime(baseUrl, sessionId!),
     enabled: Boolean(sessionId),
-    // A session's runtime never changes once chosen.
-    staleTime: Infinity,
+    // A session's runtime never changes once chosen, but where its history is read from is the
+    // server's answer at the time: read it again now and then rather than keep it for the page's life.
+    staleTime: 5 * 60_000,
+    // The server answers 503 while it can't tell; keep asking until it can.
+    refetchInterval: query => (query.state.status === 'error' ? RUNTIME_RETRY_MS : false),
   });
 }
+
+const RUNTIME_RETRY_MS = 5_000;
 
 /** A draft's runtime: what the composer picked, else the project's default. */
 export function useDraftRuntime(draftId: string | undefined, projectId: string | undefined) {
@@ -84,9 +89,15 @@ export function draftRuntimeChoice(draftId: string, projectDefault: string | und
 }
 
 /**
- * Whether this session is drawn from Factory's own session event log: every session is, unless the
- * server says its conversation began before the log (and until it says, it is).
+ * Where a session's transcript is drawn from: Factory's event log, unless the server says its
+ * conversation began before the log. `undefined` until the server has said (still asking, or the
+ * question failed): the history is not read from either place on a guess.
  */
-export function usesFactorySessionApi(runtime: SessionRuntime | undefined): boolean {
-  return runtime?.transcript !== 'mastra';
+export function sessionTranscriptSource(
+  sessionId: string | undefined,
+  runtime: { data?: SessionRuntime },
+): 'factory' | 'mastra' | undefined {
+  if (!sessionId) return 'factory';
+  if (!runtime.data) return undefined;
+  return runtime.data.transcript === 'mastra' ? 'mastra' : 'factory';
 }

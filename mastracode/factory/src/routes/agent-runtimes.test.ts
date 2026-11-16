@@ -103,13 +103,15 @@ describe('agent runtime routes', () => {
       },
     });
     const transcript = async (sessionId: string) =>
-      ((await (await app.request(`/web/factory/sessions/${sessionId}/runtime`)).json()) as { transcript: string })
+      ((await (await app.request(`/web/factory/sessions/${sessionId}/runtime`)).json()) as { transcript?: string })
         .transcript;
 
     expect(await transcript('old')).toBe('mastra');
     expect(await transcript('new')).toBe('factory');
-    // A check that fails still draws the session: its event log shows what it recorded.
-    expect(await transcript('unreadable')).toBe('factory');
+    // A check that fails answers 503 so the UI asks again: it never guesses where the history is.
+    const unreadable = await app.request('/web/factory/sessions/unreadable/runtime');
+    expect(unreadable.status).toBe(503);
+    expect(await unreadable.json()).toMatchObject({ error: 'unavailable' });
     // Claude Agent sessions only ever have the event log.
     legacy.add('claude');
     await sessions.assign('claude', 'claude-agent', 'claude-opus-5-5');

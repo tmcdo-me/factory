@@ -103,8 +103,10 @@ const RECONNECT_MIN_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 
 /** The session is gone or not the viewer's: retrying can't help. */
-const isRefused = (error: unknown) =>
-  error instanceof FactorySessionRequestError && [401, 403, 404].includes(error.status);
+const isRefused = (error: unknown) => error instanceof FactorySessionRequestError && [403, 404].includes(error.status);
+
+/** Signed out: show it, and keep asking so the stream comes back once the viewer signs in again. */
+const isSignedOut = (error: unknown) => error instanceof FactorySessionRequestError && error.status === 401;
 
 export function useFactorySessionTranscript({ sessionId }: { sessionId?: string; viewerId?: string } = {}) {
   const { baseUrl } = useApiConfig();
@@ -165,15 +167,18 @@ export function useFactorySessionTranscript({ sessionId }: { sessionId?: string;
             },
             AbortSignal.any([signal, gap.signal]),
           );
+          // The server closed the stream: reconnect from the last event.
+          report(connectedOnce ? 'reconnecting' : 'connecting');
         } catch (error) {
           if (signal.aborted) return;
           if (isRefused(error)) {
             report('error');
             return;
           }
+          if (isSignedOut(error)) report('error');
+          else report(connectedOnce ? 'reconnecting' : 'connecting');
         }
         if (signal.aborted) return;
-        report(connectedOnce ? 'reconnecting' : 'connecting');
         await new Promise(resolve => setTimeout(resolve, delay));
         delay = Math.min(delay * 2, RECONNECT_MAX_MS);
       }

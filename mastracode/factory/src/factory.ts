@@ -2511,7 +2511,8 @@ export class MastraFactory {
             // A Mastra Code session that began before its events were logged is drawn from Mastra memory.
             historyPredatesLog: async sessionId => {
               const controller = this.#prepared?.base.controller;
-              if (!controller) return false;
+              // Not started yet: the route answers 503 and the UI asks again, rather than guess.
+              if (!controller) throw new Error('Factory has not started yet');
               return historyPredatesEventLog({ conversation: controller, events: agentEventHub.log, sessionId });
             },
           }),

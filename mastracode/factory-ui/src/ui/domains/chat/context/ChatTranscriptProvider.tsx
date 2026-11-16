@@ -9,7 +9,7 @@ import { useFactoryAuth } from '../../../../hooks/useFactoryAuth';
 import { chatSessionPhase } from '../../workspaces/services/sessionStatus';
 import { useAgentControllerTranscript } from '../hooks/useAgentControllerTranscript';
 import { useFactorySessionTranscript } from '../hooks/useFactorySessionTranscript';
-import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
+import { sessionTranscriptSource, useSessionRuntimeQuery } from '../hooks/useSessionRuntime';
 import { initialChatRuntime, runtimeReducer } from '../services/runtime';
 import type { SessionStateSnapshot } from '../services/runtime';
 import type { TranscriptState } from '../services/transcript';
@@ -51,9 +51,10 @@ export function ChatTranscriptProvider({
 }: TranscriptProviderProps) {
   const viewerId = useFactoryAuth().data?.user?.userId;
   const runtimeQuery = useSessionRuntimeQuery(threadId);
-  const fromMastra = !usesFactorySessionApi(runtimeQuery.data);
   // Until the server says where a session's history lives, neither source reads it.
-  const fromFactory = !fromMastra && !(Boolean(threadId) && runtimeQuery.isPending);
+  const source = sessionTranscriptSource(threadId, runtimeQuery);
+  const fromMastra = source === 'mastra';
+  const fromFactory = source === 'factory';
 
   const factoryApi = useFactorySessionTranscript({ sessionId: fromFactory ? threadId : undefined, viewerId });
   const factoryConnection = useFactoryChatConnection({
@@ -109,6 +110,8 @@ export function ChatTranscriptProvider({
     mastraApi.reset(nextThreadId);
     dispatchRuntime({ type: 'reset', threadId: nextThreadId, state });
   };
+  // A session whose source is still unknown has no history yet, not an empty one.
+  const factoryTranscriptApi = fromFactory || !threadId ? factoryApi : { ...factoryApi, initialHistoryReady: false };
   const factoryReset = useCallback((_threadId?: string, _state?: SessionStateSnapshot) => {}, []);
 
   return (
@@ -117,7 +120,7 @@ export function ChatTranscriptProvider({
         <ChatTranscriptValueProvider
           threadId={threadId}
           viewerId={viewerId}
-          transcriptApi={fromMastra ? mastraApi : factoryApi}
+          transcriptApi={fromMastra ? mastraApi : factoryTranscriptApi}
           title={fromMastra ? namedTitle : undefined}
           reset={fromMastra ? mastraReset : factoryReset}
           loadMore={
@@ -173,7 +176,7 @@ function ChatTranscriptValueProvider({
     ...transcript,
     threadId: effectiveThreadId,
     tasks: connection.state?.tasks ?? transcript.tasks,
-    ...(transcript.title ?? title ? { title: transcript.title ?? title } : {}),
+    ...((transcript.title ?? title) ? { title: transcript.title ?? title } : {}),
   };
   const busy = connection.state?.running === true || effectiveTranscript.pending;
   const historyInitializing = Boolean(messagesThreadId) && !messagesError && !initialHistoryReady;

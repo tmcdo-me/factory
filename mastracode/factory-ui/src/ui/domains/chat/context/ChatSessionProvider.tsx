@@ -15,7 +15,7 @@ import { isSessionNotFound } from '../../workspaces/services/user-sessions';
 import type { FactoryUserSession } from '../../workspaces/services/user-sessions';
 import { AGENT_CONTROLLER_ID } from '../services/constants';
 import { opensWithPrompt } from '../hooks/useHandoffPrompt';
-import { useSessionRuntimeQuery, usesFactorySessionApi } from '../hooks/useSessionRuntime';
+import { sessionTranscriptSource, useSessionRuntimeQuery } from '../hooks/useSessionRuntime';
 import { readFailedDraft } from '../services/handoffFiles';
 import { ChatCommandsProvider } from './ChatCommandsProvider';
 import { ComposerImagesProvider } from './ComposerImagesProvider';
@@ -188,9 +188,11 @@ export function ChatSessionBoundary({
   // fork(claude-agent): Mastra memory holds the history only of a session drawn from it; every other
   // session's history comes with its Factory transcript.
   const runtimeQuery = useSessionRuntimeQuery(threadId);
-  const fromMastra = !usesFactorySessionApi(runtimeQuery.data);
-  // Until the server says where the history lives, the history is still loading.
-  const sourcePending = Boolean(threadId) && runtimeQuery.isPending;
+  const source = sessionTranscriptSource(threadId, runtimeQuery);
+  const fromMastra = source === 'mastra';
+  // Until the server says where the history lives, the history is still loading, or failed to load.
+  const sourceFailed = source === undefined && runtimeQuery.isError;
+  const sourcePending = source === undefined && !sourceFailed;
   const messagesQuery = useAgentControllerThreadMessages({
     agentControllerId: AGENT_CONTROLLER_ID,
     sessionId,
@@ -202,7 +204,12 @@ export function ChatSessionBoundary({
   const messages = {
     threadId,
     isPending: sourcePending || (fromMastra && Boolean(threadId) && messagesQuery.isPending),
-    error: fromMastra && messagesQuery.isError ? messagesQuery.error : undefined,
+    error: sourceFailed ? runtimeQuery.error : fromMastra && messagesQuery.isError ? messagesQuery.error : undefined,
+    retry: sourceFailed
+      ? () => void runtimeQuery.refetch()
+      : fromMastra && messagesQuery.isError
+        ? () => void messagesQuery.refetch()
+        : undefined,
   };
 
   if (deferUntilMessagesReady && threadId && (messages.isPending || messages.error)) {
@@ -288,7 +295,7 @@ function ChatMessageFeedback({ error }: { error: Error }) {
   );
 }
 
-function ChatMessageFallback({ threadId, isPending, error }: ChatThreadMessagesApi) {
+function ChatMessageFallback({ threadId, isPending, error, retry }: ChatThreadMessagesApi) {
   if (threadId && isPending) {
     return (
       <div className="flex flex-col gap-4">
@@ -300,9 +307,18 @@ function ChatMessageFallback({ threadId, isPending, error }: ChatThreadMessagesA
   if (threadId && error) {
     const errorMessage = error instanceof Error ? error.message : undefined;
     return (
-      <Notice variant="destructive">
-        {errorMessage ? `Failed to load messages: ${errorMessage}` : 'Failed to load messages.'}
-      </Notice>
+      <div className="flex flex-col gap-4">
+        <Notice variant="destructive">
+          {errorMessage ? `Failed to load messages: ${errorMessage}` : 'Failed to load messages.'}
+        </Notice>
+        {retry && (
+          <div>
+            <Button variant="default" onClick={retry}>
+              Retry
+            </Button>
+          </div>
+        )}
+      </div>
     );
   }
 

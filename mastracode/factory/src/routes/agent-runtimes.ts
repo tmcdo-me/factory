@@ -3,7 +3,8 @@
  * - `GET  /web/factory/runtimes` — the runtimes this deployment offers (Claude Agent with its models).
  * - `GET  /web/factory/sessions/:sessionId/runtime` — the session's runtime (default when unset), and
  *   where its transcript is drawn from: `factory` (its event log), or `mastra` for a Mastra Code
- *   session whose conversation began before Factory logged its events.
+ *   session whose conversation began before Factory logged its events. 503 while that can't be
+ *   told (Factory starting, storage unreachable): the UI asks again rather than draw it wrong.
  * - `PUT  /web/factory/sessions/:sessionId/runtime` — choose it, before the session's first message;
  *   owner-only (`createSessionAccessGuard`).
  * - `GET|PUT /web/factory/projects/:projectId/runtime` — the project's default for new sessions.
@@ -79,14 +80,14 @@ export function buildAgentRuntimeRoutes({
       ? { error: 'organization_required', message: 'Agent runtimes are set per organization.' }
       : { error: status === 401 ? 'unauthorized' : 'Project not found' };
 
-  /** A legacy session that can't be checked is drawn from its log: the log still shows what it recorded. */
-  const transcriptSource = async (runtimeId: string, sessionId: string): Promise<'factory' | 'mastra'> => {
+  /** Where a session's history lives; `undefined` when a Mastra Code session's can't be told now. */
+  const transcriptSource = async (runtimeId: string, sessionId: string): Promise<'factory' | 'mastra' | undefined> => {
     if (runtimeId !== MASTRA_CODE_RUNTIME_ID || !historyPredatesLog) return 'factory';
     try {
       return (await historyPredatesLog(sessionId)) ? 'mastra' : 'factory';
     } catch (error) {
       console.warn(`[factory] Session ${sessionId}: checking where its history lives failed`, error);
-      return 'factory';
+      return undefined;
     }
   };
 
@@ -109,11 +110,14 @@ export function buildAgentRuntimeRoutes({
         const sessionId = c.req.param('sessionId')!;
         const record = await sessions.get(sessionId);
         const runtimeId = record?.runtimeId ?? DEFAULT_RUNTIME_ID;
-        return c.json({
-          runtimeId,
-          ...(record?.modelId ? { modelId: record.modelId } : {}),
-          transcript: await transcriptSource(runtimeId, sessionId),
-        });
+        const transcript = await transcriptSource(runtimeId, sessionId);
+        if (!transcript) {
+          return c.json(
+            { error: 'unavailable', message: "Where the session's history lives could not be read; try again." },
+            503,
+          );
+        }
+        return c.json({ runtimeId, ...(record?.modelId ? { modelId: record.modelId } : {}), transcript });
       },
     }),
     registerApiRoute('/web/factory/sessions/:sessionId/runtime', {

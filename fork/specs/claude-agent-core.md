@@ -335,14 +335,16 @@ Each slice: implement → focused tests → manual check where noted → commit.
      - ✅ Every session is drawn from Factory's event log by default, with its runtime state from
        the seam for both runtimes: running (the composer's stop/steer, the favicon, the activity
        line), connected/reconnecting (which gates sending), usage (`/cost`) and the context meter
-       come from `/transcript` + `/events`; Mastra's agent-controller session is neither created
-       nor streamed for it, and only a Mastra Code session's model is still read from Mastra's
-       session state (where its model and thinking settings live). The transcript-source flag is
-       gone. The Mastra path stays for one case: a Mastra Code session whose conversation began
+       come from `/transcript` + `/events`. The UI no longer creates (init, state seed) or streams
+       Mastra's agent-controller session for it; it still reads a Mastra Code session's model from
+       Mastra's session state (where its model and thinking settings live), and that read rebuilds
+       the live Mastra session on the server. The transcript-source flag is gone. The Mastra path stays for one case: a Mastra Code session whose conversation began
        before Factory mirrored it into the log (its first stored message is over a minute older
        than its first logged event, `historyPredatesEventLog` in `@factory/runtime-mastra-code`);
        `GET /web/factory/sessions/:id/runtime` says `transcript: 'mastra'` for it, and the UI draws
-       it from Mastra memory and its agent-controller stream as before. A session the composer
+       it from Mastra memory and its agent-controller stream as before. While that can't be told
+       (Factory starting, storage unreachable) the route answers 503 and the UI shows the history as
+       failed to load, retrying, rather than guess; the answer is read again after 5 minutes. A session the composer
        creates is drawn from the log at once. Both sources' hooks are mounted and only one is
        enabled, so learning which one never remounts the chat. Mastra's queued-follow-up count
        and decode rate (tok/s) have no counterpart in the log and show only on that path.
