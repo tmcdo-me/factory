@@ -56,6 +56,8 @@ export interface WaitingJudgeOptions {
   /** Injected for tests; defaults to the SDK's `query`. */
   query?: QueryFn;
   timeoutMs?: number;
+  /** Told why the judge gave no verdict (Claude Code failed, no login, an unreadable answer). */
+  onError?(error: unknown): void;
 }
 
 /** The judge's verdict: the person is asked `question`, or the goal goes on. */
@@ -95,7 +97,8 @@ export async function judgeWaitingOnPerson(
         settingSources: [],
         settings: { ...CLAUDE_AGENT_ISOLATION, claudeMdExcludes: instructionFilesAbove(options.cwd) },
         skills: [],
-        systemPrompt: WAITING_JUDGE_PROMPT,
+        // Claude Code's own system prompt, as in any session, with the judge's instructions appended.
+        systemPrompt: { type: 'preset', preset: 'claude_code', append: WAITING_JUDGE_PROMPT },
         ...(options.pathToClaudeCodeExecutable
           ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable }
           : {}),
@@ -104,12 +107,21 @@ export async function judgeWaitingOnPerson(
     let answer: string | undefined;
     for await (const event of run as AsyncIterable<SDKMessage>) {
       if (event.type === 'result') {
-        answer = event.subtype === 'success' ? event.result : undefined;
+        if (event.subtype !== 'success' || event.is_error) {
+          options.onError?.(
+            new Error(`The goal judge's turn failed: ${event.subtype !== 'success' ? event.subtype : event.result}`),
+          );
+          return undefined;
+        }
+        answer = event.result;
         break;
       }
     }
-    return answer === undefined ? undefined : verdictOf(answer);
-  } catch {
+    const verdict = answer === undefined ? undefined : verdictOf(answer);
+    if (!verdict) options.onError?.(new Error('The goal judge gave no verdict it was asked for.'));
+    return verdict;
+  } catch (error) {
+    options.onError?.(error);
     return undefined;
   } finally {
     clearTimeout(timer);

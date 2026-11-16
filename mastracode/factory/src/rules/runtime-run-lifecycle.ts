@@ -98,7 +98,12 @@ export async function judgeRuntimeGoal(
   }
   if (judged === 'unmet' && waiting) {
     const question = await waiting();
-    if (question !== undefined) return { waiting: question };
+    if (question !== undefined) {
+      // The judge took a while: the goal may have ended or been replaced meanwhile (the card moved on).
+      const after = await read();
+      if (after?.id !== goal.id || after.status !== 'active' || after.startedAt !== record.startedAt) return undefined;
+      return { waiting: question };
+    }
   }
   const runsUsed = current.runsUsed + 1;
   const spent = runsUsed >= maxRuns;

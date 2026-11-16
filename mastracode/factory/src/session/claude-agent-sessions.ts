@@ -56,6 +56,7 @@ import {
   toolIdentity,
 } from './claude-agent-tools.js';
 import type { MastraTools } from './claude-agent-tools.js';
+import { claudeAgentExecutable } from './claude-agent-waiting-judge.js';
 import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
 import { answersWithDecision, interactionToolName } from './pending-interactions.js';
 
@@ -335,6 +336,8 @@ export class ClaudeAgentSessions {
     let savedState = JSON.stringify(record.runtimeState ?? {});
     const resume = runtimeState?.claudeSessionId;
     const hostEnv = this.#deps.hostEnv ?? process.env;
+    // fork(claude-agent): in a sandbox, its own install; on this host, an installed `claude` when one is set.
+    const executable = launch ? launch.pathToClaudeCodeExecutable : claudeAgentExecutable(hostEnv);
     const envOptions = { ...(home ? { home } : {}), ...(launch?.remote ? { remote: true } : {}) };
     const freshEnv = workspace.freshEnv;
     const session: ClaudeAgentSession = new ClaudeAgentSession({
@@ -354,7 +357,7 @@ export class ClaudeAgentSessions {
       processDeadlineMs: CLAUDE_AGENT_PROCESS_DEADLINE_MS,
       backgroundMaxMs: this.#deps.backgroundMaxMs ?? claudeAgentBackgroundMaxMs(),
       ...(launch?.spawnClaudeCodeProcess ? { spawnClaudeCodeProcess: launch.spawnClaudeCodeProcess } : {}),
-      ...(launch?.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: launch.pathToClaudeCodeExecutable } : {}),
+      ...(executable ? { pathToClaudeCodeExecutable: executable } : {}),
       ...(record.modelId ? { model: record.modelId } : {}),
       ...(resume ? { resume } : {}),
       ...(this.#deps.instructions ? { instructions: this.#deps.instructions } : {}),
@@ -1090,6 +1093,9 @@ export class ClaudeAgentSessions {
 
   /** Close every Claude Code this process runs; a run in flight ends as stopped, saying `notice`. */
   async #stopAll(notice: string): Promise<void> {
+    // fork(claude-agent): a run parked on a plain-text question ends with its session, as one parked on
+    // its `ask_user` does: its follower closes its run record, and the question is withdrawn.
+    for (const waiting of [...this.#awaitingReply.values()]) waiting.drop();
     const sessions = await Promise.allSettled(this.#live.values());
     this.#live.clear();
     this.#opened.clear();

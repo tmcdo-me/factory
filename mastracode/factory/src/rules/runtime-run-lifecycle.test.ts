@@ -95,4 +95,30 @@ describe('runtime phase goals', () => {
     ]);
     expect(runtimeUsageSteps(undefined)).toEqual([]);
   });
+
+  // fork(claude-agent): the judge of a plain-text question can take a while.
+  it('waits on the person with the count unchanged, unless the goal ended while the judge decided', async () => {
+    const store = memory();
+    await holdRuntimeGoal(store, goal);
+    const goals = runtimeGoalStore(store);
+    expect(
+      await judgeRuntimeGoal(
+        store,
+        goal,
+        async () => 'unmet',
+        async () => 'Staging or production?',
+      ),
+    ).toEqual({
+      waiting: 'Staging or production?',
+    });
+    expect(await goals.read('thread-1')).toMatchObject({ status: 'active', runsUsed: 0 });
+
+    const ending = async () => {
+      // The card moved on while the judge decided: the goal is ended.
+      const record = (await goals.read('thread-1'))!;
+      await goals.write('thread-1', { ...record, status: 'done' });
+      return 'Staging or production?';
+    };
+    expect(await judgeRuntimeGoal(store, goal, async () => 'unmet', ending)).toBeUndefined();
+  });
 });

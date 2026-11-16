@@ -6,7 +6,7 @@ import type { QueryFn } from './session';
 import { WAITING_JUDGE_MODEL, judgeWaitingOnPerson, plainTextQuestion, verdictOf } from './waiting-judge';
 
 /** Claude Code answering the judge's one turn with `answer`. */
-function judgeQuery(answer: string | Error) {
+function judgeQuery(answer: string | Error, isError = false) {
   const calls: { options: Options; prompt: string[] }[] = [];
   const fn: QueryFn = ({ prompt, options }) => {
     const call = { options: options!, prompt: [] as string[] };
@@ -16,7 +16,14 @@ function judgeQuery(answer: string | Error) {
         call.prompt.push(String(message.message.content));
       }
       if (answer instanceof Error) throw answer;
-      yield { type: 'result', subtype: 'success', result: answer, session_id: 'j', uuid: 'u' } as unknown as SDKMessage;
+      yield {
+        type: 'result',
+        subtype: 'success',
+        is_error: isError,
+        result: answer,
+        session_id: 'j',
+        uuid: 'u',
+      } as unknown as SDKMessage;
     })();
     return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as unknown as Query;
   };
@@ -60,7 +67,12 @@ describe('judgeWaitingOnPerson', () => {
       cwd: '/home/claude/judge',
       env: { HOME: '/home/claude' },
     });
-    expect(call!.options.systemPrompt).toEqual(expect.stringContaining('You are the goal judge'));
+    // Claude Code's own system prompt, with the judge's instructions appended, as close to ordinary use as it gets.
+    expect(call!.options.systemPrompt).toEqual({
+      type: 'preset',
+      preset: 'claude_code',
+      append: expect.stringContaining('You are the goal judge'),
+    });
     // The goal and the message reach it as data.
     expect(call!.prompt[0]).toContain('<goal>\nImport the CSV into the right database.\n</goal>');
     expect(call!.prompt[0]).toContain('Which database: staging or production?');
@@ -80,6 +92,15 @@ describe('judgeWaitingOnPerson', () => {
     expect(await judgeWaitingOnPerson({ objective: 'x', text: 'y?' }, options(judgeQuery('I think so.').fn))).toBe(
       undefined,
     );
+  });
+
+  it('gives no verdict for a turn that ended on an API error, and says why', async () => {
+    const errors: unknown[] = [];
+    const fake = judgeQuery('{"decision":"waiting"} Invalid API key', true);
+    expect(
+      await judgeWaitingOnPerson({ objective: 'x', text: 'y?' }, { ...options(fake.fn), onError: e => errors.push(e) }),
+    ).toBeUndefined();
+    expect(String(errors[0])).toContain('Invalid API key');
   });
 
   it('gives up a judge that takes too long', async () => {

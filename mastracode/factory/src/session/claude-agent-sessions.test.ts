@@ -34,6 +34,7 @@ import {
 } from './claude-agent-sessions.js';
 import type { ClaudeAgentSessionsDeps } from './claude-agent-sessions.js';
 import type { MastraTools } from './claude-agent-tools.js';
+import { claudeAgentWaitingJudge } from './claude-agent-waiting-judge.js';
 import { claudeAgentRequestContext } from './claude-agent-workspace.js';
 
 const now = new Date(0);
@@ -1694,6 +1695,17 @@ describe('ClaudeAgentSessions: a turn that ends asking the person in plain text'
     expect(permission.waitingJudge).toHaveBeenCalledTimes(1);
   });
 
+  it('ends the parked run as aborted, and withdraws the question, when this process stops running sessions', async () => {
+    const { sessions, broker, runs } = questionSetup(['Staging or production?']);
+    await (
+      await runs.kickoff('s1', { runId: 'd1', prompt: 'Import it.' }, owner())
+    ).ended;
+    const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
+    await sessions.shutdown();
+    expect(await parked!.resumed).toEqual({ reason: 'aborted' });
+    await vi.waitFor(async () => expect(await broker.listPending({ sessionId: 's1' })).toEqual([]));
+  });
+
   it("ends the parked run as aborted when the card's next kickoff comes first", async () => {
     const { broker, runs } = questionSetup(['Staging or production?']);
     await (
@@ -1703,5 +1715,36 @@ describe('ClaudeAgentSessions: a turn that ends asking the person in plain text'
     await runs.kickoff('s1', { runId: 'd2', prompt: 'Review it.' }, owner());
     expect(await parked!.resumed).toEqual({ reason: 'aborted' });
     await vi.waitFor(async () => expect(await broker.listPending({ sessionId: 's1' })).toEqual([]));
+  });
+});
+
+// fork(claude-agent)
+describe('claudeAgentWaitingJudge', () => {
+  it('runs the installed claude the host names, and logs only its first failure', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-judge-'));
+    onTestFinished(() => rm(home, { recursive: true, force: true }));
+    const options: Record<string, unknown>[] = [];
+    const query: QueryFn = ({ options: opts }) => {
+      options.push(opts as Record<string, unknown>);
+      const iterator = (async function* () {
+        yield { type: 'result', subtype: 'success', is_error: true, result: 'Not logged in', uuid: 'u' } as never;
+      })();
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as never;
+    };
+    const log = vi.fn();
+    const judge = claudeAgentWaitingJudge({
+      home,
+      hostEnv: { HOME: '/home/u', FACTORY_CLAUDE_AGENT_EXECUTABLE: '/opt/claude/bin/claude', DATABASE_URL: 'secret' },
+      query,
+      log,
+    });
+    expect(await judge({ objective: 'x', text: 'y?' })).toBeUndefined();
+    expect(await judge({ objective: 'x', text: 'y?' })).toBeUndefined();
+    expect(options[0]).toMatchObject({
+      pathToClaudeCodeExecutable: '/opt/claude/bin/claude',
+      cwd: join(home, 'goal-judge'),
+    });
+    expect(options[0]!.env).not.toHaveProperty('DATABASE_URL');
+    expect(log).toHaveBeenCalledTimes(1);
   });
 });
