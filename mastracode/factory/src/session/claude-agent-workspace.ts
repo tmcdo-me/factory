@@ -4,7 +4,7 @@ import type { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
 import type { Workspace } from '@mastra/core/workspace';
 
-import { peekSessionSandbox, sessionLayout } from '../sandbox/session-sandbox.js';
+import { findSessionSandboxEntry, sessionLayout } from '../sandbox/session-sandbox.js';
 
 // oxlint-disable-next-line typescript/no-explicit-any -- the workspace factory takes any request context.
 type ResolveWorkspace = (context: {
@@ -50,7 +50,8 @@ export function createClaudeAgentWorkspaceResolver(options: {
     }
     const lifecycle = sandbox as unknown as { ensureRunning?(): Promise<void>; start?(): Promise<void> };
     await (lifecycle.ensureRunning ? lifecycle.ensureRunning() : lifecycle.start?.());
-    const layout = sessionLayout(peekSessionSandbox(sessionId));
+    // By instance: the memo is keyed by the source-control session row id, not this session id.
+    const layout = sessionLayout(findSessionSandboxEntry(sandbox));
     if (!layout) throw new Error(`Session ${sessionId}'s checkout is not ready`);
     const env = (sandbox as unknown as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {};
     return {

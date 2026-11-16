@@ -264,6 +264,19 @@ export function peekSessionSandbox(sessionId: string): SessionSandboxEntry | und
   return sessionSandboxes.get(sessionId);
 }
 
+// fork(claude-agent)
+/**
+ * The memoized entry that owns this sandbox instance, if any. For callers that hold a resolved
+ * workspace's sandbox but only the agent session id, which is not the memo's key (the memo is keyed
+ * by the source-control session row id).
+ */
+export function findSessionSandboxEntry(sandbox: unknown): SessionSandboxEntry | undefined {
+  for (const entry of sessionSandboxes.values()) {
+    if (entry.sandbox === sandbox) return entry;
+  }
+  return undefined;
+}
+
 /** Drop the memoized instance (on stop/destroy/retirement or construction failure). */
 export function evictSessionSandbox(sessionId: string): void {
   sessionSandboxes.delete(sessionId);

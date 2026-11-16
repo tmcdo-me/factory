@@ -10,6 +10,7 @@ import {
   createEnvironmentSetupHook,
   createSessionSetupHook,
   evictSessionSandbox,
+  findSessionSandboxEntry,
   getSessionSandbox,
   peekSessionSandbox,
   resolveSessionWorkdir,
@@ -39,6 +40,15 @@ describe('session sandbox memo', () => {
     const a = getSessionSandbox('sess-a', 'acme/api', () => construct('sb-a'));
     const b = getSessionSandbox('sess-b', 'acme/api', () => construct('sb-b'));
     expect(a.sandbox).not.toBe(b.sandbox);
+  });
+
+  // fork(claude-agent)
+  it('finds an entry by its sandbox instance, whatever the memo key', () => {
+    const entry = getSessionSandbox('row-1', 'acme/api', () => construct('sb-1'));
+    expect(findSessionSandboxEntry(entry.sandbox)).toBe(entry);
+    expect(findSessionSandboxEntry(construct('sb-1'))).toBeUndefined();
+    evictSessionSandbox('row-1');
+    expect(findSessionSandboxEntry(entry.sandbox)).toBeUndefined();
   });
 
   it('peek never constructs', () => {
