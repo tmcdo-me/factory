@@ -1,7 +1,11 @@
+import { randomUUID } from 'node:crypto';
+
 import type { MountedMastraCode } from '@mastra/code-sdk';
-import type { SendNotificationSignalInput } from '@mastra/core/notifications';
+import type { NotificationRecord, SendNotificationSignalInput } from '@mastra/core/notifications';
+import { RequestContext } from '@mastra/core/request-context';
 
 import { createSessionAsRowOwner } from '../integrations/subscription-session.js';
+import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { listFactorySessionThreads, sessionMemoryResourceId, sessionStampCounts } from '../session/session-threads.js';
 import type { FactorySessionOwnership, SessionRunBindings } from '../session/session-threads.js';
@@ -21,6 +25,43 @@ export type FactoryDeliveryController = Pick<
   | 'getCurrentAgent'
 >;
 
+/**
+ * fork(claude-agent): what was delivered to sessions on another runtime, which store no notification
+ * record, by target thread, newest last (at most `RUNTIME_DELIVERIES_KEPT` each). Process-local, like
+ * the messaging tools' waiting queues. The messaging tools count these as they count stored records,
+ * so the per-sender rate limit holds for Claude Agent sessions too.
+ */
+const runtimeDeliveries = new Map<string, NotificationRecord[]>();
+const RUNTIME_DELIVERIES_KEPT = 100;
+
+/** fork(claude-agent): recent deliveries to a thread of a session on another runtime, as notification records. */
+export function recentRuntimeDeliveries(threadId: string): NotificationRecord[] {
+  return [...(runtimeDeliveries.get(threadId) ?? [])];
+}
+
+function rememberRuntimeDelivery(
+  target: FactoryDeliveryTarget,
+  notification: Omit<SendNotificationSignalInput, 'source'>,
+  id: string,
+): void {
+  const kept = runtimeDeliveries.get(target.threadId) ?? [];
+  kept.push({
+    id,
+    threadId: target.threadId,
+    source: FACTORY_SESSION_NOTIFICATION_SOURCE,
+    kind: notification.kind,
+    summary: notification.summary,
+    priority: notification.priority ?? 'medium',
+    ...(notification.attributes ? { attributes: notification.attributes } : {}),
+    ...(notification.sourceId ? { sourceId: notification.sourceId } : {}),
+    createdAt: new Date(),
+  } as unknown as NotificationRecord);
+  runtimeDeliveries.set(target.threadId, kept.slice(-RUNTIME_DELIVERIES_KEPT));
+}
+
+/** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
+export type FactoryRuntimeDelivery = Pick<FactoryRuntimeSessions, 'runs' | 'isRunning' | 'message'>;
+
 export interface FactoryDeliveryTarget {
   /** The target's source-control session id. */
   sessionId: string;
@@ -35,6 +76,11 @@ export type FactoryDeliveryResult =
    * next checks its inbox, not now.
    */
   | { delivered: 'woken' | 'mid-run' | 'persisted' | 'summarized'; notificationId: string; reason?: string }
+  /**
+   * fork(claude-agent): a session on another runtime holds the message for its next turn, in memory:
+   * nothing is stored, so there is no notification to name.
+   */
+  | { delivered: 'held'; reason: 'next-turn' }
   | {
       delivered: 'skipped';
       notificationId?: string;
@@ -61,6 +107,7 @@ export async function deliverFactorySessionNotification({
   notification,
   onlyIfLive = false,
   runs,
+  runtime,
 }: {
   controller: FactoryDeliveryController;
   sessions: Pick<SourceControlSessionLookup, 'getBySessionId'>;
@@ -70,6 +117,8 @@ export async function deliverFactorySessionNotification({
   notification: Omit<SendNotificationSignalInput, 'source'>;
   /** Skip, without creating anything, when no live session owns the target (stage notices). */
   onlyIfLive?: boolean;
+  /** fork(claude-agent): sessions on another runtime, which never run on the controller session. */
+  runtime?: FactoryRuntimeDelivery;
 }): Promise<FactoryDeliveryResult> {
   const thread = await controller.queryThreadById({ threadId: target.threadId });
   if (!thread) return { delivered: 'skipped', reason: 'thread-not-found' };
@@ -83,6 +132,18 @@ export async function deliverFactorySessionNotification({
     return { delivered: 'skipped', reason: 'thread-not-owned' };
   }
   const ownerResourceId = thread.resourceId || target.sessionId;
+  // fork(claude-agent)
+  if (runtime && (await runtime.runs(target.sessionId))) {
+    const row = await loadRow();
+    if (!row) return { delivered: 'skipped', reason: 'session-not-found' };
+    const result = await deliverOnRuntime(runtime, target.sessionId, row, notification, onlyIfLive);
+    rememberRuntimeDelivery(
+      target,
+      notification,
+      ('notificationId' in result && result.notificationId) || randomUUID(),
+    );
+    return result;
+  }
 
   // No request context: without a user the controller's access check is a no-op,
   // and this is a server-side lookup on the target's behalf, not the sender's.
@@ -126,6 +187,34 @@ export async function deliverFactorySessionNotification({
     default:
       return { delivered: 'persisted', notificationId, ...reason };
   }
+}
+
+/**
+ * fork(claude-agent): a notification for a session on another runtime. It acts as its row's owner,
+ * as a woken Mastra Code session does. Priority decides, as Mastra Code's inbox does: `low` waits
+ * for the session's next turn, anything else wakes an idle session or reaches a busy one with its
+ * next turn. A stage notice never wakes anyone.
+ */
+async function deliverOnRuntime(
+  runtime: FactoryRuntimeDelivery,
+  sessionId: string,
+  row: { userId: string; orgId: string },
+  notification: Omit<SendNotificationSignalInput, 'source'>,
+  onlyIfLive: boolean,
+): Promise<FactoryDeliveryResult> {
+  const wake = !onlyIfLive && notification.priority !== 'low';
+  const running = runtime.isRunning(sessionId);
+  const requestContext = new RequestContext();
+  requestContext.set('user', { workosId: row.userId, organizationId: row.orgId });
+  const attributes: Record<string, string> = { kind: notification.kind, ...notification.attributes };
+  const { runId } = await runtime.message(
+    sessionId,
+    { text: notification.summary, source: FACTORY_SESSION_NOTIFICATION_SOURCE, wake, attributes },
+    requestContext,
+  );
+  // A woken session's message is a turn of its own: the turn's run names it.
+  if (!runId) return { delivered: 'held', reason: 'next-turn' };
+  return { delivered: running ? 'mid-run' : 'woken', notificationId: runId };
 }
 
 export interface FactorySessionActivity {

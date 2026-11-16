@@ -131,6 +131,8 @@ export interface MountGithubRoutesOptions {
   redirectUri?: string;
   /** Controller used to route verified webhook notifications to exact subscribed sessions. */
   controller?: MountedMastraCode['controller'];
+  /** fork(claude-agent): subscribed sessions on another agent runtime take their notifications through it. */
+  runtimeSessions?: import('../../rules/runtime-sessions.js').FactoryRuntimeSessions;
   /** Owner-scoped observational-memory settings — the source of the model that names a thread. */
   memorySettings: Pick<MemorySettingsStorage, 'get'>;
   /** Best-effort audit emission supplied by the factory-owned audit domain. */
@@ -532,6 +534,7 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
           ...(options.controller
             ? {
                 controller: options.controller,
+                ...(options.runtimeSessions ? { runtimeSessions: options.runtimeSessions } : {}), // fork(claude-agent)
                 onTargetError: (subscription, error) => {
                   console.warn(
                     `[GitHub Webhook] Delivery failed for subscription ${subscription.id} (${subscription.resourceId}/${subscription.threadId}).`,

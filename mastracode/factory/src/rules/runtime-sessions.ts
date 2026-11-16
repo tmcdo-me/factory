@@ -57,12 +57,19 @@ export interface FactoryRuntimeSessions {
   ): Promise<{ ended: Promise<RuntimeRunEnd> }>;
   /**
    * Tell the session something from Factory (a rule's message, activity on the card's source).
-   * `wake` starts a turn with it (queued behind a run in flight); otherwise it waits for the next turn.
+   * `wake` starts a turn with it (queued behind a run in flight), named by the `runId` it resolves
+   * with; otherwise it waits, in memory, for the next turn, and resolves with no run.
    */
   message(
     sessionId: string,
-    message: { text: string; source: string; wake: boolean },
+    message: {
+      text: string;
+      source: string;
+      wake: boolean;
+      /** What the message says about itself (its kind, who sent it), for Claude to read. */
+      attributes?: Record<string, string | number | boolean>;
+    },
     requestContext: RequestContext,
-  ): Promise<void>;
+  ): Promise<{ runId?: string }>;
   abort(sessionId: string, requestContext: RequestContext): Promise<void>;
 }

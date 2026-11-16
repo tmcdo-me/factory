@@ -75,6 +75,8 @@ function setup({
   bindings = [] as FactoryRunBindingRecord[],
   threads = 'live' as 'live' | 'gone',
   busy = [] as string[],
+  /** fork(claude-agent): sessions that run on Claude Agent, reached through the runtime. */
+  claude = [] as string[],
 } = {}) {
   const notifications = new InMemoryNotificationsStorage();
   const sent: Array<{ input: SendNotificationSignalInput; target: { resourceId: string; threadId: string } }> = [];
@@ -108,9 +110,18 @@ function setup({
     getCurrentAgent: vi.fn(() => agent),
   };
   const auditRecorder = { record: vi.fn(async () => undefined) };
-  const rows: Record<string, SourceControlSession> = Object.fromEntries(
-    Object.entries(ROWS).map(([id, value]) => [id, { ...value }]),
-  );
+  const rows: Record<string, SourceControlSession> = Object.fromEntries([
+    ...Object.entries(ROWS).map(([id, value]) => [id, { ...value }]),
+    ...claude.map(id => [id, row(id)]),
+  ]);
+  let claudeRuns = 0;
+  const runtime = {
+    runs: async (sessionId: string) => claude.includes(sessionId),
+    isRunning: () => false,
+    message: vi.fn(async (_sessionId: string, message: { wake: boolean }) =>
+      message.wake ? { runId: `run-${++claudeRuns}` } : {},
+    ),
+  };
   const deps: FactoryMessagingToolDependencies = {
     sessions: {
       getBySessionId: vi.fn(async (id: string) => rows[id] ?? null),
@@ -153,7 +164,11 @@ function setup({
       ),
     } as unknown as FactoryMessagingToolDependencies['workItems'],
     auditRecorder: auditRecorder as unknown as FactoryMessagingToolDependencies['auditRecorder'],
-    messaging: async () => ({ controller: controller as unknown as FactoryDeliveryController, notifications }),
+    messaging: async () => ({
+      controller: controller as unknown as FactoryDeliveryController,
+      notifications,
+      ...(claude.length ? { runtime } : {}),
+    }),
   };
   const run = async (scope: FactoryToolScope, name: string, input: Record<string, unknown>) => {
     const tools = createFactoryMessagingTools(scope, deps);
@@ -301,6 +316,22 @@ describe('factory_signal_session', () => {
     ).resolves.toMatchObject({
       delivered: 'woken',
     });
+  });
+
+  // fork(claude-agent)
+  it('holds a sender to the same cap on a Claude Agent session, which stores no notification', async () => {
+    const { run, sent, auditRecorder } = setup({ claude: ['session-claude'] });
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await expect(
+        run(USER, 'factory_signal_session', { sessionId: 'session-claude', message: `ping ${i}` }),
+      ).resolves.toMatchObject({ delivered: 'woken', notificationId: `run-${i + 1}` });
+    }
+    await expect(
+      run(USER, 'factory_signal_session', { sessionId: 'session-claude', message: 'again' }),
+    ).resolves.toMatchObject({ delivered: 'queued' });
+    // Nothing reached the session's Mastra Code controller session.
+    expect(sent).toHaveLength(0);
+    expect(auditRecorder.record).toHaveBeenCalledTimes(SIGNAL_RATE_LIMIT);
   });
 
   it('counts only messages from the last 10 minutes', async () => {

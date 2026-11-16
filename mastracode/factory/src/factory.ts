@@ -1327,7 +1327,9 @@ export class MastraFactory {
     const factoryMessaging = async () => {
       const controller = this.#prepared?.base.controller;
       const notifications = await controller?.getMastra()?.getStorage()?.getStore('notifications');
-      return controller && notifications ? { controller, notifications } : null;
+      // fork(claude-agent): Claude Agent sessions take their messages through their runtime.
+      const runtime = this.#claudeAgentSessions?.runtimeSessions();
+      return controller && notifications ? { controller, notifications, ...(runtime ? { runtime } : {}) } : null;
     };
     const factoryReporting = async (): Promise<FactoryReporting | null> => {
       const messaging = await factoryMessaging();
@@ -1337,6 +1339,7 @@ export class MastraFactory {
         deliver: (target, notification, options) =>
           deliverFactorySessionNotification({
             controller: messaging.controller,
+            ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
             sessions: sourceControlSessions,
             runs: workItemsStorage,
             target,
@@ -1819,6 +1822,20 @@ export class MastraFactory {
           return [];
         },
       });
+    // fork(claude-agent): the integrations' post-tool observers (subscribe a session to the pull request it
+    // opened, announce it in its Slack thread), for Claude Agent's calls.
+    const observeIntegrations = async (toolContext: IntegrationPostToolContext, requestContext: RequestContext) => {
+      await Promise.all(
+        integrations.map(async integration => {
+          if (!integration.postToolObserver) return;
+          try {
+            await integration.postToolObserver({ toolContext, requestContext });
+          } catch (error) {
+            console.warn(`[factory] Integration '${integration.id}' post-tool observer failed:`, error);
+          }
+        }),
+      );
+    };
     const claudeAgentSessions = new ClaudeAgentSessions({
       hub: agentEventHub,
       sessions: agentSessionsStorage,
@@ -1844,18 +1861,31 @@ export class MastraFactory {
       // leave Planning, and the board's tool-result rules run.
       onToolResult: async result => {
         await factoryProcessor?.ingestRuntimeToolResult(result.requestContext, result);
-      },
-      // Claude Code's own shell is Mastra Code's `execute_command` to the git audit.
-      onShellResult: result =>
-        auditAgentGitAction(
+        await observeIntegrations(
           {
-            toolName: 'execute_command',
-            input: { command: result.command },
-            output: result.output,
+            toolName: result.toolName,
+            input: result.input,
+            output: result.value,
             ...(result.error ? { error: result.error } : {}),
+            context: { requestContext: result.requestContext },
           },
           result.requestContext,
-        ),
+        );
+      },
+      // Claude Code's own shell is Mastra Code's `execute_command` to the git audit and the integrations.
+      onShellResult: async result => {
+        const toolContext = {
+          toolName: 'execute_command',
+          input: { command: result.command },
+          output: result.output,
+          ...(result.error ? { error: result.error } : {}),
+        };
+        await auditAgentGitAction(toolContext, result.requestContext);
+        await observeIntegrations(
+          { ...toolContext, context: { requestContext: result.requestContext } },
+          result.requestContext,
+        );
+      },
     });
     this.#claudeAgentSessions = claudeAgentSessions;
     const prepared = await timedPhase('prepare.controllerMount', () =>
@@ -2257,6 +2287,7 @@ export class MastraFactory {
           ...assembleFactoryApiRoutes({
             controllerId: CONTROLLER_ID,
             controller,
+            runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
             liveSessions: (liveSessions = liveSessionsTouchingTheFeed(controller, eventBus, sourceControlSessions)),
             auth: routeAuth,
             ...(auth && isUserProvider(auth) ? { users: auth } : {}),

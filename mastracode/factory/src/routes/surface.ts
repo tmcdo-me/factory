@@ -172,6 +172,8 @@ export interface FactoryApiRoutesDeps {
   runSlots?: () => { inUse: number; cap: number } | undefined;
   /** fork(claude-agent): which agent runtime a run's session uses; without it, Mastra Code. */
   startRuntimes?: FactoryStartRuntimes;
+  /** fork(claude-agent): sessions on another agent runtime; integrations deliver their events through it. */
+  runtimeSessions?: import('../rules/runtime-sessions.js').FactoryRuntimeSessions;
   onFactoryRuntime?: (runtime: {
     transitionService: FactoryTransitionService;
     startCoordinator: FactoryStartCoordinator;
@@ -582,6 +584,7 @@ export function buildIntegrationContext(
   deps: Pick<
     FactoryApiRoutesDeps,
     | 'controller'
+    | 'runtimeSessions'
     | 'publicOrigin'
     | 'auth'
     | 'sandbox'
@@ -626,6 +629,7 @@ export function buildIntegrationContext(
     factoryStorage: deps.factoryStorage,
     baseUrl: deps.publicOrigin,
     controller: deps.controller,
+    ...(deps.runtimeSessions ? { runtimeSessions: deps.runtimeSessions } : {}), // fork(claude-agent)
     stateSigner: deps.stateSigner,
     storage: {
       generic: deps.integrationStorage.forIntegration(integrationId),

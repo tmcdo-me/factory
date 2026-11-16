@@ -334,6 +334,11 @@ Each slice: implement → focused tests → manual check where noted → commit.
      phase processor before Claude gets it (`ingestRuntimeToolResult`), so an approved
      `submit_plan` stamps the proof that lets the card leave Planning and the board's tool-result
      rules run; Claude Code's own `Bash` commands reach the git audit as `execute_command`.
+   - **6c** ✅ Messages reach Claude Agent sessions: session-to-session notifications
+     (`factory_signal_session`, replies, follower reports; `tools/deliver.ts`) and GitHub
+     pull request subscriptions go through the runtime instead of waking the controller
+     session; the integrations' post-tool observers (subscribe to the PR a session opened, Slack
+     announcements) see Claude Agent's Factory tools and `Bash`.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
