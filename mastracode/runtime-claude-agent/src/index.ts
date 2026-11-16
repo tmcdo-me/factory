@@ -1,5 +1,5 @@
 export { CLAUDE_AGENT_RUNTIME_ID, ClaudeAgentEventMapper } from './event-mapper';
-export { CLAUDE_AGENT_ISOLATION, ClaudeAgentSession } from './session';
+export { CLAUDE_AGENT_ISOLATION, ClaudeAgentSession, instructionFilesAbove } from './session';
 export type { ClaudeAgentRuntimeState, ClaudeAgentSessionOptions, QueryFn } from './session';
 export { createClaudeAgentSessionCommands } from './commands';
 export { claudeProcessEnv } from './env';
