@@ -58,7 +58,8 @@ jobs:
           install-dependencies: 'false'
 
       - name: Install @mastra/factory and its dependencies
-        run: pnpm install --frozen-lockfile --filter "@mastra/factory..."
+        # `@mastra/connect`'s build formats generated docs with the `mastra-docs` package's tooling.
+        run: pnpm install --frozen-lockfile --filter "@mastra/factory..." --filter mastra-docs
 
       - name: Build dependencies of @mastra/factory
         run: pnpm turbo build --filter "@mastra/factory^..."
