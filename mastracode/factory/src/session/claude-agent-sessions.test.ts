@@ -988,6 +988,17 @@ describe('ClaudeAgentSessions approvals from outside the session', () => {
     expect(await store.listPending({ sessionId: 's1' })).toEqual([]);
   });
 
+  it('answers a stale click without starting Claude Code or its workspace', async () => {
+    const fake = toolCallingQuery(async () => {});
+    const workspace = vi.fn(async () => ({ cwd: '/sandboxes/s1/repo', env: {} }));
+    const { sessions } = toolSetup(fake.fn, { workspace });
+    expect(
+      await sessions.runtimeSessions().approvals!.answer('s1', 'toolu_gone', { decision: 'approve' }, owner()),
+    ).toBe('not_pending');
+    expect(workspace).not.toHaveBeenCalled();
+    expect(fake.options).toHaveLength(0);
+  });
+
   it('delivers an approval nobody waits for any more (a restart) to the conversation as a message', async () => {
     const fake = toolCallingQuery(async () => {});
     const { sessions, store, log } = toolSetup(fake.fn);

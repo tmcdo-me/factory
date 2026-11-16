@@ -59,7 +59,7 @@ export function waitingReport(record: InteractionRecord): {
 
 interface Waiting {
   record: InteractionRecord;
-  /** When the session started waiting, unique in this process: it doubles as the inbox receipt key. */
+  /** When the session started waiting (its stored `requestedAt`): it doubles as the inbox receipt key. */
   stamp: number;
 }
 
@@ -82,12 +82,29 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     this.#options = options;
   }
 
-  /** Read what was still pending when the server last stopped. */
+  /**
+   * Read what was still pending when the server last stopped. Each record is read again before it
+   * is indexed: one answered or cancelled while the list was read is not shown as waiting.
+   */
   async load(): Promise<void> {
-    for (const record of await this.#options.store.listPending()) this.#add(record, false);
+    for (const listed of await this.#options.store.listPending()) {
+      // Nothing is awaited between this read and indexing it, so a later answer always finds it.
+      const record = await this.#options.store.get(listed.id);
+      if (record?.status !== 'pending') continue;
+      this.#lastStamp = Math.max(this.#lastStamp, this.#stampOf(record));
+      this.#add(record, false);
+    }
   }
 
+  /**
+   * Store a new request. Its `requestedAt` is moved on by a millisecond when another request took
+   * that one in this process, so each wait has its own receipt key, and the stored time keeps that
+   * key the same across a restart.
+   */
   async create(record: InteractionRecord): Promise<void> {
+    const at = Date.parse(record.requestedAt);
+    this.#lastStamp = Math.max(Number.isFinite(at) ? at : Date.now(), this.#lastStamp + 1);
+    record.requestedAt = new Date(this.#lastStamp).toISOString();
     await this.#options.store.create(record);
     if (record.status === 'pending') this.#add(record, true);
   }
@@ -128,15 +145,14 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     return parked;
   }
 
-  #nextStamp(requestedAt: string): number {
-    const at = Date.parse(requestedAt);
-    this.#lastStamp = Math.max(Number.isFinite(at) ? at : Date.now(), this.#lastStamp + 1);
-    return this.#lastStamp;
+  #stampOf(record: InteractionRecord): number {
+    const at = Date.parse(record.requestedAt);
+    return Number.isFinite(at) ? at : 0;
   }
 
   #add(record: InteractionRecord, announce: boolean): void {
     const waiting = this.#waiting.get(record.sessionId) ?? new Map<string, Waiting>();
-    waiting.set(record.id, { record, stamp: this.#nextStamp(record.requestedAt) });
+    waiting.set(record.id, { record, stamp: this.#stampOf(record) });
     this.#waiting.set(record.sessionId, waiting);
     void this.#project(record.sessionId).then(project => {
       if (!project || !this.#waiting.get(record.sessionId)?.has(record.id)) return;

@@ -426,3 +426,74 @@ describe('answering a Claude Agent session', () => {
     expect(answer).not.toHaveBeenCalled();
   });
 });
+
+// fork(claude-agent)
+describe('factory_answer_approval on a Claude Agent session', () => {
+  function claudeTools({ row = {}, follows = true }: { row?: Record<string, unknown>; follows?: boolean } = {}) {
+    const answer = vi.fn(async () => 'answered' as const);
+    const getSession = vi.fn(async () => null);
+    const runtime = {
+      runs: vi.fn(async () => true),
+      isRunning: () => false,
+      message: vi.fn(),
+      approvals: { waiting: async () => [{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }], answer },
+    };
+    const record = vi.fn();
+    const tools = createFactoryApprovalTools(scope, {
+      sessions: {
+        getBySessionId: async () =>
+          ({
+            sessionId: WORKER,
+            orgId: 'org-1',
+            factoryProjectId: 'project-1',
+            userId: 'someone-else',
+            visibility: 'org',
+            originSessionId: null,
+            ...row,
+          }) as never,
+      },
+      workItems: {
+        findActiveRunBindingForSession: async () => ({ workItemId: ITEM }) as never,
+        listSessionSubscriptions: async () => (follows ? [{ workItemId: ITEM }] : []) as never,
+      },
+      auditRecorder: { record } as never,
+      messaging: async () => ({ controller: { getSession }, runtime }) as never,
+    });
+    const run = (input: Record<string, unknown>) =>
+      (
+        tools.factory_answer_approval as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
+      ).execute({ sessionId: WORKER, toolCallId: 'toolu_plan', ...input }, {});
+    return { run, answer, getSession, record };
+  }
+
+  it('answers through the runtime as the person in this conversation, the run carrying on as the owner', async () => {
+    const { run, answer, getSession, record } = claudeTools();
+
+    await expect(run({ decision: 'decline', reason: 'Split it.' })).resolves.toEqual({
+      answered: 'decline',
+      sessionId: WORKER,
+      toolCallId: 'toolu_plan',
+    });
+    expect(answer).toHaveBeenCalledWith(
+      WORKER,
+      'toolu_plan',
+      { decision: 'decline', reason: 'Split it.', answeredBy: 'user-1' },
+      expect.anything(),
+    );
+    const requestContext = (answer.mock.calls[0] as unknown[])[3] as { get(key: string): unknown };
+    expect(requestContext.get('user')).toEqual({ workosId: 'someone-else', organizationId: 'org-1' });
+    expect(getSession).not.toHaveBeenCalled();
+    expect(record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'factory.run.dismissed', actorId: 'user-1' }),
+    );
+  });
+
+  it("refuses a session it doesn't follow, and another person's private one, answering nothing", async () => {
+    const stranger = claudeTools({ follows: false });
+    await expect(stranger.run({ decision: 'approve' })).rejects.toThrow("This session doesn't follow session");
+    const hidden = claudeTools({ row: { visibility: 'private' } });
+    await expect(hidden.run({ decision: 'approve' })).rejects.toThrow('is private to its owner');
+    expect(stranger.answer).not.toHaveBeenCalled();
+    expect(hidden.answer).not.toHaveBeenCalled();
+  });
+});

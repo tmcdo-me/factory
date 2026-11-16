@@ -9,7 +9,10 @@ import { fakeRouteAuth, mountApiRoutes } from './test-utils.js';
 
 const SESSION = 'claude-session-1';
 
-async function setup(runs: boolean) {
+async function setup(
+  runs: boolean,
+  { viewer = 'user-1', follows = false }: { viewer?: string; follows?: boolean } = {},
+) {
   const seed = await createFactoryStorageForTests();
   const sourceControl = seed.sourceControl.forIntegration('github');
   const project = await seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Project' } });
@@ -45,6 +48,23 @@ async function setup(runs: boolean) {
     baseBranch: 'main',
     visibility: 'org',
   });
+  // A session of the viewer's own that follows the card, when they follow it.
+  await sourceControl.sessions.create({
+    sessionId: 'follower-session',
+    projectRepositoryId: projectRepository.id,
+    orgId: 'org-1',
+    userId: 'user-2',
+    branch: 'user/session-follower',
+    baseBranch: 'main',
+    visibility: 'org',
+  });
+  const workItems = {
+    clearSessionReferences: async () => 0,
+    hasRunBindingForSession: async () => true,
+    findActiveRunBindingForSession: async () => ({ workItemId: 'item-1' }) as never,
+    get: async () => ({ id: 'item-1', createdBy: 'user-1' }) as never,
+    listWorkItemSubscribers: async () => (follows ? [{ sessionId: 'follower-session' }] : []) as never,
+  };
   const getSession = vi.fn(async () => null);
   const answer = vi.fn<RuntimeApprovals['answer']>(async () => 'answered');
   const runtimeSessions = {
@@ -56,13 +76,15 @@ async function setup(runs: boolean) {
   const audit = { record: vi.fn() };
   const app = new Hono();
   app.use('*', async (context, next) => {
-    context.set('factoryAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
+    context.set('factoryAuthUser' as never, { workosId: viewer, organizationId: 'org-1' } as never);
     await next();
   });
   mountApiRoutes(
     app as never,
     buildSourceControlSessionRoutes({
-      auth: fakeRouteAuth(),
+      // Nobody here is an org admin: only the owner and the card's followers may answer.
+      auth: fakeRouteAuth({ isOrganizationAdmin: async () => false }),
+      workItems,
       sourceControls: [sourceControl],
       projects: seed.projects,
       memorySettings: { get: async () => null } as never,
@@ -113,5 +135,26 @@ describe('answering a Claude Agent session from its card', () => {
     expect(response.status).toBe(409);
     expect(getSession).toHaveBeenCalledWith(SESSION);
     expect(answer).not.toHaveBeenCalled();
+  });
+
+  it('refuses someone who neither owns the session nor follows its card, answering nothing', async () => {
+    const { post, answer } = await setup(true, { viewer: 'user-2' });
+    const response = await post({ decision: 'approve' });
+    expect(response.status).toBe(403);
+    expect(answer).not.toHaveBeenCalled();
+  });
+
+  it('lets a follower of its card answer, recorded as theirs', async () => {
+    const { post, answer } = await setup(true, { viewer: 'user-2', follows: true });
+    expect((await post({ decision: 'approve' })).status).toBe(200);
+    expect(answer).toHaveBeenCalledWith(
+      SESSION,
+      'toolu_plan',
+      { decision: 'approve', answeredBy: 'user-2' },
+      expect.anything(),
+    );
+    // The run carries on as the session's owner, whoever answered.
+    const requestContext = answer.mock.calls[0]![3] as { get(key: string): unknown };
+    expect(requestContext.get('user')).toEqual({ workosId: 'user-1', organizationId: 'org-1' });
   });
 });

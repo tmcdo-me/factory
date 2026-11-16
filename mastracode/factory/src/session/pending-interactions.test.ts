@@ -185,4 +185,58 @@ describe('PendingInteractions', () => {
       toolCallId: 'toolu_ask',
     });
   });
+
+  it("keeps each wait's receipt key across a restart, two waits in one millisecond included", async () => {
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date('2030-01-01T00:00:00.000Z') });
+    try {
+      const store = new InMemoryInteractionStore();
+      const { pending, broker } = setup(store);
+      void broker.request('s-ask', question, { callId: 'toolu_1' }).catch(() => {});
+      void broker.request('s-ask', plan, { callId: 'toolu_2' }).catch(() => {});
+      await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's-ask' })).toHaveLength(2));
+      const keys = (await store.listPending({ sessionId: 's-ask' })).map(record => Date.parse(record.requestedAt));
+      expect(keys[1]).toBe(keys[0]! + 1);
+      expect(pending.parked('s-ask')?.suspendedAt).toBe(keys[0]);
+
+      // The next process reads the same keys from what was stored.
+      const after = setup(store).pending;
+      await after.load();
+      expect(after.parked('s-ask')?.suspendedAt).toBe(keys[0]);
+      const [first] = await store.listPending({ sessionId: 's-ask' });
+      await after.settle(first!.id, {
+        status: 'cancelled',
+        cancelReason: 'aborted',
+        settledAt: new Date().toISOString(),
+      });
+      expect(after.parked('s-ask')?.suspendedAt).toBe(keys[1]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('never indexes a record answered while the start-up read was under way', async () => {
+    const store = new InMemoryInteractionStore();
+    const base = { sessionId: 's-plan', request: plan, status: 'pending' } as const;
+    await store.create({ ...base, id: 'int-1', callId: 'toolu_1', requestedAt: '2030-01-01T00:00:00.000Z' });
+    await store.create({ ...base, id: 'int-2', callId: 'toolu_2', requestedAt: '2030-01-01T00:00:01.000Z' });
+    const { pending } = setup(store);
+    // Answered between the list and the per-record read.
+    const get = store.get.bind(store);
+    vi.spyOn(store, 'get').mockImplementation(async id => {
+      if (id === 'int-1') {
+        await pending.settle('int-1', {
+          status: 'resolved',
+          response: { kind: 'plan_approval', action: 'approved' },
+          settledAt: new Date().toISOString(),
+        });
+      }
+      return get(id);
+    });
+    await pending.load();
+
+    expect(pending.parked('s-plan')).toEqual({
+      toolName: 'submit_plan',
+      suspendedAt: Date.parse('2030-01-01T00:00:01.000Z'),
+    });
+  });
 });

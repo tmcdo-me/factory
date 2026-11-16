@@ -615,9 +615,11 @@ export class ClaudeAgentSessions {
             toolName: interactionToolName(record.request),
           })),
         answer: async (sessionId, toolCallId, { decision, reason, answeredBy }, requestContext) => {
-          const session = await this.open(sessionId, requestContext);
+          // Looked up first: a stale button never starts Claude Code or its workspace.
           const pending = (await this.#decisions(sessionId)).find(record => record.callId === toolCallId);
-          if (!session || !pending) return 'not_pending';
+          if (!pending) return 'not_pending';
+          const session = await this.open(sessionId, requestContext);
+          if (!session) return 'not_pending';
           const approved = decision === 'approve';
           const response: InteractionResponse =
             pending.request.kind === 'plan_approval'
