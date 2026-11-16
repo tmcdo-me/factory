@@ -1747,4 +1747,27 @@ describe('claudeAgentWaitingJudge', () => {
     expect(options[0]!.env).not.toHaveProperty('DATABASE_URL');
     expect(log).toHaveBeenCalledTimes(1);
   });
+
+  it('logs a failure again once the judge had decided in between', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'claude-judge-'));
+    onTestFinished(() => rm(home, { recursive: true, force: true }));
+    const answers = ['Not logged in', '{"decision":"continue"}', 'Not logged in'];
+    const query: QueryFn = () => {
+      const answer = answers.shift()!;
+      const iterator = (async function* () {
+        yield {
+          type: 'result',
+          subtype: 'success',
+          is_error: answer.startsWith('Not'),
+          result: answer,
+          uuid: 'u',
+        } as never;
+      })();
+      return Object.assign(iterator, { interrupt: vi.fn(), setModel: vi.fn(), close: vi.fn() }) as never;
+    };
+    const log = vi.fn();
+    const judge = claudeAgentWaitingJudge({ home, hostEnv: { HOME: '/home/u' }, query, log });
+    for (let i = 0; i < 3; i++) await judge({ objective: 'x', text: 'y?' });
+    expect(log).toHaveBeenCalledTimes(2);
+  });
 });

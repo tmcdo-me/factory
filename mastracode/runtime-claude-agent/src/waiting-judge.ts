@@ -79,7 +79,8 @@ export async function judgeWaitingOnPerson(
   timer.unref?.();
   const message = input.text.trim();
   const shown = message.length > JUDGE_TEXT_CHARS ? `…${message.slice(-JUDGE_TEXT_CHARS)}` : message;
-  const prompt = `<goal>\n${input.objective}\n</goal>\n\n<latest-assistant-message>\n${shown}\n</latest-assistant-message>`;
+  // Escaped, so a turn (or a goal) can't close its element and write the judge's instructions.
+  const prompt = `<goal>\n${escapeMarkup(input.objective)}\n</goal>\n\n<latest-assistant-message>\n${escapeMarkup(shown)}\n</latest-assistant-message>`;
   try {
     const run = (options.query ?? (sdkQuery as QueryFn))({
       prompt: single(prompt),
@@ -151,4 +152,8 @@ async function* single(text: string): AsyncIterable<SDKUserMessage> {
     message: { role: 'user', content: text },
     parent_tool_use_id: null,
   } as SDKUserMessage;
+}
+
+function escapeMarkup(text: string): string {
+  return text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
