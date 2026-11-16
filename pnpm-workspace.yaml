@@ -7,6 +7,7 @@ packages:
   # fork(claude-agent): Factory agent runtime seam and adapters
   - mastracode/agent-runtime
   - mastracode/runtime-mastra-code
+  - mastracode/runtime-claude-agent
   - docs
   - packages/_vendored/*
   - packages/_internals/*
