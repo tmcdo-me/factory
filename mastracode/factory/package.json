@@ -1,7 +1,7 @@
 {
   "name": "@mastra/factory",
   "version": "0.29.0-alpha.3",
-  "description": "Mastra Software Factory module: the server core behind the Mastra Software Factory — storage domains, integrations, and surfaces for agent-powered software delivery",
+  "description": "Mastra Software Factory module: the server core behind the Mastra Software Factory \u2014 storage domains, integrations, and surfaces for agent-powered software delivery",
   "type": "module",
   "publishConfig": {
     "access": "public"
@@ -61,6 +61,7 @@
   },
   "dependencies": {
     "@factory/agent-runtime": "workspace:*",
+    "@factory/runtime-claude-agent": "workspace:*",
     "@factory/runtime-mastra-code": "workspace:*",
     "@mastra/auth-studio": "workspace:*",
     "@mastra/auth-workos": "workspace:*",

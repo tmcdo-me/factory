@@ -1,0 +1,65 @@
+// fork(claude-agent): a Claude Agent session's checkout, from Factory's own workspace factory.
+import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
+import type { Mastra } from '@mastra/core/mastra';
+import { RequestContext } from '@mastra/core/request-context';
+import type { Workspace } from '@mastra/core/workspace';
+
+import { peekSessionSandbox, sessionLayout } from '../sandbox/session-sandbox.js';
+
+// oxlint-disable-next-line typescript/no-explicit-any -- the workspace factory takes any request context.
+type ResolveWorkspace = (context: {
+  requestContext: RequestContext<any>;
+  mastra?: Mastra;
+}) => Promise<Workspace | undefined>;
+
+/**
+ * Resolve a session's workspace exactly as a Mastra Code session would (same factory instance, same
+ * access checks, same repository checkout, git credentials and sandbox), start its sandbox (which
+ * clones the repository), and return the checkout path and the sandbox's environment.
+ *
+ * Claude Code runs as a process on this host for now, so only local sandboxes are supported; a
+ * remote sandbox (Sprites) launches it inside the VM via `spawnClaudeCodeProcess` instead.
+ */
+export function createClaudeAgentWorkspaceResolver(options: {
+  resolveWorkspace: ResolveWorkspace;
+  getMastra: () => Mastra | undefined;
+}) {
+  return async (sessionId: string, requestContext: unknown): Promise<{ cwd: string; env: Record<string, string> }> => {
+    // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's request context, keys and all.
+    const context = new RequestContext<any>(
+      requestContext instanceof RequestContext ? ([...requestContext.entries()] as [string, unknown][]) : undefined,
+    );
+    // The resolver reads the session from the controller context and records the checkout in its state.
+    const state: Record<string, unknown> = {};
+    context.set('controller', {
+      controllerId: 'claude-agent',
+      sessionId,
+      threadId: sessionId,
+      resourceId: sessionId,
+      state,
+      getState: () => state,
+      setState: async (updates: Record<string, unknown>) => {
+        Object.assign(state, updates);
+      },
+    } as unknown as AgentControllerRequestContext);
+
+    const workspace = await options.resolveWorkspace({ requestContext: context, mastra: options.getMastra() });
+    const sandbox = workspace?.sandbox;
+    if (!sandbox) throw new Error(`Session ${sessionId} has no workspace to run Claude Agent in`);
+    // By provider, not `instanceof`: a host may load more than one copy of @mastra/core.
+    if ((sandbox as { provider?: string }).provider !== 'local') {
+      throw new Error('Claude Agent sessions need a local sandbox for now (FACTORY_SANDBOX_PROVIDER=local)');
+    }
+    const lifecycle = sandbox as unknown as { ensureRunning?(): Promise<void>; start?(): Promise<void> };
+    await (lifecycle.ensureRunning ? lifecycle.ensureRunning() : lifecycle.start?.());
+    const layout = sessionLayout(peekSessionSandbox(sessionId));
+    if (!layout) throw new Error(`Session ${sessionId}'s checkout is not ready`);
+    const env = (sandbox as unknown as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {};
+    return {
+      cwd: layout.root,
+      env: Object.fromEntries(
+        Object.entries(env).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+      ),
+    };
+  };
+}

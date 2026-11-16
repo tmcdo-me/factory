@@ -213,6 +213,14 @@ describe('createSessionAccessGuard', () => {
   });
 
   // fork(claude-agent)
+  // fork(claude-agent)
+  it("403s a teammate choosing a shared session's runtime; the owner may", async () => {
+    const path = `/web/factory/sessions/${SHARED_ID}/runtime`;
+    expect((await put(teammate, path, { runtimeId: 'claude-agent' })).status).toBe(403);
+    expect((await put(owner, path, { runtimeId: 'claude-agent' })).status).toBe(200);
+    expect((await teammate.request(path)).status).toBe(200);
+  });
+
   it("403s a teammate switching a shared session's model through Factory's session API", async () => {
     const path = `/web/factory/sessions/${SHARED_ID}/model`;
     expect((await put(teammate, path, { modelId: 'm' })).status).toBe(403);
