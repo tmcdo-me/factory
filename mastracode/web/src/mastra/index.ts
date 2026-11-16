@@ -339,8 +339,15 @@ if (process.env.APP_DATABASE_URL?.trim() && !process.env.DATABASE_URL?.trim()) {
       'The old name is honored as a fallback for now, but new deploys should use DATABASE_URL.',
   );
 }
-if (!databaseUrl && !localDevelopmentMode) {
-  throw new Error('DATABASE_URL is required outside local development and tests.');
+// fork(claude-agent): a single-process self-hosted server (one machine, one user) may keep its data in
+// the local libSQL file in production too, when it says so: FACTORY_DATABASE=libsql.
+const libsqlOptIn = process.env.FACTORY_DATABASE?.trim() === 'libsql';
+if (!databaseUrl && !localDevelopmentMode && !libsqlOptIn) {
+  throw new Error(
+    'DATABASE_URL is required outside local development and tests. Set FACTORY_DATABASE=libsql to keep the ' +
+      'data in a local libSQL file instead (MASTRA_DB_PATH, else mastra.db in the app data directory), for a ' +
+      'server that runs as one process on one machine.',
+  );
 }
 
 const storage = databaseUrl

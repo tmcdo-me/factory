@@ -91,6 +91,8 @@ const controllerMock = {
   getSession: vi.fn(),
   createSession: vi.fn(),
   getChannels: vi.fn(() => null),
+  // No Mastra registered: finalize() has no server shutdown to run Factory's inside.
+  getMastra: vi.fn(() => undefined),
 };
 
 // Run-end reports the factory's session reporter is asked to send.

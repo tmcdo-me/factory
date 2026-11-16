@@ -60,6 +60,7 @@ describe('production boot guards (src/mastra/index.ts)', () => {
       'FACTORY_CREDENTIAL_ENCRYPTION_KEY',
       'FACTORY_CREDENTIAL_ENCRYPTION_KEY_ID',
       'FACTORY_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
+      'FACTORY_DATABASE',
     ]) {
       vi.stubEnv(name, '');
     }
@@ -114,6 +115,29 @@ describe('production boot guards (src/mastra/index.ts)', () => {
     expect(config.secretEncryption).toBeUndefined();
     expect(config.sandbox).toMatchObject({ provider: 'local' });
   });
+
+  // A self-hosted server on one machine (`pnpm start` under a LaunchAgent) keeps its data in the
+  // local libSQL file, as `pnpm dev` does; production refused to boot without Postgres.
+  it(
+    'refuses to boot without a database, unless the local libSQL file is opted into',
+    { timeout: 60_000 },
+    async () => {
+      vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('FACTORY_CREDENTIAL_ENCRYPTION_KEY', ENCRYPTION_KEY);
+      vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'local');
+
+      await expect(import('./index.js')).rejects.toThrow(/FACTORY_DATABASE=libsql/);
+      expect(factoryConfigs).toHaveLength(0);
+
+      vi.resetModules();
+      vi.stubEnv('FACTORY_DATABASE', 'libsql');
+      const config = await bootedConfig();
+
+      // A fresh module graph per import, so the class is compared by name.
+      expect(config.storage?.constructor.name).toBe('LibSQLFactoryStorage');
+      expect(config.vector).toBeUndefined();
+    },
+  );
 
   it('keeps the development fallbacks', { timeout: 60_000 }, async () => {
     vi.stubEnv('NODE_ENV', 'development');
