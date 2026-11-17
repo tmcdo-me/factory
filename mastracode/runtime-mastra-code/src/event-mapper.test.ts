@@ -115,6 +115,7 @@ describe('MastraCodeEventMapper', () => {
       runId: 'run-2',
       inputTokens: 1200,
       outputTokens: 300,
+      totalTokens: 1500,
       cachedInputTokens: 800,
       // fork(claude-agent): the step's whole prompt is what the model had in context.
       contextTokens: 1200,
@@ -240,6 +241,31 @@ describe('MastraCodeEventMapper', () => {
   });
 });
 
+describe('run end details', () => {
+  it("names a failed run's error, once, and carries a step's full usage counts", () => {
+    const events = mapAll([
+      { type: 'agent_start' },
+      {
+        type: 'usage_update',
+        usage: { promptTokens: 5, completionTokens: 2, totalTokens: 7, cacheCreationInputTokens: 3 },
+      },
+      { type: 'error', error: new Error('Sandbox lease lost') },
+      { type: 'agent_end', reason: 'error' },
+      { type: 'agent_start' },
+      { type: 'agent_end', reason: 'error' },
+    ]);
+
+    expect(events.find(event => event.type === 'usage')).toMatchObject({
+      totalTokens: 7,
+      cacheCreationInputTokens: 3,
+    });
+    expect(events.filter(event => event.type === 'run.ended')).toEqual([
+      { type: 'run.ended', runId: 'run-1', reason: 'error', error: 'Sandbox lease lost' },
+      { type: 'run.ended', runId: 'run-2', reason: 'error' },
+    ]);
+  });
+});
+
 describe('richer Mastra events', () => {
   it('streams tool input, attaches command exits, and forwards progress', () => {
     const events = mapAll([
@@ -282,7 +308,7 @@ describe('richer Mastra events', () => {
       },
       { type: 'subagent.started', callId: 's1', agentType: 'explore', task: 'look', modelId: 'm' },
       { type: 'subagent.ended', callId: 's1', error: 'nope' },
-      { type: 'usage', inputTokens: 5, outputTokens: 2, reasoningTokens: 1, contextTokens: 5 },
+      { type: 'usage', inputTokens: 5, outputTokens: 2, reasoningTokens: 1, totalTokens: 7, contextTokens: 5 },
       {
         type: 'error',
         message: 'Sign in to continue',
@@ -449,7 +475,14 @@ describe('MastraCodeEventMapper context window', () => {
     let window: number | undefined = 131072;
     const mapper = new MastraCodeEventMapper({ sessionId: 's', contextWindow: () => window });
     expect(mapper.map(step)).toEqual([
-      { type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096, contextWindow: 131072 },
+      {
+        type: 'usage',
+        inputTokens: 4096,
+        outputTokens: 8,
+        totalTokens: 4104,
+        contextTokens: 4096,
+        contextWindow: 131072,
+      },
     ]);
     // A model switch to one with no known window.
     window = undefined;
@@ -463,6 +496,8 @@ describe('MastraCodeEventMapper context window', () => {
         throw new Error('storage down');
       },
     });
-    expect(mapper.map(step)).toEqual([{ type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096 }]);
+    expect(mapper.map(step)).toEqual([
+      { type: 'usage', inputTokens: 4096, outputTokens: 8, totalTokens: 4104, contextTokens: 4096 },
+    ]);
   });
 });

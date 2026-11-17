@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SessionEventHub } from './event-hub';
 import { InMemoryEventLog } from './event-log';
@@ -73,5 +73,55 @@ describe('SessionEventHub', () => {
     const pending = subscription.next();
     controller.abort();
     expect((await pending).done).toBe(true);
+  });
+
+  it('calls live listeners with stored events from now on, and stops when told to', async () => {
+    const hub = new SessionEventHub(new InMemoryEventLog());
+    await hub.publish('s', text('old'));
+    const heard: number[] = [];
+    const stop = hub.listen('s', envelope => heard.push(envelope.seq));
+    await hub.publish('other', text('elsewhere'));
+    await hub.publish('s', text('1'), text('2'));
+    stop();
+    await hub.publish('s', text('3'));
+
+    expect(heard).toEqual([2, 3]);
+  });
+
+  it('keeps publishing when a listener throws', async () => {
+    const hub = new SessionEventHub(new InMemoryEventLog());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const heard: number[] = [];
+    hub.listen('s', () => {
+      throw new Error('boom');
+    });
+    hub.listen('s', envelope => heard.push(envelope.seq));
+
+    await expect(hub.publish('s', text('1'))).resolves.toHaveLength(1);
+    expect(heard).toEqual([1]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('tells listeners of events whose append failed, but never subscribers', async () => {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    const failing = vi.spyOn(log, 'append').mockRejectedValueOnce(new Error('disk full'));
+    const heard: string[] = [];
+    hub.listen('s', ({ event }) => heard.push(event.type));
+    const controller = new AbortController();
+    const seen: string[] = [];
+    void (async () => {
+      for await (const { event } of hub.subscribe('s', { signal: controller.signal })) seen.push(event.type);
+    })();
+
+    await expect(hub.publish('s', { type: 'run.ended', runId: 'r', reason: 'complete' })).rejects.toThrow('disk full');
+    failing.mockRestore();
+    await hub.publish('s', text('after'));
+    controller.abort();
+
+    expect(heard).toEqual(['run.ended', 'message.delta']);
+    expect(seen).not.toContain('run.ended');
+    expect((await hub.log.list('s')).map(e => e.seq)).toEqual([1]);
   });
 });

@@ -1,10 +1,12 @@
+import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { InMemoryNotificationsStorage } from '@mastra/core/notifications';
 import { describe, expect, it, vi } from 'vitest';
 
+import { hubOf } from '../session/controller-event-hub.js';
 import { createProviderWorkItemForTests } from '../storage/test-utils.js';
 import { createSessionApprovalNotifier, createSessionRunEndReporter } from './reports.js';
-import { observeSessionRunReports } from './run-watch.js';
+import { heartbeatOpenRunUntilEnd, observeSessionRunReports } from './run-watch.js';
 
 function fakeSession() {
   const listeners = new Set<(event: AgentControllerEvent) => void>();
@@ -24,7 +26,7 @@ describe('observeSessionRunReports', () => {
   it('reports every run end of the session, not only the first', async () => {
     const session = fakeSession();
     const report = vi.fn(async () => {});
-    observeSessionRunReports(session, report);
+    observeSessionRunReports(hubOf(session), report);
 
     session.emit(end('complete'));
     session.emit(end('error'));
@@ -43,7 +45,7 @@ describe('observeSessionRunReports', () => {
       const session = fakeSession();
       const report = vi.fn(async () => {});
       const windows: string[] = [];
-      observeSessionRunReports(session, report, { onWindow: since => windows.push(since.toISOString()) });
+      observeSessionRunReports(hubOf(session), report, { onWindow: since => windows.push(since.toISOString()) });
 
       session.emit({
         type: 'tool_suspended',
@@ -62,10 +64,41 @@ describe('observeSessionRunReports', () => {
     }
   });
 
+  // fork(claude-agent): slice 6. The parked call is joined to the run's end by the hub stream's order.
+  it('knows the parked call by its tool name and whether it waits for approval, from the events before the run end', () => {
+    const session = fakeSession();
+    const report = vi.fn(async () => {});
+    observeSessionRunReports(hubOf(session), report, { answersItself: id => id === 'call-own' });
+
+    session.emit({
+      type: 'tool_start',
+      toolCallId: 'call-q',
+      toolName: 'ask_user',
+      args: { question: 'Which?' },
+    } as never);
+    session.emit({ type: 'tool_suspended', toolCallId: 'call-q', toolName: 'ask_user', args: {} } as never);
+    session.emit(end('suspended'));
+    session.emit({ type: 'tool_start', toolCallId: 'call-w', toolName: 'execute_command', args: {} } as never);
+    session.emit({
+      type: 'tool_approval_required',
+      toolCallId: 'call-w',
+      toolName: 'execute_command',
+      args: {},
+    } as never);
+    session.emit(end('suspended'));
+    session.emit({ type: 'tool_start', toolCallId: 'call-c', toolName: 'ask_user', args: {} } as never);
+    session.emit({ type: 'tool_suspended', toolCallId: 'call-c', toolName: 'ask_user', args: {} } as never);
+    session.emit({ type: 'tool_suspension_cancelled', toolCallId: 'call-c', reason: 'aborted' } as never);
+    session.emit(end('suspended'));
+
+    // A call the broker announces says nothing here; only the run that parked on nothing named does.
+    expect(report.mock.calls.map(([outcome]) => outcome)).toEqual([{ status: 'blocked' }]);
+  });
+
   it('still reports a run that ends suspended on nothing it named', () => {
     const session = fakeSession();
     const report = vi.fn(async () => {});
-    observeSessionRunReports(session, report);
+    observeSessionRunReports(hubOf(session), report);
 
     session.emit(end('suspended'));
 
@@ -76,7 +109,7 @@ describe('observeSessionRunReports', () => {
     const session = fakeSession();
     const report = vi.fn(async () => {});
     const windows: Date[] = [];
-    observeSessionRunReports(session, report, {
+    observeSessionRunReports(hubOf(session), report, {
       answersItself: toolCallId => toolCallId === 'call-plan',
       onWindow: since => windows.push(since),
     });
@@ -94,7 +127,7 @@ describe('observeSessionRunReports', () => {
     try {
       const session = fakeSession();
       const report = vi.fn(async () => {});
-      observeSessionRunReports(session, report);
+      observeSessionRunReports(hubOf(session), report);
 
       vi.setSystemTime(new Date('2026-10-15T12:01:00Z'));
       session.emit(end('complete'));
@@ -117,7 +150,7 @@ describe('observeSessionRunReports', () => {
   it("quotes the run's error in a failed report", () => {
     const session = fakeSession();
     const report = vi.fn(async () => {});
-    observeSessionRunReports(session, report);
+    observeSessionRunReports(hubOf(session), report);
 
     session.emit({ type: 'error', error: new Error('Sandbox lease lost') } as AgentControllerEvent);
     session.emit(end('error'));
@@ -133,7 +166,7 @@ describe('observeSessionRunReports', () => {
   function failedReport(error: Error) {
     const session = fakeSession();
     const report = vi.fn(async () => {});
-    observeSessionRunReports(session, report);
+    observeSessionRunReports(hubOf(session), report);
     session.emit({ type: 'error', error } as AgentControllerEvent);
     session.emit(end('error'));
     return report.mock.calls.map(([outcome]) => outcome)[0];
@@ -183,7 +216,7 @@ describe('observeSessionRunReports', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const report = vi.fn<(outcome: unknown, since: Date) => Promise<void>>().mockRejectedValueOnce(new Error('down'));
     report.mockResolvedValue(undefined);
-    observeSessionRunReports(session, report);
+    observeSessionRunReports(hubOf(session), report);
 
     session.emit(end('complete'));
     await vi.waitFor(() => expect(warn).toHaveBeenCalled());
@@ -497,5 +530,16 @@ describe('createSessionApprovalNotifier', () => {
     const { notify, deliver } = notifier(false);
     await notify(request);
     expect(deliver).not.toHaveBeenCalled();
+  });
+});
+
+describe('heartbeatOpenRunUntilEnd', () => {
+  it('stops at a run end even when the event could not be stored', async () => {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    vi.spyOn(log, 'append').mockRejectedValueOnce(new Error('disk full'));
+    const heartbeat = heartbeatOpenRunUntilEnd({} as never, 'k1', { sessionId: 's', events: hub });
+    await hub.publish('s', { type: 'run.ended', runId: 'r', reason: 'error' }).catch(() => {});
+    expect(heartbeat.endReason()).toBe('error');
   });
 });

@@ -70,7 +70,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [x]  | `tools/approval-tools.ts`                              |  220 | 5     | interactions: answers through the interaction broker (5c)                                                        |
 | [x]  | `tools/deliver.ts`                                     |  204 | 5     | delivery through the target's runtime: Mastra Code's adapter, or Claude Agent's (5e)                             |
 | [x]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                                           |
-| [ ]  | `tools/run-watch.ts`                                   |  183 | 5     | interactions                                                                                                     |
+| [x]  | `tools/run-watch.ts`                                   |  183 | 5     | run reports and the kickoff heartbeat hear the session on the event hub (6j)                                     |
 | [x]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `voice/transcription.ts`                               |  133 | drop  | voice dropped                                                                                                    |
 | [ ]  | `workspace.ts`                                         | 1967 | 2→7   | composition root; shrinks every slice                                                                            |

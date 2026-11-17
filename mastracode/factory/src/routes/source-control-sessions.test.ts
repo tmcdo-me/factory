@@ -10,6 +10,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
 import { getFactorySessionAddress, resolveFactorySessionAddress } from '../rules/binding-context.js';
 import type { SessionRetirementCoordinator } from '../sandbox/session-retirement.js';
+import { hubOf } from '../session/controller-event-hub.js';
 import { waitForPendingFilesystemCapture } from '../session/filesystem-capture.js';
 import {
   FACTORY_OPEN_RUNS_SETTING,
@@ -241,7 +242,7 @@ describe('source-control session routes', () => {
     ).resolves.toMatchObject({ address, binding: { id: prepared.binding.id } });
     expect(session.state.get()).toMatchObject({ untrustedCheckout: true, baseRef: 'main' });
 
-    const unsubscribe = observeSessionRunEnd(session, { audit: seed.audit });
+    const unsubscribe = observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
     onTestFinished(unsubscribe);
     await recordSessionRunStart(session, {
       audit: seed.audit,

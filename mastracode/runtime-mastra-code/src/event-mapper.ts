@@ -10,6 +10,7 @@ import type {
   ToolExit,
 } from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import { toPersistedErrorIdentity } from '@mastra/core/error';
 
 import { classifyMastraCodeTool } from './tool-classification';
 
@@ -39,6 +40,8 @@ interface OpenInteraction {
 export class MastraCodeEventMapper {
   readonly #newRunId: () => string;
   #runId: string | undefined;
+  /** The text of the latest `error` of the run, for `run.ended` (the provider's reason when it has one). */
+  #lastError: string | undefined;
   readonly #contextWindow: ((modelId: string | undefined) => number | undefined) | undefined;
   /** The model the run's latest assistant reply names, so a step's usage is metered against it. */
   #replyModelId: string | undefined;
@@ -93,7 +96,10 @@ export class MastraCodeEventMapper {
         if (!this.#runId) return [];
         const runId = this.#runId;
         this.#runId = undefined;
-        return [{ type: 'run.ended', runId, reason: runEndReason(event.reason) }];
+        const reason = runEndReason(event.reason);
+        const error = this.#lastError;
+        this.#lastError = undefined;
+        return [{ type: 'run.ended', runId, reason, ...(reason === 'error' && error ? { error } : {}) }];
       }
       case 'message_start':
         return this.#messageStart(event.message);
@@ -214,10 +220,15 @@ export class MastraCodeEventMapper {
             // catalog carries none (the registry drops models.dev's `limit.context`), but a custom
             // provider's model can.
             contextTokens: event.usage.promptTokens,
+            ...optionalCount('totalTokens', event.usage.totalTokens),
+            ...optionalCount('cacheCreationInputTokens', event.usage.cacheCreationInputTokens),
+            ...optionalCount('cacheCreationInputTokens5m', event.usage.cacheCreationInputTokens5m),
+            ...optionalCount('cacheCreationInputTokens1h', event.usage.cacheCreationInputTokens1h),
             ...this.#window(),
           },
         ];
       case 'error': {
+        this.#lastError = toPersistedErrorIdentity(event.error).reason ?? event.error?.message;
         const name = event.error?.name;
         const details = {
           ...(event.errorType ? { errorType: event.errorType } : {}),
@@ -387,6 +398,10 @@ export class MastraCodeEventMapper {
       },
     ];
   }
+}
+
+function optionalCount<K extends string>(key: K, value: number | undefined): { [P in K]?: number } {
+  return typeof value === 'number' ? ({ [key]: value } as { [P in K]?: number }) : {};
 }
 
 function runEndReason(reason: Extract<AgentControllerEvent, { type: 'agent_end' }>['reason']): RunEndReason {

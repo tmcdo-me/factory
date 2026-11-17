@@ -38,6 +38,7 @@ import { fakeRouteAuth, mountApiRoutes } from '../routes/test-utils.js';
 import { WorkItemRoutes } from '../routes/work-items.js';
 import { FactoryTransitionService } from '../rules/transition-service.js';
 import { attributingHeldAnswers, observeSessionAgentEvents } from '../session/agent-event-mirror.js'; // fork(claude-agent)
+import { hubOf } from '../session/controller-event-hub.js';
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { LiveSessions } from '../session/live-sessions.js';
 import { PendingInteractions } from '../session/pending-interactions.js'; // fork(claude-agent)
@@ -429,7 +430,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       });
       stops.push(
         observeSessionRunReports(
-          session,
+          hubOf(session),
           (outcome, since) => reportRunEnd({ sessionId: phase.sessionId, threadId: phase.sessionId, outcome, since }),
           {
             onWindow: reportWindows.watch(phase.sessionId, () => session.thread.getId()),

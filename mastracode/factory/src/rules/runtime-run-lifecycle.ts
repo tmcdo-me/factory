@@ -155,8 +155,6 @@ export function runtimeRunLedgers(store: () => Promise<RuntimeThreadState | unde
               await (await store())?.setState({ threadId, type: key, value });
             },
           },
-          // No agent-controller events: the dispatcher records each end itself.
-          subscribe: () => () => {},
         },
         holders: 0,
       };

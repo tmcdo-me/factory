@@ -1,14 +1,15 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import type { EventEnvelope } from '@factory/agent-runtime';
 import { WORKSPACE_TOOLS_PREFIX } from '@mastra/core/workspace';
 
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 
 export interface FirstExecCaptureSession {
   readonly identity: { getId(): string };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 export interface FirstExecCaptureDependencies {
+  /** fork(claude-agent): slice 6. The session's events are heard on Factory's event hub. */
+  events: { listen(sessionId: string, listener: (envelope: EventEnvelope) => void): () => void };
   sourceControl: {
     sessions: Pick<SourceControlStorageHandle['sessions'], 'markFirstMeaningfulExec'>;
   };
@@ -71,7 +72,7 @@ export function isMeaningfulToolName(name: string | undefined): boolean {
  */
 export function observeSessionFirstExec(
   session: FirstExecCaptureSession,
-  { sourceControl }: FirstExecCaptureDependencies,
+  { sourceControl, events }: FirstExecCaptureDependencies,
 ): () => void {
   let seen = false;
   // toolCallId -> toolName. Populated on `tool_start`, consumed on `tool_end`.
@@ -79,26 +80,29 @@ export function observeSessionFirstExec(
   // its tool name when the eventual `tool_end` arrives.
   const toolNames = new Map<string, string>();
   const suspended = new Set<string>();
-  const unsubscribe = session.subscribe(event => {
+  const unsubscribe = events.listen(session.identity.getId(), ({ event }) => {
     if (seen) return;
     switch (event.type) {
-      case 'tool_start': {
-        toolNames.set(event.toolCallId, event.toolName);
+      case 'tool.started': {
+        toolNames.set(event.callId, event.name);
         return;
       }
-      case 'tool_suspended': {
-        suspended.add(event.toolCallId);
+      case 'interaction.requested': {
+        // A suspended tool survives the run's end (a call parked for approval has not run, and does not).
+        const { callId, request } = event.interaction;
+        if (callId && request.kind !== 'tool_approval') suspended.add(callId);
         return;
       }
-      case 'tool_suspension_cancelled': {
-        toolNames.delete(event.toolCallId);
-        suspended.delete(event.toolCallId);
+      case 'interaction.cancelled': {
+        const callId = event.interactionId.slice(event.interactionId.indexOf(':') + 1);
+        toolNames.delete(callId);
+        suspended.delete(callId);
         return;
       }
-      case 'agent_end': {
-        // Drop any in-flight starts that will never see a matching `tool_end`
+      case 'run.ended': {
+        // Drop any in-flight starts that will never see a matching `tool.ended`
         // on this run. Genuinely suspended calls stay so their eventual
-        // resume-time `tool_end` can still map back to a tool name. Without
+        // resume-time `tool.ended` can still map back to a tool name. Without
         // this, sessions that repeatedly abort or error before a qualifying
         // completion would accumulate stale entries for the entire lifetime
         // of the subscription.
@@ -107,11 +111,11 @@ export function observeSessionFirstExec(
         }
         return;
       }
-      case 'tool_end': {
-        const toolName = toolNames.get(event.toolCallId);
-        toolNames.delete(event.toolCallId);
-        suspended.delete(event.toolCallId);
-        if (event.isError) return;
+      case 'tool.ended': {
+        const toolName = toolNames.get(event.callId);
+        toolNames.delete(event.callId);
+        suspended.delete(event.callId);
+        if (event.error !== undefined) return;
         if (event.denied) return;
         if (!isMeaningfulToolName(toolName)) return;
         seen = true;

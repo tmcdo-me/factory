@@ -1,11 +1,8 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
-import { toPersistedErrorIdentity } from '@mastra/core/error';
+import type { EventEnvelope } from '@factory/agent-runtime';
 
-import { FACTORY_OPEN_RUN_STALE_MS, heartbeatSessionOpenRun } from '../session/run-audit.js';
-import type { RunEndCaptureSession } from '../session/run-audit.js';
+import { FACTORY_OPEN_RUN_STALE_MS, heartbeatSessionOpenRun, ledgerRunEndReason } from '../session/run-audit.js';
+import type { RunEndCaptureSession, RunEndReason, SessionEventListening } from '../session/run-audit.js';
 import type { FactoryRunOutcome } from './reports.js';
-
-type RunEndReason = Extract<AgentControllerEvent, { type: 'agent_end' }>['reason'];
 
 /** What a run stopped on: a tool waiting for an answer, or one waiting for approval. */
 export interface ParkedTool {
@@ -15,8 +12,10 @@ export interface ParkedTool {
   approval: boolean;
 }
 
+/** The session whose runs are reported: its id, and the hub its events are heard on. */
 export interface RunReportSession {
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
+  sessionId: string;
+  events: SessionEventListening;
 }
 
 /** Reports one run's end; `since` is when the run's window opened. Should not throw. */
@@ -50,6 +49,10 @@ export function observeSessionRunReports(
     onWindow?: (since: Date) => void;
   } = {},
 ): () => void {
+  /** Names of the calls in flight, from `tool.started`: an interaction request carries none for a question. */
+  const toolNames = new Map<string, string>();
+  /** The call each open interaction belongs to, for its cancellation. */
+  const interactionCalls = new Map<string, string>();
   let parked: ParkedTool | undefined;
   let lastError: string | undefined;
   let since = new Date();
@@ -58,27 +61,53 @@ export function observeSessionRunReports(
       console.warn('[Factory reports] Unable to report on a session run.', error);
     });
   onWindow?.(since);
-  return session.subscribe(event => {
-    if (event.type === 'tool_suspended' || event.type === 'tool_approval_required') {
+  return session.events.listen(session.sessionId, ({ event }: EventEnvelope) => {
+    // fork(claude-agent): slice 6. The parked call is joined with the run's end by the event order of
+    // the one stream they share (`tool.started`, `interaction.requested`, then `run.ended`), not by
+    // a second pipeline that could land either side first.
+    if (event.type === 'tool.started') {
+      toolNames.set(event.callId, event.name);
+      return;
+    }
+    if (event.type === 'interaction.resolved') {
+      interactionCalls.delete(event.interactionId);
+      return;
+    }
+    if (event.type === 'interaction.requested') {
+      const { callId, request } = event.interaction;
+      if (!callId) return;
+      interactionCalls.set(event.interaction.id, callId);
       parked = {
-        toolName: event.toolName,
-        toolCallId: event.toolCallId,
-        approval: event.type === 'tool_approval_required',
+        toolName:
+          request.kind === 'tool_approval' || request.kind === 'tool_input'
+            ? request.toolName
+            : (toolNames.get(callId) ?? ''),
+        toolCallId: callId,
+        approval: request.kind === 'tool_approval',
       };
       return;
     }
+    if (event.type === 'interaction.cancelled') {
+      const callId = interactionCalls.get(event.interactionId);
+      interactionCalls.delete(event.interactionId);
+      if (callId && parked?.toolCallId === callId) parked = undefined;
+      return;
+    }
+    if (event.type === 'tool.ended') {
+      toolNames.delete(event.callId);
+      return;
+    }
     if (event.type === 'error') {
-      lastError = toPersistedErrorIdentity(event.error).reason ?? event.error?.message;
+      // The failure's text, as `run.ended` carries it, is the more exact; this is the fallback.
+      lastError = event.message;
       return;
     }
-    if (event.type === 'tool_suspension_cancelled' && parked?.toolCallId === event.toolCallId) {
-      parked = undefined;
-      return;
-    }
-    if (event.type !== 'agent_end') return;
-    const outcome = runOutcome(event.reason, parked, lastError);
+    if (event.type !== 'run.ended') return;
+    const outcome = runOutcome(ledgerRunEndReason(event.reason), parked, event.error ?? lastError);
     parked = undefined;
     lastError = undefined;
+    toolNames.clear();
+    interactionCalls.clear();
     if (!outcome) return;
     // Not an end: the Factory answers the call and the same run carries on in its window.
     if (outcome.status === 'blocked' && outcome.toolCallId && answersItself?.(outcome.toolCallId)) return;
@@ -93,6 +122,9 @@ export function observeSessionRunReports(
   });
 }
 
+/** A run silent this long (no event of any kind) stops being renewed. */
+const HEARTBEAT_SILENCE_LIMIT_MS = 60 * 60_000;
+
 /**
  * Renew a kicked-off run's open-run entry until the run ends, like the
  * dispatcher's heartbeat, so no dispatcher starts the role again meanwhile.
@@ -101,24 +133,31 @@ export function observeSessionRunReports(
 export function heartbeatOpenRunUntilEnd(
   session: RunEndCaptureSession,
   kickoffId: string,
+  { sessionId, events }: RunReportSession,
 ): { endReason: () => RunEndReason; stop: () => void } {
   let endReason: RunEndReason;
   let unsubscribe = () => {};
   const timer = setInterval(
-    () => void heartbeatSessionOpenRun(session, kickoffId),
+    () => {
+      if (Date.now() - lastHeard > HEARTBEAT_SILENCE_LIMIT_MS) return stop();
+      void heartbeatSessionOpenRun(session, kickoffId);
+    },
     Math.floor(FACTORY_OPEN_RUN_STALE_MS / 3),
   );
   timer.unref?.();
   let stopped = false;
+  // Backstop: a run end that never reaches us (a dropped event) must not renew the entry forever.
+  let lastHeard = Date.now();
   const stop = () => {
     if (stopped) return;
     stopped = true;
     clearInterval(timer);
     unsubscribe();
   };
-  unsubscribe = session.subscribe(event => {
-    if (event.type !== 'agent_end') return;
-    endReason ??= event.reason;
+  unsubscribe = events.listen(sessionId, ({ event }) => {
+    lastHeard = Date.now();
+    if (event.type !== 'run.ended') return;
+    endReason ??= ledgerRunEndReason(event.reason);
     stop();
   });
   return { endReason: () => endReason, stop };

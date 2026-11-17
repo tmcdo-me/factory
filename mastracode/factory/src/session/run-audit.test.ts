@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
+import { hubOf } from './controller-event-hub.js';
 import {
   FACTORY_OPEN_RUN_STALE_MS,
   FACTORY_OPEN_RUNS_SETTING,
@@ -57,7 +58,7 @@ function makeSession() {
 async function setup() {
   const { audit } = await createFactoryStorageForTests();
   const capture = makeSession();
-  observeSessionRunEnd(capture.session, { audit });
+  observeSessionRunEnd(capture.session, { audit, ...hubOf(capture.session) });
   const start = (run = OPEN_RUN, reason?: 'complete' | 'error') =>
     recordSessionRunStart(capture.session, { audit, run, actorType: 'human', observedEnd: () => reason });
   const events = async () => (await audit.list({ orgId: 'org-1' })).events;
@@ -218,7 +219,7 @@ describe('Factory run lifecycle audit', () => {
         [work, 'work'],
         [review, 'review'],
       ] as const) {
-        observeSessionRunEnd(capture.session, { audit });
+        observeSessionRunEnd(capture.session, { audit, ...hubOf(capture.session) });
         await recordSessionRunStart(capture.session, {
           audit,
           run: { ...OPEN_RUN, kickoffId: `kickoff-${role}`, role, threadId: `thread-${role}` },

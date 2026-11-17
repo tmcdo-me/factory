@@ -65,6 +65,7 @@ export interface TaskSnapshot {
 export type FactoryEvent =
   /** `input` is absent when the runtime started the run itself or the adapter can't attribute it. */
   | { type: 'run.started'; runId: string; input?: TurnInput }
+  /** `error` is the failure's text when `reason` is `error` and the runtime said why. */
   | { type: 'run.ended'; runId: string; reason: RunEndReason; error?: string }
   | {
       type: 'message.started';
@@ -143,6 +144,11 @@ export type FactoryEvent =
       outputTokens: number;
       cachedInputTokens?: number;
       reasoningTokens?: number;
+      /** Mastra Code's per-step totals, kept so run audits record the same usage the controller reported. */
+      totalTokens?: number;
+      cacheCreationInputTokens?: number;
+      cacheCreationInputTokens5m?: number;
+      cacheCreationInputTokens1h?: number;
       costUsd?: number;
       /**
        * Tokens in the main agent's context: the whole prompt of its latest model call (uncached,

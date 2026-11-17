@@ -1,4 +1,4 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import type { EventEnvelope, FactoryEvent, SessionEventHub } from '@factory/agent-runtime';
 import { z } from 'zod';
 
 import type { AuditActorType } from '../storage/domains/audit/base.js';
@@ -50,11 +50,24 @@ export interface RunEndCaptureSession {
     getSetting(args: { key: string }): Promise<unknown>;
     setSetting(args: { key: string; value: unknown }): Promise<void>;
   };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
-type RunEndReason = Extract<AgentControllerEvent, { type: 'agent_end' }>['reason'];
-type StepUsage = Extract<AgentControllerEvent, { type: 'usage_update' }>['usage'];
+/**
+ * Where a session's events are heard live: Factory's event hub (`SessionEventHub.listen`), which
+ * Mastra Code's controller events are mirrored into. fork(claude-agent): slice 6, observers.
+ */
+export type SessionEventListening = Pick<SessionEventHub, 'listen'>;
+
+/** How a run ended, as the open-run ledger and dispatcher's run watch name it (`suspended`: parked on a call). */
+export type RunEndReason = 'complete' | 'aborted' | 'error' | 'suspended' | undefined;
+
+/** The ledger's name for a hub `run.ended` reason. */
+export function ledgerRunEndReason(reason: Extract<FactoryEvent, { type: 'run.ended' }>['reason']): RunEndReason {
+  return reason === 'awaiting_interaction' ? 'suspended' : reason;
+}
+
+/** A token usage report of one model step, as the hub's `usage` event carries it. */
+type StepUsage = Extract<FactoryEvent, { type: 'usage' }>;
 const pendingWrites = new WeakMap<RunEndCaptureSession, Promise<void>>();
 
 /**
@@ -95,9 +108,20 @@ export type FactoryRunUsage =
   | { status: 'unreported' };
 
 function usageCounts(usage: StepUsage): UsageCounts {
+  // The controller's names for what the event carries.
+  const reported: UsageCounts = {
+    promptTokens: usage.inputTokens,
+    completionTokens: usage.outputTokens,
+    totalTokens: usage.totalTokens,
+    reasoningTokens: usage.reasoningTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    cacheCreationInputTokens: usage.cacheCreationInputTokens,
+    cacheCreationInputTokens5m: usage.cacheCreationInputTokens5m,
+    cacheCreationInputTokens1h: usage.cacheCreationInputTokens1h,
+  };
   const counts: UsageCounts = {};
   for (const field of USAGE_FIELDS) {
-    const value = usage[field];
+    const value = reported[field];
     if (typeof value === 'number') counts[field] = value;
   }
   return counts;
@@ -288,19 +312,24 @@ export function heartbeatSessionOpenRun(
   });
 }
 
-export function observeSessionRunEnd(session: RunEndCaptureSession, { audit }: { audit: AuditRecorder }): () => void {
+export function observeSessionRunEnd(
+  session: RunEndCaptureSession,
+  { audit, events, sessionId }: { audit: AuditRecorder; events: SessionEventListening; sessionId: string },
+): () => void {
   const usage = usageFor(session);
-  return session.subscribe(event => {
-    if (event.type === 'usage_update') {
-      usage.current.push(usageCounts(event.usage));
+  return events.listen(sessionId, ({ event }: EventEnvelope) => {
+    if (event.type === 'usage') {
+      usage.current.push(usageCounts(event));
       return;
     }
-    if (event.type !== 'agent_end' || !event.reason || event.reason === 'suspended') return;
+    if (event.type !== 'run.ended') return;
+    const reason = ledgerRunEndReason(event.reason);
+    if (!reason || reason === 'suspended') return;
     // Close the turn now so a following turn's steps never land in this run.
     const turn: EndedTurn = { steps: usage.current, claimed: false };
     usage.current = [];
     usage.lastTurn = turn;
-    void serializeRunAudit(session, () => recordRunEnds(session, audit, event.reason, undefined, turn));
+    void serializeRunAudit(session, () => recordRunEnds(session, audit, reason, undefined, turn));
   });
 }
 

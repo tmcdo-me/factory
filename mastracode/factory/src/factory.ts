@@ -192,6 +192,7 @@ import { hydrateSessionMemorySettings } from './session/memory-settings-hydratio
 import { hasResolvedOrg } from './session/org-seed.js';
 // fork(claude-agent)
 import { FallbackInteractionStore, PendingInteractions, alsoParked } from './session/pending-interactions.js';
+import { createReplaceableObservers } from './session/replaceable-observers.js';
 import { FactoryReplyCredentialProcessor } from './session/reply-credential-processor.js';
 import { migrateSessionResources, privatizeOwnerResourceSessions } from './session/resource-migration.js';
 import { observeSessionRunEnd } from './session/run-audit.js';
@@ -1511,6 +1512,7 @@ export class MastraFactory {
       ...(this.#projectBoards ? { intakeRoutes: storedBoardsStorage } : {}),
       transitionService,
       auditRecorder: auditDomain,
+      events: agentEventHub,
       sessions: sourceControlSessions,
       sessionModel: {
         projects: factoryProjectsStorage,
@@ -2758,7 +2760,11 @@ export class MastraFactory {
         console.warn('[factory] Unable to check what Mastra Code sessions still wait on.', error);
       }
     });
+    // fork(claude-agent): the event-hub observers are process-wide, keyed by session id, so a session
+    // created again under an id (a resume) replaces its predecessor's: one report and audit per run end.
+    const hubObservers = createReplaceableObservers();
     prepared.base.controller.onSessionCreated(session => {
+      const hubSessionId = session.identity.getId();
       observeSessionFilesystem(session, {
         filesystem: filesystemStorage,
         sourceControl: { sessions: sourceControlSessions },
@@ -2766,7 +2772,9 @@ export class MastraFactory {
       observeSessionFirstMessage(session, {
         sourceControl: { sessions: sourceControlSessions },
       });
-      observeSessionFirstExec(session, {
+      const stopFirstExec = observeSessionFirstExec(session, {
+        // fork(claude-agent): slice 6. Heard on the event hub, as are the run audit and reports below.
+        events: agentEventHub,
         sourceControl: { sessions: sourceControlSessions },
       });
       observeSessionThreadTitle(session, {
@@ -2777,13 +2785,17 @@ export class MastraFactory {
             .publish(session.identity.getId(), { type: 'session.renamed', title })
             .catch(error => console.warn('[factory] Unable to log a session rename.', error)),
       });
-      observeSessionRunEnd(session, { audit: auditDomain });
+      const stopRunEnd = observeSessionRunEnd(session, {
+        audit: auditDomain,
+        events: agentEventHub,
+        sessionId: session.identity.getId(),
+      });
       // Every run end of a work or side session reaches whoever follows it, however
       // the run started; re-attached when a session is created again.
       // fork(claude-agent): a call it holds for a person (a gate, a plan, a question) is announced
       // from the interaction broker (`announceWaiting`), on the run window kept here.
-      observeSessionRunReports(
-        session,
+      const stopRunReports = observeSessionRunReports(
+        { sessionId: session.identity.getId(), events: agentEventHub },
         (outcome, since) =>
           reportSessionRunEnd({
             sessionId: session.identity.getId(),
@@ -2803,6 +2815,7 @@ export class MastraFactory {
           ),
         },
       );
+      hubObservers.replace(hubSessionId, [stopFirstExec, stopRunEnd, stopRunReports]);
       observeSessionThreadStamp(session);
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {
