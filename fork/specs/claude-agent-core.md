@@ -980,6 +980,14 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      the package's own value. `session/credential-policy.ts` and `reply-credential-processor.ts` take the credential
      resolver helpers from `@factory/runtime-mastra-code/sdk` (a new group; re-exports only), so the injected
      capability replaces them at the composition root (7m). Four files left the factory allow-list; baseline shrunk (now 11). Behaviour unchanged.
+   - **7j** `rules/processor.ts` (the phase context and its Mastra processor) no longer imports the SDK or the
+     controller: its view of the turn's `controller` entry is Factory's `RuntimeTurnController`
+     (`@factory/agent-runtime`; `runtime-mastra-code/src/turn-controller.test.ts` checks the controller's request
+     context is assignable to it), `ThinkingLevel` comes from agent-runtime, and the per-request thinking
+     resolver (`resolveRequestThinkingLevel`, which reads Mastra Code's local settings) comes from
+     `@factory/runtime-mastra-code/sdk`. One file left the allow-list (now 10). Not done: moving the
+     Mastra processor wrapper (`FactoryPhaseStateProcessor`) into the adapter; it is entangled with Factory's
+     ingest and reconcile logic, so it waits for 7l. Behaviour unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

@@ -37,7 +37,7 @@ export { detectProject, getResourceIdOverride } from '@mastra/code-sdk/utils/pro
 
 // routes/source-control-sessions
 export type { MountedMastraCode } from '@mastra/code-sdk';
-export { resolveModel } from '@mastra/code-sdk/agents/model';
+export { resolveModel, resolveRequestThinkingLevel } from '@mastra/code-sdk/agents/model';
 
 // routes/oauth, routes/tenant-credentials, routes/voice, voice/transcription, storage credentials, auth.ts, routes/skills, routes/surface, skills/service (controller and SDK types)
 export type { AgentController, MessageAuthor } from '@mastra/core/agent-controller';

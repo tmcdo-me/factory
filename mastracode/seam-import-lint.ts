@@ -22,7 +22,6 @@ export const factoryAllowList: string[] = [
   'src/integrations/mastra-code-subscription-sessions.ts',
   'src/rules/dispatcher.ts',
   'src/rules/mastra-code-sessions.ts',
-  'src/rules/processor.ts',
   'src/rules/start-coordinator.ts',
   'src/session/controller-event-hub.ts',
   'src/session/factory-session.ts',

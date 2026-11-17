@@ -7,6 +7,7 @@ export type * from './commands';
 export type * from './transcript';
 export type * from './thinking';
 export type * from './session-surface';
+export type * from './turn-controller';
 export { THINKING_LEVEL_VALUES, isThinkingLevelSetting } from './thinking';
 export type { EventLog } from './event-log';
 
