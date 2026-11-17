@@ -24,7 +24,10 @@ export interface PendingInteractionsOptions {
    * gone (a restart: the approval persisted, answerable) is a parked run like any other wait.
    */
   isRunning?(sessionId: string): boolean;
-  /** Told when a session asks a person something, as it asks (not for the ones loaded at start). */
+  /**
+   * Told when a session asks a person something, as it asks (not for the ones loaded at start), on
+   * either runtime: a Mastra Code session's call as its controller reports it held (slice 5d).
+   */
   onRequested?(record: InteractionRecord, project: SessionProject): void;
 }
 
@@ -34,9 +37,6 @@ export function interactionToolName(request: InteractionRequest): string {
   if (request.kind === 'question') return 'ask_user';
   return request.toolName;
 }
-
-/** Whether the interaction is one a runtime holds itself (Mastra Code's controller). */
-const heldByRuntime = (record: InteractionRecord) => record.heldBy !== undefined;
 
 /** Whether the record is a call waiting at its approval gate. */
 const isGate = (record: InteractionRecord) => record.request.kind === 'tool_approval' && record.request.gate === true;
@@ -96,6 +96,8 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
   readonly #waiting = new Map<string, Map<string, Waiting>>();
   /** Each waiting session's project, once known. */
   readonly #projects = new Map<string, SessionProject | null>();
+  /** Told of each record as it is indexed (`whenWaitingOn`). */
+  readonly #arrivals = new Set<(record: InteractionRecord) => void>();
   #lastStamp = 0;
 
   constructor(options: PendingInteractionsOptions) {
@@ -270,6 +272,29 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     return !(isGate(record) && (this.#options.isRunning?.(record.sessionId) ?? true));
   }
 
+  /**
+   * The pending interaction a session holds for one tool call, once the index has it: a Mastra Code
+   * call is recorded a moment after its controller reports it, so a reader that learned of the call
+   * from the session's own events waits for it here. `undefined` after `timeoutMs` without one.
+   */
+  whenWaitingOn(sessionId: string, callId: string, timeoutMs: number): Promise<InteractionRecord | undefined> {
+    const [found] = this.waitingOn(sessionId, callId);
+    if (found) return Promise.resolve(found);
+    return new Promise(resolve => {
+      const done = (record: InteractionRecord | undefined) => {
+        clearTimeout(timer);
+        this.#arrivals.delete(arrival);
+        resolve(record);
+      };
+      const arrival = (record: InteractionRecord) => {
+        if (record.sessionId === sessionId && record.callId === callId) done(record);
+      };
+      const timer = setTimeout(() => done(undefined), timeoutMs);
+      timer.unref?.();
+      this.#arrivals.add(arrival);
+    });
+  }
+
   /** What the session has waited on longest, or nothing. */
   parked(sessionId: string): ParkedRun | undefined {
     let oldest: Waiting | undefined;
@@ -306,11 +331,11 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     const waiting = this.#waiting.get(record.sessionId) ?? new Map<string, Waiting>();
     waiting.set(record.id, { record, stamp: this.#stampOf(record) });
     this.#waiting.set(record.sessionId, waiting);
+    for (const arrival of [...this.#arrivals]) this.#notify(() => arrival(record));
     void this.#project(record.sessionId).then(project => {
       if (!project || !this.#waiting.get(record.sessionId)?.has(record.id)) return;
       this.#notify(() => this.#options.onChanged?.(record.sessionId, project));
-      // A runtime that holds its calls tells followers itself, until slice 5d.
-      if (announce && !heldByRuntime(record)) this.#notify(() => this.#options.onRequested?.(record, project));
+      if (announce) this.#notify(() => this.#options.onRequested?.(record, project));
     });
   }
 

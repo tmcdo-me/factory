@@ -1,9 +1,10 @@
+import { InteractionAnswerRefusedError } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { InteractionBroker, InteractionRecord, InteractionResponse } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentController, AgentControllerEventListener, Session } from '@mastra/core/agent-controller';
 import { classifyProviderError, PROVIDER_CALL_ERROR_NAME } from '@mastra/core/error';
 import { RequestContext } from '@mastra/core/request-context';
 import type { GoalObjectiveRecord } from '@mastra/core/storage';
-import type { SubmitPlanResumeData } from '@mastra/core/tools';
 
 import { eventMovesCard, isPullRequestEvent } from '../boards/board-events.js';
 import type { BoardEventFacts } from '../boards/board-events.js';
@@ -110,6 +111,9 @@ const MAX_ATTEMPTS = 5;
 // Enough for a run that re-plans after reading its own approval, few enough
 // that an agent looping on submit_plan reaches a person instead of a bill.
 const MAX_PLAN_APPROVALS = 3;
+// fork(claude-agent): how long a run waits for the broker to record the call it paused on (it takes
+// a moment after the controller reports it) before leaving it for a person.
+const HELD_RECORD_WAIT_MS = 10_000;
 const MAX_ERROR_LENGTH = 512;
 const MAX_BACKOFF_MS = 60_000;
 // A run the registry no longer shows never started or ended unobserved:
@@ -232,13 +236,36 @@ function isPermanentProviderRejection(error: string): boolean {
   );
 }
 
+/**
+ * fork(claude-agent): slice 5d. How a run approves the call it paused on: through the call's
+ * interaction broker record. `undefined` when there is nothing it can approve (no record, or one a
+ * yes doesn't answer), so the call waits for a person; else the approval, which resolves once the
+ * session has it.
+ */
+type ApprovePausedCall = (toolCallId: string) => Promise<(() => Promise<void>) | undefined>;
+
+/** fork(claude-agent): the interaction broker's records of what Mastra Code sessions wait on, and how they're answered. */
+export interface DispatcherInteractions {
+  broker: Pick<InteractionBroker, 'resolve'>;
+  /** The pending record a session holds for a call, once it is kept; `undefined` after `timeoutMs`. */
+  whenWaitingOn(sessionId: string, callId: string, timeoutMs: number): Promise<InteractionRecord | undefined>;
+}
+
+/** fork(claude-agent): the yes that answers a paused call, when a bare yes answers it. */
+function approvalOf(request: InteractionRecord['request']): InteractionResponse | undefined {
+  if (request.kind === 'plan_approval') return { kind: 'plan_approval', action: 'approved' };
+  // A tool that paused itself for a yes or no; a gate holds its run open and never parks it here.
+  if (request.kind === 'tool_approval' && !request.gate) return { kind: 'tool_approval', approved: true };
+  return undefined;
+}
+
 function watchRun(
-  session: Pick<DispatcherSession, 'subscribe' | 'respondToToolSuspension'>,
+  session: Pick<DispatcherSession, 'subscribe'>,
   {
     timeoutMs,
     autoApprovedTool,
     autoApproving,
-    requestContext,
+    approve,
     onAgentEnd,
     label,
     runStillActive,
@@ -248,8 +275,8 @@ function watchRun(
     autoApprovedTool?: string;
     /** Where the run says which paused calls it is about to answer. */
     autoApproving?: Set<string>;
-    /** The run's own request context; resuming an approved plan resolves the session's workspace with it. */
-    requestContext?: RequestContext;
+    /** fork(claude-agent): how it approves one; without it every pause waits for a person. */
+    approve?: ApprovePausedCall;
     onAgentEnd?: () => Promise<boolean>;
     label: string;
     /** Level-triggered check against the run registry, consulted at every heartbeat the edge-triggered wait misses. */
@@ -300,7 +327,7 @@ function watchRun(
     if (event.type === 'tool_suspended') {
       parked = { toolName: event.toolName, toolCallId: event.toolCallId };
       // Said before the run ends on it, so nobody is asked to answer what this run answers itself.
-      if (event.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
+      if (approve && event.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
         announced.add(event.toolCallId);
         autoApproving?.add(event.toolCallId);
       }
@@ -340,14 +367,22 @@ function watchRun(
     async settle(): Promise<void> {
       let observed = await wait();
       // Past the cap the plan stays parked: the person it waits for sees it in the inbox.
-      while (autoApprovedTool && parked?.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
+      while (approve && autoApprovedTool && parked?.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
         const { toolCallId } = parked;
+        // fork(claude-agent): answered through its broker record (slice 5d); one it can't answer waits for a person.
+        let approval: (() => Promise<void>) | undefined;
+        try {
+          approval = await approve(toolCallId);
+        } finally {
+          if (!approval) autoApproving?.delete(toolCallId);
+        }
+        if (!approval) break;
         parked = undefined;
         // Counted before the resumed run can pause again, so its next pause is judged against the cap.
         approvals += 1;
         arm();
         try {
-          await session.respondToToolSuspension({ resumeData: { action: 'approved' }, toolCallId, requestContext });
+          await approval();
         } finally {
           autoApproving?.delete(toolCallId);
         }
@@ -436,11 +471,6 @@ interface DispatcherSession extends SkillSession {
     options: { requestContext: RequestContext; requireDelivery?: boolean },
   ): { accepted: Promise<{ accepted: true; runId?: string; action?: string }> };
   subscribe(listener: AgentControllerEventListener): () => void;
-  respondToToolSuspension(input: {
-    resumeData: SubmitPlanResumeData;
-    toolCallId?: string;
-    requestContext?: RequestContext;
-  }): Promise<void>;
 }
 
 type FactoryController = Pick<AgentController<MastraCodeState>, 'getSession' | 'listActiveThreadRuns'>;
@@ -589,6 +619,11 @@ export interface FactoryDecisionDispatcherOptions {
   factoryProjectExists?: (tenant: { orgId: string; factoryProjectId: string }) => Promise<boolean>;
   /** fork(claude-agent): sessions that run on another agent runtime (Claude Agent), reached through the seam. */
   runtimeSessions?: FactoryRuntimeSessions;
+  /**
+   * fork(claude-agent): slice 5d. What Mastra Code sessions wait on, in the interaction broker: a run
+   * approves its phase's own exit tool through it. Without it every pause waits for a person.
+   */
+  interactions?: DispatcherInteractions;
   /**
    * fork(claude-agent): where those sessions' phase goals and open-run ledgers are kept (Mastra's
    * `threadState`). Without it their runs pursue no goal and leave no run records.
@@ -777,6 +812,7 @@ export class FactoryDecisionDispatcher {
   readonly #storage: WorkItemsStorage;
   readonly #ownerId: string;
   readonly #autoApproving = new Set<string>();
+  readonly #interactions?: DispatcherInteractions; // fork(claude-agent)
   readonly #reconcileToolResults?: () => Promise<void>;
   readonly #reconcileRunBinding?: FactoryDecisionDispatcherOptions['reconcileRunBinding'];
   readonly #afterRunTurn?: FactoryDecisionDispatcherOptions['afterRunTurn']; // fork(claude-agent)
@@ -853,6 +889,7 @@ export class FactoryDecisionDispatcher {
     this.#resolveLinkedWorkItemParentId = options.resolveLinkedWorkItemParentId;
     this.#factoryProjectExists = options.factoryProjectExists;
     this.#runtimeSessions = options.runtimeSessions; // fork(claude-agent)
+    this.#interactions = options.interactions; // fork(claude-agent)
     // fork(claude-agent)
     this.#runtimeThreadState = options.runtimeThreadState;
     if (options.runtimeThreadState) this.#seamLedger = runtimeRunLedgers(options.runtimeThreadState);
@@ -1219,7 +1256,7 @@ export class FactoryDecisionDispatcher {
   async #replayLanded(
     record: FactoryDeferredDecisionRecord,
     decision: unknown,
-    session: Pick<DispatcherSession, 'subscribe' | 'respondToToolSuspension'>,
+    session: Pick<DispatcherSession, 'subscribe'>,
     runStillActive: () => boolean,
   ): Promise<void> {
     if (!(await this.#isReviewRun(record, decision))) return;
@@ -1657,7 +1694,7 @@ export class FactoryDecisionDispatcher {
             timeoutMs: this.#skillCompletionObservationTimeoutMs,
             autoApprovedTool: await this.#autoApprovedExitTool(record),
             autoApproving: this.#autoApproving,
-            requestContext,
+            approve: this.#approver(binding.sessionId, requestContext, 'Factory skill run'), // fork(claude-agent)
             onAgentEnd: () => this.#roleSuperseded(record, decision.role),
             label: 'Factory skill run',
             runStillActive,
@@ -2764,6 +2801,43 @@ export class FactoryDecisionDispatcher {
   }
 
   /**
+   * fork(claude-agent): slice 5d. How a Mastra Code run approves the call it paused on, on the board's
+   * behalf: through the call's interaction broker record, which the session's controller holds and
+   * resumes as the run's owner (`requestContext`), recorded as answered by the Factory. The record is
+   * kept a moment after the controller reports the pause, so it is waited for. A call no yes answers
+   * (a question, a tool that resumes on input of its own) is left for a person, as is one the broker
+   * never records; one answered meanwhile by someone else is theirs, and the run carries on from it.
+   */
+  #approver(sessionId: string, requestContext: RequestContext, label: string): ApprovePausedCall | undefined {
+    const interactions = this.#interactions;
+    if (!interactions) return undefined;
+    return async toolCallId => {
+      const record = await interactions.whenWaitingOn(sessionId, toolCallId, HELD_RECORD_WAIT_MS);
+      const response = record ? approvalOf(record.request) : undefined;
+      if (!record || !response) {
+        if (!record) {
+          console.warn(
+            `[factory] ${label}: the paused call ${toolCallId} of session ${sessionId} was never recorded; it waits for a person.`,
+          );
+        }
+        return undefined;
+      }
+      return async () => {
+        try {
+          await interactions.broker.resolve(record.id, response, { resolvedBy: 'factory', context: requestContext });
+        } catch (error) {
+          if (!(error instanceof InteractionAnswerRefusedError)) throw error;
+          throw new FactoryDispatchError(
+            'run_failed',
+            `${label} could not carry on from the ${record.request.kind === 'plan_approval' ? 'plan' : 'call'} it approved: ${error.detail ?? error.reason}`,
+            { cause: error },
+          );
+        }
+      };
+    };
+  }
+
+  /**
    * Whether a run is in flight on `binding`: live here, or live on another dispatcher. An open-run
    * entry with nothing live behind it is an orphan of a dead process and does not count.
    */
@@ -3706,7 +3780,7 @@ export class FactoryDecisionDispatcher {
             timeoutMs: this.#skillCompletionObservationTimeoutMs,
             autoApprovedTool: await this.#autoApprovedExitTool({ ...record, workItemId: binding.workItemId }),
             autoApproving: this.#autoApproving,
-            requestContext,
+            approve: this.#approver(binding.sessionId, requestContext, 'Factory kickoff run'), // fork(claude-agent)
             label: 'Factory kickoff run',
             runStillActive: () =>
               this.#controller.listActiveThreadRuns().some(active => active.threadId === binding.threadId),

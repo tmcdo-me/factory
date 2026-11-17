@@ -283,8 +283,30 @@ describe('PendingInteractions', () => {
     });
     expect(pending.parked('s-plan')).toBeUndefined();
     expect(pending.waitingOn('s-plan', 'call-gate')).toHaveLength(1);
-    // The controller's own reports tell followers, until slice 5d.
-    expect(requested).toEqual([]);
+    // Slice 5d: followers hear of both as the broker records them (the gate as an approval notice).
+    await vi.waitFor(() =>
+      expect(requested.map(record => record.id).sort()).toEqual(['question:call-ask', 'tool_approval:call-gate']),
+    );
+  });
+
+  // Slice 5d: a board run learns of its pause from the session's events, a moment before the broker records it.
+  it('hands a reader the record for a call once it is kept, or nothing once the wait runs out', async () => {
+    const { pending, broker } = setup();
+    const kept = pending.whenWaitingOn('s-plan', 'call-plan', 5_000);
+    await broker.track({
+      id: 'plan_approval:call-plan',
+      sessionId: 's-plan',
+      callId: 'call-plan',
+      heldBy: 'mastra-code',
+      request: plan,
+      requestedAt: new Date().toISOString(),
+    });
+
+    await expect(kept).resolves.toMatchObject({ id: 'plan_approval:call-plan', status: 'pending' });
+    await expect(pending.whenWaitingOn('s-plan', 'call-plan', 0)).resolves.toMatchObject({
+      id: 'plan_approval:call-plan',
+    });
+    await expect(pending.whenWaitingOn('s-plan', 'call-other', 10)).resolves.toBeUndefined();
   });
 
   it('lists a tool that resumes on input of its own as parked, with nothing to answer from outside', async () => {

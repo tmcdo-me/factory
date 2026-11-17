@@ -1,4 +1,3 @@
-import { resumesOnDecision } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { toPersistedErrorIdentity } from '@mastra/core/error';
 
@@ -14,8 +13,6 @@ export interface ParkedTool {
   toolCallId: string;
   /** The call has not run yet, and waits for a person to allow it. */
   approval: boolean;
-  /** The tool paused itself, and a bare yes or no is all it needs to carry on. */
-  decision?: boolean;
 }
 
 export interface RunReportSession {
@@ -24,9 +21,6 @@ export interface RunReportSession {
 
 /** Reports one run's end; `since` is when the run's window opened. Should not throw. */
 export type SessionRunEndReport = (outcome: FactoryRunOutcome, since: Date) => Promise<void>;
-
-/** Told when the run holds a tool call for approval; the run stays open meanwhile. */
-export type SessionApprovalReport = (request: { toolName: string; toolCallId: string; args: unknown }) => Promise<void>;
 
 /** How much of a run's error message a `failed` report quotes. */
 const ERROR_MESSAGE_LENGTH = 400;
@@ -37,17 +31,23 @@ const ERROR_MESSAGE_LENGTH = 400;
  * session when it is created, so it outlives any one start. A run someone
  * stopped or steered says nothing, and its window carries into the next run,
  * so reports the agent made in it still count.
+ *
+ * fork(claude-agent): slice 5d. A run that ends parked on a call says nothing either: the call is
+ * announced from the interaction broker as the session starts waiting on it (a gate's `approval`,
+ * anything else's `blocked`), judged on this run's window, which `onWindow` hands out. The window
+ * still closes at that end, as it did when the end was the `blocked` report.
  */
 export function observeSessionRunReports(
   session: RunReportSession,
   report: SessionRunEndReport,
   {
-    onApprovalRequested,
     answersItself,
+    onWindow,
   }: {
-    onApprovalRequested?: SessionApprovalReport;
     /** Whether the Factory answers this paused call without a person, so its run carries on and nobody needs telling. */
     answersItself?: (toolCallId: string) => boolean;
+    /** fork(claude-agent): told when each run's window opens, the first as the session is observed. */
+    onWindow?: (since: Date) => void;
   } = {},
 ): () => void {
   let parked: ParkedTool | undefined;
@@ -57,18 +57,14 @@ export function observeSessionRunReports(
     void work.catch(error => {
       console.warn('[Factory reports] Unable to report on a session run.', error);
     });
+  onWindow?.(since);
   return session.subscribe(event => {
     if (event.type === 'tool_suspended' || event.type === 'tool_approval_required') {
       parked = {
         toolName: event.toolName,
         toolCallId: event.toolCallId,
         approval: event.type === 'tool_approval_required',
-        ...(event.type === 'tool_suspended' && resumesOnDecision(event.resumeSchema) ? { decision: true } : {}),
       };
-      // An approval gate holds the run open, so it is announced now, not at the run's end.
-      if (event.type === 'tool_approval_required' && onApprovalRequested) {
-        settle(onApprovalRequested({ toolName: event.toolName, toolCallId: event.toolCallId, args: event.args }));
-      }
       return;
     }
     if (event.type === 'error') {
@@ -90,6 +86,9 @@ export function observeSessionRunReports(
     // reports made up to the end, including its last millisecond, belong to the run that ended.
     const runSince = since;
     since = new Date(Date.now() + 1);
+    onWindow?.(since);
+    // fork(claude-agent): the broker announced the call the run parked on (see above).
+    if (outcome.status === 'blocked' && outcome.toolCallId) return;
     settle(report(outcome, runSince));
   });
 }
@@ -151,7 +150,6 @@ export function runOutcome(
               toolName: parked.toolName,
               toolCallId: parked.toolCallId,
               ...(parked.approval ? { approval: true } : {}),
-              ...(parked.decision ? { decision: true } : {}),
             }
           : {}),
       };
