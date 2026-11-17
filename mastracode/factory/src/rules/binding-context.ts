@@ -3,6 +3,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '../auth.js';
 import { REVIEW_CONTEXT } from '../boards/define-board.js';
+import { controllerEntry, turnSession } from '../session/turn-session.js';
 import type {
   FactoryRunBindingAddress,
   FactoryRunBindingRecord,
@@ -10,7 +11,7 @@ import type {
   WorkItemsStorage,
 } from '../storage/domains/work-items/base.js';
 
-interface FactorySessionState {
+interface FactorySessionState extends Record<string, unknown> {
   factoryProjectId?: string;
   factoryOrgId?: string;
   projectRepositoryId?: string;
@@ -31,8 +32,8 @@ export function getFactorySessionCoordinates(
   requestContext: RequestContext | undefined,
 ): FactoryRunBindingSessionAddress | null {
   if (!requestContext || typeof requestContext.get !== 'function') return null;
-  const context = requestContext.get('controller') as FactorySessionControllerContext | undefined;
-  const factoryProjectId = context?.getState().factoryProjectId;
+  const context = turnSession<FactorySessionState>(requestContext);
+  const factoryProjectId = context?.state().factoryProjectId;
   if (!context?.threadId || !context.resourceId || !context.sessionId || !factoryProjectId) return null;
   return {
     factoryProjectId,
@@ -61,8 +62,7 @@ export function readFactorySessionScope(
   requestContext: RequestContext | undefined,
 ): { factoryProjectId: string; factoryOrgId?: string } | null {
   if (!requestContext || typeof requestContext.get !== 'function') return null;
-  const context = requestContext.get('controller') as FactorySessionControllerContext | undefined;
-  const state = context?.getState();
+  const state = turnSession<FactorySessionState>(requestContext)?.state();
   const factoryProjectId = state?.factoryProjectId;
   if (typeof factoryProjectId !== 'string' || factoryProjectId.length === 0) return null;
   const factoryOrgId = state?.factoryOrgId;
@@ -85,7 +85,7 @@ export async function findSessionRunBinding(
   storage: Pick<WorkItemsStorage, 'findActiveRunBindingByThread'>,
 ): Promise<FactoryRunBindingRecord | null> {
   if (!requestContext || typeof requestContext.get !== 'function') return null;
-  const context = requestContext.get('controller') as FactorySessionControllerContext | undefined;
+  const context = turnSession(requestContext);
   if (!context?.threadId || !context.resourceId || !context.sessionId) return null;
   const orgId = getFactoryAuthOrgId(getFactoryAuthUserFromContext(requestContext));
   if (!orgId) return null;
@@ -130,7 +130,8 @@ export async function resolveFactorySessionAddress(options: {
 
   const requestContext = options.requestContext;
   if (!requestContext || typeof requestContext.get !== 'function') return null;
-  const context = requestContext.get('controller') as FactorySessionControllerContext | undefined;
+  // The live controller session: healing a recovered session writes its state.
+  const context = controllerEntry<FactorySessionControllerContext>(requestContext);
   if (!context?.threadId || !context.resourceId || !context.sessionId) return null;
   const user = getFactoryAuthUserFromContext(requestContext);
   const orgId = getFactoryAuthOrgId(user);

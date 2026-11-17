@@ -204,6 +204,7 @@ import { createSourceControlTools, resolveReviewedChangeRequest } from './sessio
 import { resolveFactoryThinkingLevel } from './session/thinking-default.js';
 import { observeSessionThreadStamp } from './session/thread-session-stamp.js';
 import { observeSessionThreadTitle } from './session/thread-title-mirror.js';
+import { controllerEntry } from './session/turn-session.js';
 import { SessionReportWindows, createWaitingNotices } from './session/waiting-notices.js'; // fork(claude-agent)
 import { FactoryWorkItemStateProcessor } from './session/work-item-state-processor.js';
 import { assertFactorySkills, findBoardSkillProblems } from './skills/app-skills.js';
@@ -2095,9 +2096,7 @@ export class MastraFactory {
         // Factory plan approval is a plain approval; goals are only started by the local TUI.
         planApprovalStartsGoal: false,
         hostInstructions: async ({ requestContext }) => {
-          const context = requestContext.get('controller') as
-            | AgentControllerRequestContext<MastraCodeState>
-            | undefined;
+          const context = controllerEntry<AgentControllerRequestContext<MastraCodeState>>(requestContext);
           // The SDK resolves this callback before it loads repository
           // AGENTS.md/CLAUDE.md. A controller recreated after restart has
           // only initialState, and a partially persisted one can keep

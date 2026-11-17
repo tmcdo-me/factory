@@ -19,6 +19,8 @@ export interface TurnSession<State extends Record<string, unknown> = Record<stri
   workspace?: unknown;
   /** The runtime's session record: its id and owner, when the controller carries one. */
   session?: { id: string; ownerId: string };
+  /** The model the session runs, when the controller carries one (trimmed, never empty). */
+  modelId?: string;
 }
 
 interface ControllerEntry {
@@ -26,8 +28,18 @@ interface ControllerEntry {
   resourceId?: unknown;
   threadId?: unknown;
   workspace?: unknown;
-  session?: { id?: unknown; ownerId?: unknown };
+  session?: { id?: unknown; ownerId?: unknown; modelId?: unknown };
   getState?: () => unknown;
+}
+
+/**
+ * The turn's raw `controller` entry, for the few Mastra Code internals that act on the live controller
+ * session (healing a recovered session's state, emitting an event). Everything that only reads the
+ * session uses {@link turnSession}; this is the one other place the key is named.
+ */
+export function controllerEntry<T = unknown>(requestContext: RequestContext | undefined): T | undefined {
+  if (typeof requestContext?.get !== 'function') return undefined;
+  return requestContext.get('controller') as T | undefined;
 }
 
 /** The turn's session, or `undefined` when the request context carries no controller entry. */
@@ -46,6 +58,9 @@ export function turnSession<State extends Record<string, unknown> = Record<strin
       const state = controller.getState?.();
       return (state && typeof state === 'object' ? state : {}) as Partial<State>;
     },
+    ...(typeof controller.session?.modelId === 'string' && controller.session.modelId.trim()
+      ? { modelId: controller.session.modelId.trim() }
+      : {}),
     ...(controller.workspace !== undefined ? { workspace: controller.workspace } : {}),
     ...(typeof controller.session?.id === 'string'
       ? {

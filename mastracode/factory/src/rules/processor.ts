@@ -30,6 +30,7 @@ import { hasOpenPullRequest, hasPullRequest } from '../boards/semantics.js';
 import type { ContextBlock, ContextProvider, ContextRequest } from '../session/context-providers.js';
 import { unchanged } from '../session/context-providers.js';
 import { computeMastraStateSignal } from '../session/mastra-context.js';
+import { controllerEntry } from '../session/turn-session.js';
 import { WorkItemUpdateConflictError } from '../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, WorkItemsStorage, Card } from '../storage/domains/work-items/base.js';
 import { findSessionRunBinding, getFactorySessionCoordinates } from './binding-context.js';
@@ -153,7 +154,7 @@ function reviewRuntimeFromRequestContext(
   if (!requestContext || typeof requestContext.get !== 'function') {
     throw new Error('Factory review phase requires a controller request context.');
   }
-  const context = requestContext.get<'controller', AgentControllerRequestContext<MastraCodeState>>('controller');
+  const context = controllerEntry<AgentControllerRequestContext<MastraCodeState>>(requestContext);
   const modelId = context?.session?.modelId.trim();
   if (!modelId) {
     throw new Error('Factory review phase requires a selected session model.');
@@ -307,9 +308,7 @@ export function reportMemorySettingsUnavailable(
   console.warn('[Factory Memory Settings] Failed to load settings for run', { error: reason });
   if (reportedUnavailableMemorySettings.has(requestContext)) return;
   reportedUnavailableMemorySettings.add(requestContext);
-  const controller = requestContext.get('controller') as
-    | Pick<AgentControllerRequestContext<MastraCodeState>, 'emitEvent'>
-    | undefined;
+  const controller = controllerEntry<Pick<AgentControllerRequestContext<MastraCodeState>, 'emitEvent'>>(requestContext);
   controller?.emitEvent?.({
     type: 'error',
     error: new Error(

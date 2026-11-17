@@ -4,10 +4,10 @@
  * and delegates recording to the factory-owned audit domain.
  */
 
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import { executableCommand, runsPullRequestCreate } from '../../../session/shell-commands.js';
+import { turnSession } from '../../../session/turn-session.js';
 import type { AuditAgentEmitter } from './domain.js';
 
 type FactorySessionState = { factoryProjectId?: string; projectRepositoryId?: string; projectPath?: string };
@@ -74,11 +74,9 @@ export async function observeAgentGitAction({
     if (typeof rawCommand !== 'string') return;
     const command = executableCommand(rawCommand);
 
-    const controller = toolContext.context.get('controller') as
-      | AgentControllerRequestContext<FactorySessionState>
-      | undefined;
+    const controller = turnSession<FactorySessionState>(toolContext.context);
     // The workspace sets `projectPath` to the session's checkout.
-    const worktreePath = controller?.getState().projectPath || undefined;
+    const worktreePath = controller?.state().projectPath || undefined;
     const targets = worktreePath ? [{ type: 'worktree', id: worktreePath }] : [];
 
     if (GIT_COMMIT_RE.test(command)) {

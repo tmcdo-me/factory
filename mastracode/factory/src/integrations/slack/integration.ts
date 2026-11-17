@@ -24,6 +24,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute } from '@mastra/core/server';
 import type { SlackAdapterChannelConfig } from '@mastra/slack';
 
+import { turnSession } from '../../session/turn-session.js';
 import type { FactorySessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import type { FactoryChannelsConfig, FactoryIntegration, IntegrationContext } from '../base.js';
 import { announcePullRequest } from '../channel-thread-announcements.js';
@@ -264,7 +265,7 @@ export class SlackIntegration implements FactoryIntegration {
     requestContext,
   }: Parameters<NonNullable<FactoryIntegration['postToolObserver']>>[0]): Promise<void> {
     const url = parseCreatedPullRequest(toolContext);
-    const threadId = (requestContext?.get('controller') as { threadId?: string } | undefined)?.threadId;
+    const threadId = turnSession(requestContext)?.threadId || undefined;
     if (!url || !requestContext || !threadId || !(await isSlackThread(requestContext, this.#deps))) return;
     // Not awaited: the tool call must not wait on Slack.
     void announcePullRequest(this.#channels?.(), threadId, 'opened', url).catch(error =>

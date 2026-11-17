@@ -1,4 +1,3 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import { CHAT_CHANNEL_RENDER_CONTEXT_KEY } from '@mastra/core/channels';
 import type { ChatChannelRenderContext } from '@mastra/core/channels';
 import type { Processor, ProcessOutputStepArgs, ProcessOutputStreamArgs } from '@mastra/core/processors';
@@ -6,6 +5,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import type { ChunkType } from '@mastra/core/stream';
 
 import { readFactorySessionScope } from '../../rules/binding-context.js';
+import { turnSession } from '../../session/turn-session.js';
 import { SESSION_LINK_LABEL, sessionLink } from './channel-reply-processor.js';
 
 /**
@@ -110,7 +110,7 @@ function linkSuffix(link: string): string {
 }
 
 export function sessionLinkFromRequest(requestContext: RequestContext): string | undefined {
-  const controller = requestContext.get('controller') as AgentControllerRequestContext | undefined;
+  const controller = turnSession(requestContext);
   if (!controller?.threadId) return undefined;
   return sessionLink({
     threadId: controller.threadId,

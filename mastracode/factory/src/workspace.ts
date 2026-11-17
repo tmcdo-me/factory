@@ -67,6 +67,7 @@ import {
   setSessionEnvironmentNote,
 } from './session/environment-state-processor.js';
 import type { SessionEnvironmentRepositoryState } from './session/environment-state-processor.js';
+import { controllerEntry } from './session/turn-session.js';
 import type { FactoryProject, FactoryProjectsStorage } from './storage/domains/projects/base.js';
 import type { SandboxEnvStore } from './storage/domains/sandbox-envs/base.js';
 import type { SkillOverridesStorage } from './storage/domains/skill-overrides/base.js';
@@ -751,7 +752,8 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
   const skillCacheKey = (isReview: boolean, revision: number) => `${isReview ? 'review' : 'work'}@${revision}`;
 
   const resolve = async ({ requestContext, mastra, skillExtension }: DynamicWorkspaceContext) => {
-    const ctx = requestContext.get('controller') as AgentControllerRequestContext<MastraCodeState> | undefined;
+    // The live controller session: the workspace sets its project path.
+    const ctx = controllerEntry<AgentControllerRequestContext<MastraCodeState>>(requestContext);
     const resolvedSession = ctx?.sessionId ? await resolveSourceControlSession(sourceControls, ctx.sessionId) : null;
     const session = resolvedSession?.session ?? null;
     const sourceControl = resolvedSession?.provider;

@@ -1,6 +1,5 @@
 import { resolveAuthenticatedCredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
 import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import { UUID_PATTERN } from '../routes/contracts.js';
@@ -11,6 +10,7 @@ import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js
 import type { SourceControlSessionLookup } from './factory-session.js';
 import { threadRunBinding } from './session-threads.js';
 import type { ThreadRunBindings } from './session-threads.js';
+import { turnSession } from './turn-session.js';
 
 const FACTORY_PROJECT_ID = new RegExp(UUID_PATTERN);
 
@@ -35,7 +35,7 @@ export async function resolveFactoryModelPolicy(
 ): Promise<{ tenant: CredentialTenant; factoryProjectId?: string; factoryDefaultModelId?: string | null } | undefined> {
   const principal = resolveAuthenticatedCredentialTenant(requestContext);
   if (!principal) return undefined;
-  const controller = requestContext.get('controller') as AgentControllerRequestContext | undefined;
+  const controller = turnSession(requestContext);
   if (!controller?.sessionId || !controller.resourceId) return { tenant: principal };
   const { sessionId, resourceId } = controller;
 
