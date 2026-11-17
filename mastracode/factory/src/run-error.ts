@@ -1,6 +1,8 @@
-import { CLAUDE_SUBSCRIPTION_REFUSED_ERROR } from '@mastra/code-sdk/auth/claude-subscription-policy';
-import { PROVIDER_AUTH_REQUIRED_ERROR } from '@mastra/code-sdk/auth/provider-auth-error';
-import { MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
+import {
+  CLAUDE_SUBSCRIPTION_REFUSED_ERROR,
+  MASTRA_GATEWAY_PREFIX,
+  PROVIDER_AUTH_REQUIRED_ERROR,
+} from '@factory/agent-runtime';
 import {
   classifyProviderError,
   PROVIDER_CALL_ERROR_NAME,

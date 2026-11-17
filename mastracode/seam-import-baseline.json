@@ -1,6 +1,5 @@
 {
   "factory": [
-    "src/boards/define-board.ts",
     "src/factory.ts",
     "src/integrations/base.ts",
     "src/integrations/github/routes.ts",
@@ -9,11 +8,8 @@
     "src/rules/mastra-code-sessions.ts",
     "src/rules/processor.ts",
     "src/rules/start-coordinator.ts",
-    "src/run-error.ts",
     "src/session/controller-event-hub.ts",
-    "src/session/credential-policy.ts",
     "src/session/factory-session.ts",
-    "src/session/reply-credential-processor.ts",
     "src/workspace.ts"
   ],
   "factoryUi": [

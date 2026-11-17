@@ -45,16 +45,16 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `rules/dispatcher.ts`                                  | 3008 | 6     | dispatcher / boards / goals                                                                                      |
 | [ ]  | `rules/processor.ts`                                   |  834 | 6     | dispatcher / boards / goals                                                                                      |
 | [ ]  | `rules/start-coordinator.ts`                           |  406 | 6     | dispatcher / boards / goals                                                                                      |
-| [ ]  | `run-error.ts`                                         |  157 | 7     |                                                                                                                  |
+| [x]  | `run-error.ts`                                         |  157 | 7     |                                                                                                                  |
 | [x]  | `sandbox/context-sandboxes.ts`                         |  151 | 7     |                                                                                                                  |
-| [ ]  | `session/credential-policy.ts`                         |   99 | 7     |                                                                                                                  |
+| [x]  | `session/credential-policy.ts`                         |   99 | 7     |                                                                                                                  |
 | [ ]  | `session/factory-session.ts`                           |  423 | 7     |                                                                                                                  |
 | [x]  | `session/filesystem-capture.ts`                        |  329 | 7     | no agent-controller import: the capture trigger hears the event hub (6l)                                         |
 | [ ]  | `session/first-exec-capture.ts`                        |  127 | 7     |                                                                                                                  |
 | [x]  | `session/first-message-capture.ts`                     |   50 | 7     | hears the session on the event hub; typed-as-signal messages carry `signal: true` (6l)                           |
 | [x]  | `session/live-sessions.ts`                             |  154 | 7     |                                                                                                                  |
 | [x]  | `session/memory-settings-hydration.ts`                 |   46 | 7     |                                                                                                                  |
-| [ ]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                                                  |
+| [x]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                                                  |
 | [ ]  | `session/run-audit.ts`                                 |  302 | 7     |                                                                                                                  |
 | [x]  | `session/session-threads.ts`                           |  179 | 7     |                                                                                                                  |
 | [x]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                                           |

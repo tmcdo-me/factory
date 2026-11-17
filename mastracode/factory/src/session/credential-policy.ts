@@ -1,5 +1,5 @@
-import { resolveAuthenticatedCredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
-import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
+import { resolveAuthenticatedCredentialTenant } from '@factory/runtime-mastra-code/sdk';
+import type { CredentialTenant } from '@factory/runtime-mastra-code/sdk';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import { UUID_PATTERN } from '../routes/contracts.js';

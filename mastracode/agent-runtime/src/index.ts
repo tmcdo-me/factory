@@ -12,6 +12,12 @@ export type { EventLog } from './event-log';
 
 export { FACTORY_TOOL_DEF, defineFactoryTool, isFactoryToolDef } from './tools';
 export { isSessionEvent } from './session-surface';
+export {
+  CLAUDE_SUBSCRIPTION_REFUSED_ERROR,
+  MASTRA_CODE_AGENT_ID,
+  MASTRA_GATEWAY_PREFIX,
+  PROVIDER_AUTH_REQUIRED_ERROR,
+} from './error-names';
 export { SANDBOX_PROCESSES, sandboxProcessesOf } from './workspace';
 export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
