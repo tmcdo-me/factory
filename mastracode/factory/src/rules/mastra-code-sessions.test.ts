@@ -284,6 +284,43 @@ describe('MastraCodeRuntimeSessions.kickoff', () => {
     expect(await started.ended).toMatchObject({ reason: 'complete' });
   });
 
+  describe('a delivery queued onto a run whose end is never seen', () => {
+    const quick = (live: ReturnType<typeof liveSession>) =>
+      new MastraCodeRuntimeSessions(
+        { getSession: vi.fn(async () => live.session as never), listActiveThreadRuns: vi.fn(() => [] as never) },
+        { timeoutMs: 20, autoApproving: new Set(), approver: () => undefined },
+      );
+
+    it('stays a plain, retryable error for a prepared start', async () => {
+      const live = liveSession();
+      live.sendNotificationSignal.mockImplementation(
+        async () => ({ persisted: Promise.resolve(), accepted: Promise.resolve({ action: 'deliver' }) }) as never,
+      );
+      const error = await quick(live)
+        .kickoff(
+          's',
+          {
+            runId: 'factory-kickoff:k:1',
+            prompt: 'begin',
+            thread: prompt.thread,
+            notification: { sourceId: 'rec1', dedupeKey: 'k', retryDedupeKey: g => `k:retry:${g}` },
+          },
+          ctx(),
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(FactoryDispatchError);
+      expect((error as Error).message).toContain('has not ended');
+    });
+
+    it("is the terminal run_terminal_event_missing for a decision's kickoff", async () => {
+      const live = liveSession('deliver');
+      await expect(quick(live).kickoff('s', prompt, ctx())).rejects.toMatchObject({
+        code: 'run_terminal_event_missing',
+      });
+    });
+  });
+
   it('closing a kickoff that nobody follows drops its watch and settles it, answering nothing more', async () => {
     const live = liveSession();
     const approve = vi.fn(async () => async () => {});

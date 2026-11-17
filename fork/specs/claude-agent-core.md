@@ -840,10 +840,12 @@ Each slice: implement → focused tests → manual check where noted → commit.
      skill or prompt signal, follow every run boundary and send it again under the retry key until it wakes
      the session, and `RuntimeKickoff.label` names the run in errors. A wait on a run that never ends still
      fails as a plain, retryable error for these (a decision's kickoff keeps `run_terminal_event_missing`).
-     Behaviour difference: the adapter's run watch has the broker approver, so a prepared start's run now
-     auto-approves the board's exit tool when the rule allows (the old watch had the tool name but no
-     approver, so every plan waited for a person; the Claude Agent path already approved). Test:
-     `mastra-code-sessions.test.ts` (notification kickoff and its retry); the dispatcher's pending-start
+     Exit-tool auto-approval is unchanged (the old pending-start watch already got `approve` and
+     `autoApprovedTool`). The one new side effect: the adapter moves the session to the binding's thread
+     before sending a prepared start (`MastraCodeRuntimeSessions.kickoff`, as for a skill kickoff). Test:
+     `mastra-code-sessions.test.ts` (notification kickoff and its retry; a delivery queued onto a run whose
+     end is never seen stays a plain retryable error for a prepared start and is `run_terminal_event_missing`
+     for a decision); the dispatcher's pending-start
      suites run unchanged.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
