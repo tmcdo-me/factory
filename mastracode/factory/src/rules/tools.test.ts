@@ -374,8 +374,19 @@ describe('factory_transition_work_item', () => {
     const service = new FactoryTransitionService({ storage, configVersion: 'rules-v1' });
     const context = requestContext();
     const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
-    // fork(claude-agent): a definition acts for the turn it was built for (slice 4), so a call can't
-    // bring another thread's context; what is checked at execution is that turn's binding, read again.
+    // fork(claude-agent): a definition acts for the turn it was built for (slice 4); a call that brings
+    // another thread's or session's context is refused before the tool runs.
+    // (The test context's session id follows its resource id.)
+    for (const other of [requestContext({ threadId: 'other-thread' }), requestContext({ resourceId: 'other' })]) {
+      await expect(
+        execute(tools.factory_transition_work_item as ExecutableTool, other, {
+          stage: 'planning',
+          expectedRevision: 1,
+          rationale: 'Continue.',
+        }),
+      ).rejects.toThrow(/built for another session or thread/);
+    }
+
     await storage.revokeRunBinding({
       orgId: 'org-1',
       factoryProjectId: PROJECT_ID,
@@ -390,6 +401,27 @@ describe('factory_transition_work_item', () => {
         rationale: 'Continue.',
       }),
     ).rejects.toThrow(/binding is unavailable, revoked, or no longer matches/);
+  });
+
+  // fork(claude-agent): a call without a tool call id (a tool run outside a model's turn) is refused,
+  // as before slice 4: nothing would identify a retry of it.
+  it('refuses a transition that comes without a tool call id', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    await prepareBoundItem(storage);
+    const transition = vi.fn().mockResolvedValue({ status: 'accepted' });
+    const context = requestContext();
+    const tools = await createFactoryTransitionTools({
+      requestContext: context,
+      storage,
+      transitionService: { transition } as never,
+    });
+    const tool = tools.factory_transition_work_item as ExecutableTool;
+    const input = { stage: 'planning', expectedRevision: 1, rationale: 'Continue.' };
+    await expect(tool.execute(input, { requestContext: context })).rejects.toThrow(
+      'Factory transitions require an authenticated bound agent tool call.',
+    );
+    await expect(tool.execute(input, {})).rejects.toThrow('require an authenticated bound agent tool call');
+    expect(transition).not.toHaveBeenCalled();
   });
 
   it('offers a retired-session tool that fails loudly when the bound item reached a terminal stage', async () => {
@@ -644,6 +676,27 @@ describe('factory_transition_work_item', () => {
         }),
       ).resolves.toMatchObject({ selfReviewRounds: 3 });
       expect(transition).toHaveBeenCalledWith(expect.objectContaining({ workItemId: id, stage: 'intake' }));
+    });
+
+    // fork(claude-agent): as a transition, a verdict needs the call's id.
+    it('refuses a self-review verdict that comes without a tool call id', async () => {
+      const storage = (await createFactoryStorageForTests()).workItems;
+      await selfReviewingItem(storage, { selfReviewRounds: 1 });
+      const context = requestContext();
+      const transition = vi.fn().mockResolvedValue({ status: 'accepted' });
+      const tools = await createFactoryTransitionTools({
+        requestContext: context,
+        storage,
+        transitionService: { transition } as never,
+        boards: olderWork,
+      });
+      await expect(
+        (tools.factory_record_review_verdict as ExecutableTool).execute(
+          { verdict: 'approve', reviewedHeadSha: 'abc1234def000000000000000000000000000000', findings: 'Result: done' },
+          { requestContext: context },
+        ),
+      ).rejects.toThrow('Self-review verdicts require an authenticated bound agent tool call.');
+      expect(transition).not.toHaveBeenCalled();
     });
 
     it.each([
