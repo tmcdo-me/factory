@@ -18,7 +18,8 @@ import type { MastraSandbox } from '@mastra/core/workspace';
 import { z } from 'zod';
 import type { ZodType } from 'zod';
 
-import { factoryUserOrgId, getFactoryAuthUserFromContext, getFactoryAuthUserId } from '../auth.js';
+import { isFactoryToolDef } from '../tools/toolset.js';
+import type { FactorySessionTools } from '../tools/toolset.js';
 
 // oxlint-disable-next-line typescript/no-explicit-any -- Factory's tools have every input and output shape.
 export type MastraTool = Tool<any, any, any, any>;
@@ -192,13 +193,20 @@ function toolOutput(output: unknown): unknown {
  * Factory tool definitions for a Claude Agent session. The list (names, descriptions, schemas) is
  * fixed when Claude Code starts; each call runs the tool as built for the call's own turn
  * (`toolsFor`), as Mastra Code rebuilds its tools every turn. A tool the turn no longer has fails.
+ * A definition is listed as it is; a Mastra tool (not ported yet, or configured) with its schema.
  */
 export function claudeAgentToolDefs(
-  listed: MastraTools,
+  listed: FactorySessionTools,
   run: (name: string, input: unknown, ctx: FactoryToolContext) => Promise<unknown>,
 ): FactoryToolDef[] {
   const defs: FactoryToolDef[] = [];
-  for (const [name, tool] of Object.entries(listed)) {
+  for (const [name, listedTool] of Object.entries(listed)) {
+    if (!listedTool) continue;
+    if (isFactoryToolDef(listedTool)) {
+      defs.push({ ...listedTool, name, execute: (args, ctx) => run(name, args, ctx) });
+      continue;
+    }
+    const tool = listedTool as MastraTool;
     const input = claudeInputSchema(tool);
     if (!input || !tool.execute) {
       console.warn(`[factory] Claude Agent sessions do not get Factory tool '${name}': its input schema is unusable`);
@@ -209,11 +217,7 @@ export function claudeAgentToolDefs(
   return defs;
 }
 
-/** Who a turn's tool calls act as: the signed-in caller, or the shared `local` tenant without auth. */
-export function toolIdentity(requestContext: RequestContext): { orgId: string; userId: string } {
-  const user = getFactoryAuthUserFromContext(requestContext);
-  return { orgId: factoryUserOrgId(user) ?? 'local', userId: getFactoryAuthUserId(user) ?? 'local' };
-}
+export { toolIdentity } from '../tools/toolset.js';
 
 /** The seam's view of a local session checkout. */
 export function localSessionWorkspace(options: {

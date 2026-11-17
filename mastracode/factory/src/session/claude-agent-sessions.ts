@@ -45,6 +45,8 @@ import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeRunUsage } from '../
 import type { AgentMessage, AgentMessageStore } from '../storage/domains/agent-messages/base.js';
 import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
+import { isFactoryToolDef } from '../tools/toolset.js';
+import type { FactorySessionTools } from '../tools/toolset.js';
 import { withWorkItemDescription } from '../work-items/description-context.js';
 import type { ClaudeAgentContext, ClaudeAgentContextBlock } from './claude-agent-context.js';
 import type { ClaudeAgentHost } from './claude-agent-host.js';
@@ -57,7 +59,7 @@ import {
   runMastraTool,
   toolIdentity,
 } from './claude-agent-tools.js';
-import type { MastraTools } from './claude-agent-tools.js';
+import type { MastraTool } from './claude-agent-tools.js';
 import { claudeAgentExecutable } from './claude-agent-waiting-judge.js';
 import type { ClaudeAgentWorkspace } from './claude-agent-workspace.js';
 import { answersWithDecision, interactionToolName } from './pending-interactions.js';
@@ -83,10 +85,11 @@ export interface ClaudeAgentSessionsDeps {
     open?: { bashSandbox?: boolean },
   ): Promise<Pick<ClaudeAgentWorkspace, 'cwd' | 'env'> & Partial<ClaudeAgentWorkspace>>;
   /**
-   * Factory's tools for one turn, exactly as a Mastra Code session gets them (`extraTools`), built
-   * from the turn's request context. Without it the session has only Claude Code's own tools.
+   * Factory's tools for one turn, the same ones a Mastra Code session gets (`extraTools`, where
+   * definitions are adapted to Mastra tools), built from the turn's request context. Without it the
+   * session has only Claude Code's own tools.
    */
-  tools?(requestContext: RequestContext): Promise<MastraTools>;
+  tools?(requestContext: RequestContext): Promise<FactorySessionTools>;
   /**
    * Where `ask_user` and `submit_plan` wait for the human. Without it those two tools are not
    * offered: a question nobody can answer would hang the turn.
@@ -465,13 +468,17 @@ export class ClaudeAgentSessions {
       const observed = { sessionId, callId: ctx.callId, toolName: name, input, requestContext: current.requestContext };
       let output: unknown;
       try {
-        output = await runMastraTool(name, tool, input, ctx, {
-          requestContext: current.requestContext,
-          cwd: workspace.cwd,
-          sessionId,
-          // fork(claude-agent): workspace-backed tools (git push, PRs) run in the session's sandbox.
-          ...(workspace.workspace ? { workspace: workspace.workspace } : {}),
-        });
+        // A definition runs as it is, its input checked against the schema of the turn's own copy
+        // (the one listed may be an earlier turn's); a Mastra tool as Mastra Code runs it.
+        output = isFactoryToolDef(tool)
+          ? await tool.execute(await tool.input.parseAsync(input), ctx)
+          : await runMastraTool(name, tool as MastraTool, input, ctx, {
+              requestContext: current.requestContext,
+              cwd: workspace.cwd,
+              sessionId,
+              // fork(claude-agent): workspace-backed tools (git push, PRs) run in the session's sandbox.
+              ...(workspace.workspace ? { workspace: workspace.workspace } : {}),
+            });
       } catch (error) {
         await this.#observe({ ...observed, status: 'error', error });
         throw error;

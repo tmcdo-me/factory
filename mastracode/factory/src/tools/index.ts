@@ -1,4 +1,3 @@
-import type { IntegrationTools } from '../integrations/base.js';
 import { createFactoryApprovalTools } from './approval-tools.js';
 import type { FactoryApprovalToolDependencies } from './approval-tools.js';
 import { createAuditEventsTool } from './audit-events-tool.js';
@@ -10,12 +9,15 @@ import type { FactoryReadToolDependencies } from './read-tools.js';
 import type { FactoryToolScope } from './scope.js';
 import { createFactorySessionTools } from './session-tools.js';
 import type { FactorySessionToolDependencies } from './session-tools.js';
+import type { FactorySessionTools } from './toolset.js'; // fork(claude-agent)
 import { createFactoryWorkItemTools } from './work-item-tools.js';
 import type { FactoryWorkItemToolDependencies } from './work-item-tools.js';
 
 export { FACTORY_TOOLS_WITHOUT_APPROVAL, applyFactoryToolPermissions } from './permissions.js';
 export { FACTORY_INTERACTIVE_KEY, resolveFactoryToolScope } from './scope.js';
 export type { FactoryToolScope } from './scope.js';
+export { isFactoryToolDef, mastraSessionTools } from './toolset.js'; // fork(claude-agent)
+export type { FactorySessionTool, FactorySessionTools } from './toolset.js'; // fork(claude-agent)
 
 /** Storage and services the Factory tools act through. */
 export type FactoryToolDependencies = FactoryReadToolDependencies &
@@ -42,7 +44,8 @@ export interface CreateFactoryToolsOptions {
  * side sessions need a person, moves run as an agent, model switches reach
  * only this session and its side sessions, and starts are side sessions only.
  */
-export function createFactoryTools({ scope, deps }: CreateFactoryToolsOptions): IntegrationTools {
+export function createFactoryTools({ scope, deps }: CreateFactoryToolsOptions): FactorySessionTools {
+  // fork(claude-agent): definitions and (not yet ported) Mastra tools; see `tools/toolset.ts`.
   const messagingTools = createFactoryMessagingTools(scope, deps);
   if (scope.kind !== 'user') return messagingTools;
   return {

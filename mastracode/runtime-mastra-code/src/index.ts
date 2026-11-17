@@ -6,3 +6,5 @@ export type { ToolClass } from './tool-classification';
 export { createMastraCodeSessionCommands } from './commands';
 export { historyPredatesEventLog, LOGGED_HISTORY_SLACK_MS } from './history';
 export type { ConversationReader } from './history';
+export { mastraTool } from './tools';
+export type { MastraTool, MastraToolCall, MastraToolContextOf } from './tools';

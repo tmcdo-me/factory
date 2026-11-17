@@ -7,7 +7,7 @@ export type * from './commands';
 export type * from './transcript';
 export type { EventLog } from './event-log';
 
-export { defineFactoryTool } from './tools';
+export { FACTORY_TOOL_DEF, defineFactoryTool, isFactoryToolDef } from './tools';
 export { SANDBOX_PROCESSES, sandboxProcessesOf } from './workspace';
 export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
