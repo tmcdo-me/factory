@@ -323,6 +323,9 @@ export class InteractionBroker {
         return { status: 'delivered', record: record ?? existing };
       }
       if (result.reason === 'not_pending') {
+        // A call its runtime let go of is settled by its outcome (its result, or the grace window),
+        // which this answer never saw.
+        if (!reported && this.#store.isHidden?.(id)) return { status: 'not_pending' };
         await this.#store.settle(
           id,
           this.#settlementOf(reported ?? { status: 'cancelled', reason: HELD_INTERACTION_GONE }),

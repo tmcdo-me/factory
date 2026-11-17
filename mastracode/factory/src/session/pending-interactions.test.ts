@@ -168,6 +168,36 @@ describe('PendingInteractions', () => {
     expect(pending.parked('s-plan')).toMatchObject({ toolName: 'ship_release' });
   });
 
+  // Review fix (5c): a call its controller let go of is settled by its outcome, never by an answer.
+  it('leaves a hidden call out of what can be answered, and to its outcome when an answer reaches it', async () => {
+    const pending = new PendingInteractions({ store: new InMemoryInteractionStore(), projectOf: async () => null });
+    const answerHeld = vi.fn(async () => ({ ok: false as const, reason: 'not_pending' as const }));
+    const broker = new InteractionBroker({
+      store: pending,
+      hub: new SessionEventHub(new InMemoryEventLog()),
+      answerHeld,
+    });
+    const held = await broker.track({
+      id: 'question:call-ask',
+      sessionId: 's-ask',
+      callId: 'call-ask',
+      heldBy: 'mastra-code',
+      request: question,
+      requestedAt: new Date().toISOString(),
+    });
+    pending.hide('s-ask', 'call-ask');
+
+    expect(await broker.listPending({ sessionId: 's-ask' })).toEqual([]);
+    await expect(broker.resolve(held.id, { kind: 'question', answer: 'yes' })).resolves.toMatchObject({
+      status: 'not_pending',
+    });
+    expect(answerHeld).toHaveBeenCalledTimes(1);
+    // Still pending: the controller's report of how the call ended settles it.
+    expect(await pending.get(held.id)).toMatchObject({ status: 'pending' });
+    await broker.settleHeld(held.id, { status: 'resolved', response: { kind: 'question', answer: 'no' } });
+    expect(await pending.get(held.id)).toMatchObject({ status: 'resolved', response: { answer: 'no' } });
+  });
+
   it("lists and settles a Mastra Code session's calls from memory while its store fails", async () => {
     class FailingStore extends InMemoryInteractionStore {
       override async create(): Promise<void> {
