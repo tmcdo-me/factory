@@ -917,6 +917,19 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      fallbacks) except one fix: `AuditDomain.emitAgent` read `session.modelId` unguarded, so a Claude Agent turn
      (whose entry has no `session`) threw into its catch and its agent audit row was dropped; it is now
      recorded without a `modelId` (pinned by `domain.test.ts`). Suites for those modules pass unchanged.
+   - **7b** The seam-import lint rule exists (`mastracode/seam-import-lint.ts`, used by `factory` and `factory-ui`'s
+     oxlint configs): `no-restricted-imports` for `@mastra/code-sdk[/*]` and `@mastra/core/agent-controller` in
+     `src/**`, off for test files and for the files on each package's allow-list (the files that still import
+     them when 7b landed; 73 in total). The list only shrinks, and slice 7 is done when it is empty. Integration
+     session subscriptions: the GitHub webhook, poll and platform event worker deliver through
+     `SubscriptionSessions` (`open(subscription)` brings the subscribed thread's session online as its row's owner
+     or says this deployment does not hold it; `notify` stores and hands over the notification; `channels()`),
+     with Mastra Code's implementation (`mastraCodeSubscriptionSessions`, with `resolveSubscriptionSession` and
+     `createSessionAsRowOwner`) in `integrations/mastra-code-subscription-sessions.ts`, the one file that touches
+     the controller; it moves into `@factory/runtime-mastra-code` with the adapter. Behaviour unchanged (same
+     calls in the same order); `webhook.test.ts` and the event worker suites run through the new seam. Not done
+     yet in slice 7: Slack, routes and config, credentials, voice, moving the adapter and its internals, the
+     composition root.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import type { MountedMastraCode } from '@mastra/code-sdk';
 import type { NotificationPriority } from '@mastra/core/notifications';
 import type { Context } from 'hono';
 import { requestsChangesVerdict } from '../../review-verdict.js';
 import type { FactoryRuntimeSessions } from '../../rules/runtime-sessions.js';
 import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
 import { announcePullRequest } from '../channel-thread-announcements.js';
-import { resolveSubscriptionSession, subscriptionRunContext } from '../subscription-session.js';
+import type { SubscriptionSessions } from '../mastra-code-subscription-sessions.js';
+import { subscriptionRunContext } from '../subscription-session.js';
 import type { FactorySessionOwner } from '../subscription-session.js';
 import type { GithubAppIdentity } from './app-identity.js';
 import type { GithubIntegration, GithubRepositoryPermission } from './integration.js';
@@ -200,7 +200,8 @@ export interface GithubWebhookDispatchIntegration {
 }
 
 export interface GithubWebhookDispatchDependencies {
-  controller: MountedMastraCode['controller'];
+  /** The sessions subscriptions name, whatever runtime runs them. */
+  sessions: SubscriptionSessions;
   /** fork(claude-agent): subscribed sessions on another agent runtime take their notifications through it. */
   runtimeSessions?: Pick<FactoryRuntimeSessions, 'runs' | 'message'>;
   /**
@@ -597,7 +598,7 @@ function announceMerged(
 ): void {
   if (!subscription.threadId) return;
   const target = url ?? `https://github.com/${subscription.data.repositorySlug}/pull/${subscription.data.changeRequestId}`;
-  void announcePullRequest(dependencies.controller.getChannels?.(), subscription.threadId, 'merged', target).catch(
+  void announcePullRequest(dependencies.sessions.channels(), subscription.threadId, 'merged', target).catch(
     error => console.warn('[GitHub Webhook] merged announcement failed', { subscriptionId: subscription.id, error }),
   );
 }
@@ -685,7 +686,7 @@ export async function dispatchGithubWebhook(
         delivered += 1;
         continue;
       }
-      const session = await resolveSubscriptionSession(dependencies.controller, subscription, {
+      const session = await dependencies.sessions.open( subscription, {
         label: 'GitHub',
         sourceControl: dependencies.github?.sourceControlStorage,
       });
@@ -707,7 +708,7 @@ export async function dispatchGithubWebhook(
       if (!runContext) {
         throw new Error(`GitHub subscription ${subscription.id} has no resolvable tenant identity; not delivered.`);
       }
-      const result = await session.sendNotificationSignal(
+      await session.notify(
         {
           source: 'github',
           kind: notification.kind,
@@ -728,9 +729,8 @@ export async function dispatchGithubWebhook(
             deliveryId: parsed.deliveryId,
           },
         },
-        { requestContext: runContext },
+        runContext,
       );
-      await Promise.all([result.persisted, result.accepted].filter(Boolean));
       if (notification.terminal) {
         await retireSubscription(subscription.id, notification.kind === 'pull-request-merged' ? 'merged' : 'closed');
       } else if (notification.action === 'reopened') {
@@ -770,11 +770,11 @@ export async function handleGithubWebhook(
   console.info('[GitHub Webhook]', normalizeGithubWebhookMetadata(parsed));
   // fork(claude-agent): once per event, also when the active pull request poll saw it first.
   let ignored = false;
-  const controller = options.controller;
+  const sessions = options.sessions;
   const outcome = await processGithubEvent(parsed, {
     ...(options.eventClaims ? { claims: options.eventClaims } : {}),
     ...(options.ingestFactoryEvent ? { ingest: options.ingestFactoryEvent } : {}),
-    ...(controller
+    ...(sessions
       ? {
           dispatch: async (event: ParsedGithubWebhook) => {
             const result = await dispatchGithubWebhook(event, {
@@ -787,7 +787,7 @@ export async function handleGithubWebhook(
                 });
               },
               ...(options as GithubWebhookDispatchDependencies),
-              controller,
+              sessions,
             });
             ignored = result.ignored;
             if (result.failed > 0) {

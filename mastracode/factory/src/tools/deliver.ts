@@ -5,7 +5,7 @@ import type { MastraCodeDeliveryController } from '@factory/runtime-mastra-code'
 import type { NotificationRecord, NotificationsStorage, SendNotificationSignalInput } from '@mastra/core/notifications';
 import { RequestContext } from '@mastra/core/request-context';
 
-import { createSessionAsRowOwner } from '../integrations/subscription-session.js';
+import { createSessionAsRowOwner } from '../integrations/mastra-code-subscription-sessions.js';
 import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { listFactorySessionThreads, sessionMemoryResourceId, sessionStampCounts } from '../session/session-threads.js';
