@@ -1,8 +1,6 @@
-import { resolveRequestThinkingLevel } from '@mastra/code-sdk/agents/model';
-import type { ThinkingLevel } from '@mastra/code-sdk/providers/openai-codex';
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
+import type { RuntimeTurnController, ThinkingLevel } from '@factory/agent-runtime';
+import { resolveRequestThinkingLevel } from '@factory/runtime-mastra-code/sdk';
 import type { MastraDBMessage, MessageList } from '@mastra/core/agent/message-list';
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type {
   ComputeStateSignalArgs,
   ComputeStateSignalResult,
@@ -156,7 +154,7 @@ function reviewRuntimeFromRequestContext(
   if (!requestContext || typeof requestContext.get !== 'function') {
     throw new Error('Factory review phase requires a controller request context.');
   }
-  const context = controllerEntry<AgentControllerRequestContext<MastraCodeState>>(requestContext);
+  const context = controllerEntry<RuntimeTurnController>(requestContext);
   const modelId = context?.session?.modelId.trim();
   if (!modelId) {
     throw new Error('Factory review phase requires a selected session model.');
@@ -310,7 +308,7 @@ export function reportMemorySettingsUnavailable(
   console.warn('[Factory Memory Settings] Failed to load settings for run', { error: reason });
   if (reportedUnavailableMemorySettings.has(requestContext)) return;
   reportedUnavailableMemorySettings.add(requestContext);
-  const controller = controllerEntry<Pick<AgentControllerRequestContext<MastraCodeState>, 'emitEvent'>>(requestContext);
+  const controller = controllerEntry<Pick<RuntimeTurnController, 'emitEvent'>>(requestContext);
   controller?.emitEvent?.({
     type: 'error',
     error: new Error(
