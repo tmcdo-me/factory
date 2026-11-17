@@ -905,6 +905,29 @@ const SESSION_FAVICON_PATHS = new Set([
  */
 export const FACTORY_INTERACTIVE_KEY = 'factoryInteractive';
 
+// fork(claude-agent)
+/**
+ * Mastra core's routes that run a tool straight from a request: an agent's tool, a registered tool,
+ * or an MCP server's. Factory's tools act for the session their turn runs in and key what they do on
+ * the model's tool call; such a call has neither, and its request context comes from the request.
+ * Nothing in Factory's UI uses them, so Factory serves none of them (404), signed in or not.
+ */
+const CORE_TOOL_EXECUTE_ROUTE =
+  /^\/api\/(?:agents\/[^/]+\/tools\/[^/]+|tools\/[^/]+|mcp\/[^/]+\/tools\/[^/]+)\/execute\/?$/;
+
+/** fork(claude-agent): whether Factory refuses this request as one of core's tool-execute routes. */
+export function refusesCoreToolExecution(method: string, path: string): boolean {
+  return method.toUpperCase() === 'POST' && CORE_TOOL_EXECUTE_ROUTE.test(path);
+}
+
+/** fork(claude-agent): refuses core's tool-execute routes where Factory runs without its auth gate. */
+export function createCoreToolExecutionBlock() {
+  return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
+    if (refusesCoreToolExecution(c.req.method, c.req.path)) return c.json({ error: 'not_found' }, 404);
+    await next();
+  };
+}
+
 /** With auth disabled there is no gate; this marks every HTTP request as interactive instead. */
 export function createFactoryInteractiveMarker() {
   return async (c: Context, next: () => Promise<void>): Promise<void> => {
@@ -923,6 +946,10 @@ export function createFactoryInteractiveMarker() {
 export function createFactoryAuthGate(provider: IMastraAuthProvider) {
   return async (c: Context, next: () => Promise<void>): Promise<Response | void> => {
     const path = c.req.path;
+    // fork(claude-agent): core's tool-execute routes are not served (see `refusesCoreToolExecution`).
+    if (refusesCoreToolExecution(c.req.method, path)) {
+      return c.json({ error: 'not_found' }, 404);
+    }
     if (path.startsWith('/auth/')) {
       return next();
     }

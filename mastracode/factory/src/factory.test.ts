@@ -15,6 +15,7 @@ import { AgentControllerChannels } from '@mastra/core/channels';
 import { Knowledge } from '@mastra/core/knowledge';
 import { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
+import { registerApiRoute } from '@mastra/core/server';
 import type { ApiRoute, AuthInitContext, IMastraAuthProvider, ServerConfig } from '@mastra/core/server';
 import { createSkill } from '@mastra/core/skills';
 import { InMemoryStore } from '@mastra/core/storage';
@@ -2262,7 +2263,8 @@ describe('MastraFactory.prepare', () => {
     // middleware is environment-dependent (present when ui/dist exists), so
     // assert the delta: the gate, the session access guard and the credential
     // primer replace the open mode's interactive marker (the gate marks
-    // signed-in requests itself).
+    // signed-in requests itself). fork(claude-agent): and the open mode's block
+    // on core's tool-execute routes (the gate refuses them itself).
     const openConfig = await prepareFactory({ storage: fakeStorage(), auth: null });
     const openMiddleware = (openConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
 
@@ -2270,7 +2272,7 @@ describe('MastraFactory.prepare', () => {
 
     const gatedConfig = await prepareFactory({ storage: fakeStorage(), auth: fakeProvider() });
     const gatedMiddleware = (gatedConfig.buildServerConfig as () => { middleware?: unknown[] })().middleware ?? [];
-    expect(gatedMiddleware).toHaveLength(openMiddleware.length + 2);
+    expect(gatedMiddleware).toHaveLength(openMiddleware.length + 1); // fork(claude-agent)
   });
 
   it('passes the resolved auth provider to both server.auth and studio.auth', async () => {
@@ -2372,6 +2374,102 @@ describe('MastraFactory.prepare', () => {
     expect(await metadata.json()).toMatchObject({
       resource: `${challenge![1]}/web/factory/projects/fp-1/mcp`,
       authorization_servers: ['https://auth.example.com'],
+    });
+  });
+
+  // fork(claude-agent): core's routes that run a tool straight from a request.
+  describe("core's tool-execute routes", () => {
+    /** The real server stack around an agent, a registered tool and an MCP server that each have `probe_tool`. */
+    async function serverStack(auth?: IMastraAuthProvider) {
+      const ran = vi.fn(async () => ({ ran: true }));
+      const probe = () =>
+        createTool({ id: 'probe_tool', description: 'Probe', inputSchema: z.object({}), execute: ran });
+      const config = await prepareFactory({ storage: fakeStorage(), ...(auth ? { auth } : {}) });
+      const server = (config.buildServerConfig as () => ServerConfig)();
+      const apiRoutes = [
+        ...(config.buildApiRoutes as (deps: object) => ApiRoute[])({
+          controller: sessionNotifierStub,
+          authStorage: {},
+        }),
+        registerApiRoute('/web/test/request-context', {
+          method: 'POST',
+          handler: async c => {
+            const requestContext = c.get('requestContext');
+            return c.json({
+              controller: requestContext.get('controller') ?? null,
+              interactive: requestContext.get('factoryInteractive') ?? null,
+              locale: requestContext.get('locale') ?? null,
+            });
+          },
+        }),
+      ];
+      const agent = new Agent({
+        id: 'probe-agent',
+        name: 'probe-agent',
+        instructions: 'test',
+        model: 'openai/gpt-5.4-mini',
+        tools: { probe_tool: probe() },
+      });
+      const mcp = new MCPServer({ id: 'probe-mcp', name: 'Probe', version: '1.0.0', tools: { probe_tool: probe() } });
+      const mastra = new Mastra({ server: { ...server, apiRoutes }, agents: { agent }, mcpServers: { mcp } });
+      const app = await createHonoServer(mastra, { tools: { probe_tool: probe() } });
+      return { app, ran };
+    }
+
+    const executeRoutes = [
+      '/api/agents/probe-agent/tools/probe_tool/execute',
+      '/api/tools/probe_tool/execute',
+      '/api/mcp/probe-mcp/tools/probe_tool/execute',
+    ];
+    const signedIn = { Authorization: 'Bearer user-token', 'Content-Type': 'application/json' };
+    const signedInProvider = () =>
+      fakeProvider({ authenticateToken: vi.fn(async () => ({ id: 'user-1', organizationId: 'org-1' })) });
+
+    it('refuses a signed-in POST to each, and the tool never runs', async () => {
+      const { app, ran } = await serverStack(signedInProvider());
+      // The same caller reaches core's other agent routes, so it is the route that is refused.
+      const read = await app.request('http://localhost/api/agents/probe-agent/tools/probe_tool', { headers: signedIn });
+      expect(read.status).toBe(200);
+      for (const route of executeRoutes) {
+        const response = await app.request(`http://localhost${route}`, {
+          method: 'POST',
+          headers: signedIn,
+          body: JSON.stringify({ data: {}, requestContext: { controller: { sessionId: 's1', threadId: 't1' } } }),
+        });
+        expect({ route, status: response.status }).toEqual({ route, status: 404 });
+      }
+      expect(ran).not.toHaveBeenCalled();
+    });
+
+    it('refuses them with auth turned off too', async () => {
+      const { app, ran } = await serverStack();
+      for (const route of executeRoutes) {
+        const response = await app.request(`http://localhost${route}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ data: {} }),
+        });
+        expect({ route, status: response.status }).toEqual({ route, status: 404 });
+      }
+      expect(ran).not.toHaveBeenCalled();
+    });
+
+    it("never lets a request body name the turn's session or mark it interactive", async () => {
+      const { app } = await serverStack(signedInProvider());
+      const response = await app.request('http://localhost/web/test/request-context', {
+        method: 'POST',
+        headers: signedIn,
+        body: JSON.stringify({
+          requestContext: {
+            controller: { sessionId: 'someone-elses-session', threadId: 'their-thread' },
+            factoryInteractive: 'forged',
+            locale: 'en',
+          },
+        }),
+      });
+      expect(response.status).toBe(200);
+      // The gate's own marker, not the body's value; the body's ordinary keys still arrive.
+      expect(await response.json()).toEqual({ controller: null, interactive: true, locale: 'en' });
     });
   });
 

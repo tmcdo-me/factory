@@ -99,6 +99,13 @@ export const RESERVED_REQUEST_CONTEXT_KEYS = [
   // client. The trusted-actor FGA gate keys off `organizationId`, so a
   // body-supplied value must not be merged into the request context.
   'organizationId',
+  // fork(claude-agent): the agent controller puts the session a turn runs in
+  // under `controller`; Factory's tools act for the session it names, so a
+  // body must not name one.
+  'controller',
+  // fork(claude-agent): Factory marks a turn a signed-in person started
+  // (`FACTORY_INTERACTIVE_KEY`); only its auth gate may set it.
+  'factoryInteractive',
 ] as const;
 
 const RESERVED_CONTEXT_KEYS: ReadonlySet<string> = new Set(RESERVED_REQUEST_CONTEXT_KEYS);
