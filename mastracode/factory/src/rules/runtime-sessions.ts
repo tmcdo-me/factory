@@ -15,6 +15,17 @@ export interface RuntimeRunEnd {
   resumed?: Promise<RuntimeRunEnd>;
   /** Token usage the runtime reported for the run, one entry per report. */
   usage?: readonly RuntimeRunUsage[];
+  /**
+   * fork(claude-agent): for an adapter that owns the run's verdict (`ownsGoal`): whether the run's role had
+   * handed the card on when the run ended (evaluated at its end event, so a later move keeps the verdict).
+   */
+  supersededAtEnd?: Promise<boolean>;
+  /**
+   * fork(claude-agent): for an adapter that owns the run's verdict: why the run failed, as the dispatcher
+   * records it (`run_overdue`, `run_terminal_event_missing`, `run_configuration_invalid`, a run that
+   * ended in error). Thrown by the dispatcher in place of one it would build from `reason` and `error`.
+   */
+  failure?: Error;
 }
 
 /** One token usage report, as the runtime counts it (see the `usage` Factory event). */
@@ -47,6 +58,23 @@ export interface RuntimeKickoff {
    * as Factory's, in place of a skill or a prompt. The session keeps the Claude Code it has.
    */
   continuation?: string;
+  /**
+   * fork(claude-agent): what only an adapter that owns the run's goal (Mastra Code) is told. The thread
+   * the run is on, which the session is moved to first.
+   */
+  thread?: { id: string; resourceId: string };
+  /** Stop the run in flight before the kickoff (the rule says `cancelInFlight`). */
+  cancelInFlight?: boolean;
+  /** The exit tool the board approves itself when the run parks on it (Mastra Code names the tool; Claude Agent has `autoApprovePlan`). */
+  autoApprovedTool?: string;
+  /** The preface's identity in Mastra Code's inbox: its source and its dedupe key. */
+  prefaceKeys?: { sourceId: string; dedupeKey: string };
+  /** Whether the kickoff is still wanted (the card did not move on, the seat is still this run's): asked after the preface and before each redelivery. */
+  stillWanted?: () => Promise<boolean>;
+  /** Whether the run's role has handed the card on, asked as the run's end event arrives. */
+  superseded?: () => Promise<boolean>;
+  /** Said once the kickoff reached the session (a goal's reminder, for an adapter that owns the goal). */
+  delivered?: () => Promise<void>;
 }
 
 /**
@@ -55,6 +83,12 @@ export interface RuntimeKickoff {
  * carries the session owner, whom the run acts as.
  */
 export interface FactoryRuntimeSessions {
+  /**
+   * fork(claude-agent): the adapter keeps the run's goal itself (Mastra Code's objective loop re-kicks
+   * inside one run and judges it): the dispatcher does not judge the run's goal, nor record the
+   * run's end in the thread's ledger (the session's own listener does).
+   */
+  readonly ownsGoal?: boolean;
   /** Whether this session runs on a runtime reached through here. Throws when that can't be read. */
   runs(sessionId: string): Promise<boolean>;
   /**
@@ -95,7 +129,13 @@ export interface FactoryRuntimeSessions {
     sessionId: string,
     kickoff: RuntimeKickoff,
     requestContext: RequestContext,
-  ): Promise<{ ended: Promise<RuntimeRunEnd> }>;
+  ): Promise<{
+    ended: Promise<RuntimeRunEnd>;
+    /** The run's end as the adapter has seen it so far, for a run record that starts after the run may have ended. */
+    observedEnd?: () => 'complete' | 'aborted' | 'error' | 'suspended' | undefined;
+    /** Stop watching the run (it answers nothing more, its `ended` settles): called when the caller fails before it follows the run. */
+    close?: () => void;
+  }>;
   /**
    * Tell the session something from Factory (a rule's message, activity on the card's source).
    * `wake` starts a turn with it (queued behind a run in flight), named by the `runId` it resolves

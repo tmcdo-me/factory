@@ -166,3 +166,140 @@ describe('MastraCodeRuntimeSessions.message', () => {
     expect(failure.message).toBe('model credentials could not be resolved');
   });
 });
+
+describe('MastraCodeRuntimeSessions.kickoff', () => {
+  type Listener = (event: Record<string, unknown>) => void;
+  const ctx = () => {
+    const c = new RequestContext();
+    c.set('user', { workosId: 'u1', organizationId: 'o1' });
+    return c;
+  };
+  /** A session whose kickoff signal wakes a run that `emit`s events to the watcher. */
+  function liveSession(action: 'wake' | 'deliver' | 'none' = 'wake') {
+    const listeners = new Set<Listener>();
+    const sendSignal = vi.fn(() => ({
+      accepted: Promise.resolve({ accepted: true as const, action: action === 'none' ? undefined : action }),
+    }));
+    const sendNotificationSignal = vi.fn(async () => ({}));
+    const session = {
+      ...fakeSession(),
+      identity: { getResourceId: () => 'r1', getId: () => 's', getOwnerId: () => 'u1' },
+      thread: { ...fakeSession().thread, requireId: () => 't1', switch: vi.fn() },
+      model: { get: () => 'm' },
+      state: { get: () => ({}) },
+      getWorkspace: () => undefined,
+      subscribe: (listener: Listener) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+      sendSignal,
+      sendNotificationSignal,
+    };
+    return {
+      session,
+      sendSignal,
+      sendNotificationSignal,
+      emit: (e: Record<string, unknown>) => listeners.forEach(l => l(e)),
+      listeners,
+    };
+  }
+  function kickoffSetup(live: ReturnType<typeof liveSession>) {
+    const controller = {
+      getSession: vi.fn(async () => live.session as never),
+      listActiveThreadRuns: vi.fn(() => [] as never),
+    };
+    return new MastraCodeRuntimeSessions(controller, {
+      timeoutMs: 60_000,
+      autoApproving: new Set(),
+      approver: () => undefined,
+    });
+  }
+  const prompt = { runId: 'k1', prompt: 'do it', thread: { id: 't1', resourceId: 'r1' } };
+
+  it('owns its goal', () => {
+    expect(kickoffSetup(liveSession()).ownsGoal).toBe(true);
+  });
+
+  it('sends the prompt as a user signal under the run id, says the goal was delivered, and ends complete', async () => {
+    const live = liveSession();
+    const delivered = vi.fn(async () => {});
+    const started = await kickoffSetup(live).kickoff(
+      's',
+      { ...prompt, description: 'the card', delivered, superseded: async () => false },
+      ctx(),
+    );
+    expect(live.sendSignal).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'k1', type: 'user', contents: expect.stringContaining('do it') }),
+      expect.objectContaining({ requireDelivery: true }),
+    );
+    expect(delivered).toHaveBeenCalledOnce();
+    live.emit({ type: 'agent_end', reason: 'complete' });
+    expect(await started.ended).toMatchObject({ reason: 'complete' });
+    expect(await (await started.ended).supersededAtEnd).toBe(false);
+    expect(started.observedEnd()).toBe('complete');
+    expect(live.listeners.size).toBe(0);
+  });
+
+  it('closing a kickoff that nobody follows drops its watch and settles it, answering nothing more', async () => {
+    const live = liveSession();
+    const approve = vi.fn(async () => async () => {});
+    const sessions = new MastraCodeRuntimeSessions(
+      { getSession: vi.fn(async () => live.session as never), listActiveThreadRuns: vi.fn(() => [] as never) },
+      { timeoutMs: 60_000, autoApproving: new Set(), approver: () => approve },
+    );
+    const started = await sessions.kickoff('s', { ...prompt, autoApprovedTool: 'submit_plan' }, ctx());
+    expect(live.listeners.size).toBe(1);
+
+    started.close();
+
+    expect(live.listeners.size).toBe(0);
+    const end = await started.ended;
+    expect(end.reason).toBe('error');
+    expect(end.failure).toMatchObject({ code: 'run_terminal_event_missing' });
+    // A pause the dead watch would have answered after the close is no longer seen.
+    live.emit({ type: 'tool_suspended', toolName: 'submit_plan', toolCallId: 'c1' });
+    live.emit({ type: 'agent_end', reason: 'suspended' });
+    expect(approve).not.toHaveBeenCalled();
+  });
+
+  it('a run that ends suspended resolves as awaiting a person', async () => {
+    const live = liveSession();
+    const started = await kickoffSetup(live).kickoff('s', prompt, ctx());
+    live.emit({ type: 'tool_suspended', toolName: 'ask_user', toolCallId: 'c1' });
+    live.emit({ type: 'agent_end', reason: 'suspended' });
+    expect(await started.ended).toMatchObject({ reason: 'awaiting_interaction' });
+  });
+
+  it('a run that errors resolves with the failure the dispatcher records', async () => {
+    const live = liveSession();
+    const started = await kickoffSetup(live).kickoff('s', prompt, ctx());
+    live.emit({ type: 'error', error: new Error('boom') });
+    live.emit({ type: 'agent_end', reason: 'error' });
+    const end = await started.ended;
+    expect(end.reason).toBe('error');
+    expect(end.failure).toBeInstanceOf(FactoryDispatchError);
+    expect(end.failure?.message).toContain('boom');
+  });
+
+  it('a delivery with no named action is ambiguous, and its watch is closed', async () => {
+    const live = liveSession('none');
+    await expect(kickoffSetup(live).kickoff('s', prompt, ctx())).rejects.toMatchObject({
+      code: 'skill_delivery_ambiguous',
+    });
+    expect(live.listeners.size).toBe(0);
+  });
+
+  it('a session that is gone is session_unavailable; a kickoff nobody wants any more stops after its preface', async () => {
+    const gone = new MastraCodeRuntimeSessions(
+      { getSession: vi.fn(async () => undefined), listActiveThreadRuns: vi.fn(() => []) },
+      { timeoutMs: 1, autoApproving: new Set(), approver: () => undefined },
+    );
+    await expect(gone.kickoff('s', prompt, ctx())).rejects.toMatchObject({ code: 'session_unavailable' });
+    const live = liveSession();
+    await expect(
+      kickoffSetup(live).kickoff('s', { ...prompt, preface: 'moving on', stillWanted: async () => false }, ctx()),
+    ).rejects.toThrow();
+    expect(live.sendNotificationSignal).toHaveBeenCalledOnce();
+    expect(live.sendSignal).not.toHaveBeenCalled();
+  });
+});

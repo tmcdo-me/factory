@@ -755,6 +755,32 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Errors keep their codes (`session_unavailable`, `notification_delivery_failed`); a session lookup or
      thread-switch failure (memory/model credentials) propagates unwrapped, as it did before, and the
      dispatcher wraps only a Claude Agent failure (`unknown`-classified for Mastra Code, pinned by test).
+     _6h-3:_ a Mastra Code `invokeSkill` kickoff goes through the seam path (`#invokeSkillOnSeam` /
+     `#runOnSeam`) on the Mastra Code adapter, `FactoryRuntimeSessions.kickoff` with `ownsGoal: true`: Mastra
+     keeps its objective loop (it re-kicks inside one run and judges it), so the dispatcher holds the goal in
+     the session and has the adapter remind it once the kickoff landed, never `#holdSeamGoal` nor
+     `judgeRuntimeGoal`. `MastraCodeRuntimeSessions.kickoff` is the old Mastra block: resolve the skill or
+     prompt, move to the binding's thread, append the card's description, cancel-in-flight abort, the rule's
+     preface, then the `reactive` skill signal with `requireDelivery` and its deliver/wake loop, watched by
+     `watchRun` (moved to `rules/watch-run.ts`, still used for the open-run wait and the replay). Its `ended`
+     never rejects: it resolves with the verdict `settle()` threw in `failure` (so `run_overdue`,
+     `run_terminal_event_missing`, `run_configuration_invalid` and the run-ended-in-error codes are
+     unchanged) and `supersededAtEnd` evaluated at `agent_end`. Kept as before: the session's open-run
+     ledger wait (`#waitForOpenRun`) and the replay of a kickoff that already landed (goal restarted,
+     `#replayLanded`), failures from Mastra Code propagate unwrapped, a run suspended on a person ends the
+     decision, and a clean end reconciles the binding then runs `afterRunTurn` only for a run working its
+     phase. Ledger: a Mastra Code run records its start on the session (`recordSessionRunStart`, renewed only
+     while watched) and the session's own listener records its end with real usage, so `#closeSeamRun`
+     never records one for it (Claude Agent runs keep the thread-state ledger). Not moved:
+     `#dispatchPendingStart`. Small differences: the skill is resolved when the kickoff is sent (an
+     unknown skill now fails after the open-run wait, not before), the goal is held just before the preface
+     rather than after it, and the working-phase `run_incomplete` check also accepts a pull request attached
+     to the card, as for Claude Agent. Review fixes: the kickoff result has `close()` (the dispatcher calls it
+     when recording the run's start or its first status fails before it follows the run, so the watch does
+     not stay subscribed to answer a plan or time out beside a retry's own; a closed `watchRun` ends its wait
+     at once and answers nothing more); a kickoff found stale after its preface ends the goal the dispatcher
+     had already held; the replay guards run on the binding's thread (`#requireSession` moves the session
+     there first, pinned by a test).
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

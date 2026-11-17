@@ -599,6 +599,37 @@ describe('FactoryDecisionDispatcher', () => {
     },
   );
 
+  it('replays a kickoff that landed on its thread while the session is on another one', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      prompt: 'Continue work.',
+      idempotencyKey: 'replay-other-thread',
+    });
+    await bindWorkRun(storage, item.id);
+    const [decision] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    const { controller, session } = createSession(undefined, { initialDeliveredSignalIds: [decision!.id] });
+    // The kickoff is in the binding's thread only; the session is somewhere else.
+    session.thread.listActiveMessages.mockImplementation(async () =>
+      session.thread.requireId() === 'thread-1' ? [{ id: decision!.id }] : [],
+    );
+    await session.thread.switch({ threadId: 'thread-elsewhere' });
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      boards: autoStartingBoards(),
+      transitionService,
+      storage,
+      ownerId: 'worker-1',
+    });
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    expect(session.sendSignal).not.toHaveBeenCalled();
+    expect(session.thread.requireId()).toBe('thread-1');
+    expect((await storage.listDeferredDecisions('org-1', PROJECT_ID))[0]?.status).toBe('succeeded');
+  });
+
   it('does not open an audited run when delivery is not confirmed', async () => {
     const seed = await createFactoryStorageForTests();
     const storage = seed.workItems;
@@ -9439,6 +9470,42 @@ describe('phase goals', () => {
       threadId: 'thread-1',
       sessionId: 'session-1',
     });
+  });
+
+  it('ends the goal it held when the card moves on while the preceding notice is delivered', async () => {
+    const agent = await goalAgent();
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { item, transitionService } = await queueDecision(storage, {
+      type: 'invokeSkill',
+      role: 'work',
+      skillName: 'factory-build',
+      idempotencyKey: 'goal-moved-during-notice',
+      precedingMessage: 'Now building',
+      goal: { objective: OBJECTIVE, maxRuns: 7 },
+    });
+    await bindWorkRun(storage, item.id);
+    const { controller, session, sendNotificationSignal } = createSession();
+    Object.assign(session, { machinery: { getAgent: () => agent } });
+    sendNotificationSignal.mockImplementationOnce(async () => {
+      await storage.update({ orgId: 'org-1', id: item.id, userId: 'user-1', patch: { stages: ['review'] } });
+      return { persisted: Promise.resolve(), accepted: Promise.resolve({ action: 'persist' }) } as never;
+    });
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      boards: autoStartingBoards(),
+      transitionService,
+      storage,
+      ownerId: 'worker-1',
+      primeCredentials: vi.fn(async () => {}),
+    });
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    const [decision] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(sendNotificationSignal).toHaveBeenCalledTimes(1);
+    expect(decision?.status).toBe('superseded');
+    expect(session.sendSignal).not.toHaveBeenCalled();
+    expect(await agent.getObjective({ threadId: 'thread-1' })).toMatchObject({ id: decision!.id, status: 'done' });
   });
 
   it('keeps the goal it already holds when the decision is retried', async () => {
