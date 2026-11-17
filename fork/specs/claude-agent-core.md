@@ -951,6 +951,13 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      the adapter package and external to its bundle). Behaviour-preserving: same functions, no new logic. The
      factory allow-list is 34. Later route groups (credentials/OAuth/voice, Slack, storage types) extend that file
      with their own group; the composition-root change then replaces the subpath imports with injected capabilities.
+   - **7f** credentials/OAuth/voice/types: `routes/oauth.ts`, `routes/tenant-credentials.ts`, `routes/voice.ts`,
+     `voice/transcription.ts`, `storage/domains/credentials/base.ts`, `auth.ts`, `routes/skills.ts`,
+     `routes/surface.ts` and `skills/service.ts` import their device-login, credential-resolver, STT and
+     `AuthCredential` / `MastraCodeState` / `AgentController` / `MessageAuthor` types from
+     `@factory/runtime-mastra-code/sdk` (a new group in `src/sdk.ts`; re-exports only). Behaviour-preserving. The
+     factory allow-list is 25. Remaining: Slack, then the files that still use the controller at runtime
+     (rules, session, sandbox, workspace, factory, integrations), which move with the adapter and the composition root.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

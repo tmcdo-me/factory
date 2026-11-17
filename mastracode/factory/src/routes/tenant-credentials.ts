@@ -21,20 +21,23 @@
  * calls Anthropic models with an API key only.
  */
 
-import type {
-  CredentialTenant as SdkCredentialTenant,
-  CredentialTenantResolver,
-} from '@mastra/code-sdk/agents/credential-resolver';
 import {
   prepareCredentialTenant,
   resolveTenantFromRequestContext,
   setCredentialStoreProvider,
-} from '@mastra/code-sdk/agents/credential-resolver';
-import { isClaudeSubscriptionCredential } from '@mastra/code-sdk/auth/claude-subscription-policy';
-import { getOAuthProvider, PROVIDER_DEFAULT_MODELS } from '@mastra/code-sdk/auth/storage';
-import type { AuthCredential, CredentialStore, OAuthCredential } from '@mastra/code-sdk/auth/types';
-import { MASTRA_GATEWAY_PROVIDER } from '@mastra/code-sdk/onboarding/settings';
-import { MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
+  isClaudeSubscriptionCredential,
+  getOAuthProvider,
+  PROVIDER_DEFAULT_MODELS,
+  MASTRA_GATEWAY_PROVIDER,
+  MASTRA_GATEWAY_PREFIX,
+} from '@factory/runtime-mastra-code/sdk';
+import type {
+  CredentialTenant as SdkCredentialTenant,
+  CredentialTenantResolver,
+  AuthCredential,
+  CredentialStore,
+  OAuthCredential,
+} from '@factory/runtime-mastra-code/sdk';
 import type { RequestContext } from '@mastra/core/request-context';
 import type { MiddlewareHandler } from 'hono';
 

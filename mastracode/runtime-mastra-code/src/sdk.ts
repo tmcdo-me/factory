@@ -30,3 +30,25 @@ export { detectProject, getResourceIdOverride } from '@mastra/code-sdk/utils/pro
 // routes/source-control-sessions
 export type { MountedMastraCode } from '@mastra/code-sdk';
 export { resolveModel } from '@mastra/code-sdk/agents/model';
+
+// routes/oauth, routes/tenant-credentials, routes/voice, voice/transcription, storage credentials, auth.ts, routes/skills, routes/surface, skills/service (controller and SDK types)
+export type { AgentController, MessageAuthor } from '@mastra/core/agent-controller';
+export { nextPollDelayMs } from '@mastra/code-sdk/auth/device-code';
+export {
+  copilotNextPollDelayMs,
+  pollGitHubCopilotDeviceLogin,
+  startGitHubCopilotDeviceLogin,
+} from '@mastra/code-sdk/auth/providers/github-copilot';
+export type { CopilotDeviceLoginPending } from '@mastra/code-sdk/auth/providers/github-copilot';
+export { pollCodexDeviceLogin, startCodexDeviceLogin } from '@mastra/code-sdk/auth/providers/openai-codex';
+export type { CodexDeviceLoginPending } from '@mastra/code-sdk/auth/providers/openai-codex';
+export { pollXAIDeviceLogin, startXAIDeviceLogin } from '@mastra/code-sdk/auth/providers/xai';
+export type { XAIDeviceLoginPending } from '@mastra/code-sdk/auth/providers/xai';
+export type { AuthCredential, CredentialStore, OAuthCredential, OAuthCredentials } from '@mastra/code-sdk/auth/types';
+export type { MastraCodeState } from '@mastra/code-sdk/schema';
+export type { CredentialTenantResolver } from '@mastra/code-sdk/agents/credential-resolver';
+export { prepareCredentialTenant, setCredentialStoreProvider } from '@mastra/code-sdk/agents/credential-resolver';
+export { PROVIDER_DEFAULT_MODELS, getOAuthProvider } from '@mastra/code-sdk/auth/storage';
+export { STT_MODELS, findSTTModel, resolveSTTModel, sttProviders } from '@mastra/code-sdk/voice/stt-registry';
+export type { STTModel } from '@mastra/code-sdk/voice/stt-registry';
+export { createSTTTranscriber, resolveSTTApiKey, sttApiKeyEnvVar } from '@mastra/code-sdk/voice/transcribe';

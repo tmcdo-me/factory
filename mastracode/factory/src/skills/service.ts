@@ -1,6 +1,5 @@
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
+import type { MastraCodeState, AgentController } from '@factory/runtime-mastra-code/sdk';
 import type { SendAgentSignalResult } from '@mastra/core/agent';
-import type { AgentController } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 import { formatSkillActivation } from '@mastra/core/workspace';
 import type { Workspace } from '@mastra/core/workspace';
