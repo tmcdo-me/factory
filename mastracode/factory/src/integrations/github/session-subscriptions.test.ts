@@ -1,5 +1,7 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import type { GithubIntegration } from './integration.js';
 
 const mocks = vi.hoisted(() => ({
@@ -99,7 +101,7 @@ const githubStub = {
 } as unknown as GithubIntegration;
 
 import {
-  createGithubSubscriptionTools,
+  createGithubSubscriptionTools as createGithubSubscriptionToolsDefs,
   parseCreatedPullRequest,
   refreshGithubToken,
   subscribeCurrentSessionToPullRequest,
@@ -107,6 +109,10 @@ import {
   upsertFactoryTriageComment,
 } from './session-subscriptions.js';
 import { registerGithubPatKind, registerGithubRefreshTarget, registerGithubTokenInjector } from './token-refresh.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createGithubSubscriptionTools = (...args: Parameters<typeof createGithubSubscriptionToolsDefs>) =>
+  mastraSessionTools(createGithubSubscriptionToolsDefs(...args), mastraCodeToolContext(args[0]));
 
 function authenticatedRequestContext(
   state: { factoryProjectId?: string; projectRepositoryId?: string } = {
@@ -356,6 +362,19 @@ describe('GitHub subscription entry points', () => {
     expect(mocks.subscribe).not.toHaveBeenCalled();
   });
 
+  // fork(claude-agent): a turn whose controller names no session has nothing to subscribe.
+  it('rejects the explicit tool path when the turn names no session', async () => {
+    await expect(
+      subscribeCurrentSessionToPullRequest(
+        authenticatedRequestContext(undefined, 'thread-1', ''),
+        123,
+        'explicit-tool',
+        githubStub,
+      ),
+    ).rejects.toThrow('GitHub subscriptions require an authenticated repository session with an active thread.');
+    expect(mocks.subscribe).not.toHaveBeenCalled();
+  });
+
   it('subscribes the exact session after verifying the active-project PR', async () => {
     const requestContext = authenticatedRequestContext();
 
@@ -384,7 +403,9 @@ describe('GitHub subscription entry points', () => {
         'explicit-tool',
         githubStub,
       ),
-    ).rejects.toThrow('Pull request https://github.com/other/repo/pull/123 is not in a repository linked to this Factory.');
+    ).rejects.toThrow(
+      'Pull request https://github.com/other/repo/pull/123 is not in a repository linked to this Factory.',
+    );
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(

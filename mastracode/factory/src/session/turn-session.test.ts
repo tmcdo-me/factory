@@ -27,11 +27,12 @@ describe('turnSession', () => {
     expect(session!.state()).toEqual({});
   });
 
-  it('has no session without a controller, a session id, or a request context', () => {
+  it('has no session without a controller or a request context, and empty ids where the controller names none', () => {
     expect(turnSession(undefined)).toBeUndefined();
     expect(turnSession(new RequestContext())).toBeUndefined();
     const context = new RequestContext();
-    context.set('controller', { resourceId: 'r', threadId: 't' });
-    expect(turnSession(context)).toBeUndefined();
+    context.set('controller', { threadId: 't' });
+    expect(turnSession(context)).toMatchObject({ sessionId: '', resourceId: '', threadId: 't' });
+    expect(turnSession(context)!.state()).toEqual({});
   });
 });

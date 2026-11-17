@@ -9,6 +9,7 @@ import type { RequestContext } from '@mastra/core/request-context';
  * `controller` are listed under slice 7 in the spec.
  */
 export interface TurnSession<State extends Record<string, unknown> = Record<string, unknown>> {
+  /** Empty when the controller names none (each id is); callers that need one check it. */
   sessionId: string;
   resourceId: string;
   threadId: string;
@@ -16,6 +17,8 @@ export interface TurnSession<State extends Record<string, unknown> = Record<stri
   state(): Partial<State>;
   /** The workspace the session's controller holds, when it has one. */
   workspace?: unknown;
+  /** The runtime's session record: its id and owner, when the controller carries one. */
+  session?: { id: string; ownerId: string };
 }
 
 interface ControllerEntry {
@@ -23,25 +26,34 @@ interface ControllerEntry {
   resourceId?: unknown;
   threadId?: unknown;
   workspace?: unknown;
+  session?: { id?: unknown; ownerId?: unknown };
   getState?: () => unknown;
 }
 
-/** The turn's session, or `undefined` when the request context carries none (or no usable ids). */
+/** The turn's session, or `undefined` when the request context carries no controller entry. */
 export function turnSession<State extends Record<string, unknown> = Record<string, unknown>>(
   requestContext: RequestContext | undefined,
 ): TurnSession<State> | undefined {
   if (typeof requestContext?.get !== 'function') return undefined;
   const controller = requestContext.get('controller') as ControllerEntry | undefined;
-  const { sessionId, resourceId, threadId } = controller ?? {};
-  if (typeof sessionId !== 'string' || !sessionId) return undefined;
+  if (!controller || typeof controller !== 'object') return undefined;
+  const { sessionId, resourceId, threadId } = controller;
   return {
-    sessionId,
+    sessionId: typeof sessionId === 'string' ? sessionId : '',
     resourceId: typeof resourceId === 'string' ? resourceId : '',
     threadId: typeof threadId === 'string' ? threadId : '',
     state: () => {
-      const state = controller?.getState?.();
+      const state = controller.getState?.();
       return (state && typeof state === 'object' ? state : {}) as Partial<State>;
     },
-    ...(controller?.workspace !== undefined ? { workspace: controller.workspace } : {}),
+    ...(controller.workspace !== undefined ? { workspace: controller.workspace } : {}),
+    ...(typeof controller.session?.id === 'string'
+      ? {
+          session: {
+            id: controller.session.id,
+            ownerId: typeof controller.session.ownerId === 'string' ? controller.session.ownerId : '',
+          },
+        }
+      : {}),
   };
 }

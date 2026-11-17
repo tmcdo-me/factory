@@ -45,6 +45,7 @@ import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import type { VoiceSettingsStorage } from '../storage/domains/voice-settings/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
+import type { FactorySessionTools } from '../tools/toolset.js'; // fork(claude-agent)
 import type { CardSource } from './kept-cards.js';
 
 /** A push to a repository linked to a project, as a version-control integration reports it. */
@@ -252,12 +253,12 @@ export interface FactoryIntegration {
    * Optional capability; the factory merges results into the SDK's async
    * `extraTools` provider.
    */
-  agentTools?(args: { requestContext: RequestContext }): Promise<IntegrationTools>;
+  agentTools?(args: { requestContext: RequestContext }): Promise<FactorySessionTools>; // fork(claude-agent)
   /**
    * Session-scoped tools (e.g. GitHub's PR subscribe/unsubscribe). Optional
    * capability, resolved synchronously per request.
    */
-  sessionTools?(args: { requestContext: RequestContext }): IntegrationTools;
+  sessionTools?(args: { requestContext: RequestContext }): FactorySessionTools; // fork(claude-agent)
   /**
    * Processors the integration adds to every session run. Input processors
    * run before Factory's own state processors and output processors before

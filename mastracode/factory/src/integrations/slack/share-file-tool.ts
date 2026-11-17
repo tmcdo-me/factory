@@ -1,11 +1,11 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef, SessionWorkspace } from '@factory/agent-runtime'; // fork(claude-agent)
 import { CHAT_CHANNEL_RENDER_CONTEXT_KEY } from '@mastra/core/channels';
 import type { AgentChannels, ChatChannelRenderContext } from '@mastra/core/channels';
 import type { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
-import type { IntegrationTools } from '../base.js';
+import { turnSession } from '../../session/turn-session.js'; // fork(claude-agent)
 
 /** Slack rejects larger uploads well before this; keep the sandbox read bounded too. */
 export const SHARE_FILE_MAX_BYTES = 50 * 1024 * 1024;
@@ -54,8 +54,7 @@ export async function resolveRenderContext(
 ): Promise<ChatChannelRenderContext | undefined> {
   const stashed = requestContext.get(CHAT_CHANNEL_RENDER_CONTEXT_KEY) as ChatChannelRenderContext | undefined;
   if (stashed) return stashed;
-  const controller = requestContext.get('controller') as AgentControllerRequestContext | undefined;
-  const threadId = controller?.threadId;
+  const threadId = turnSession(requestContext)?.threadId; // fork(claude-agent)
   if (!threadId) return undefined;
   return (await deps.channels?.()?.buildRenderContextForThread(threadId)) ?? undefined;
 }
@@ -81,8 +80,7 @@ export async function slackThreadOf(
 ): Promise<{ threadId?: string } | null> {
   const channel = requestContext.get('channel') as { platform?: string; threadId?: string } | undefined;
   if (channel) return channel.platform === 'slack' ? { threadId: channel.threadId } : null;
-  const controller = requestContext.get('controller') as AgentControllerRequestContext | undefined;
-  const threadId = controller?.threadId;
+  const threadId = turnSession(requestContext)?.threadId; // fork(claude-agent)
   if (!threadId) return null;
   const linked = await deps.channels?.()?.buildChannelContextForThread(threadId);
   return linked?.channel.platform === 'slack' ? { threadId: linked.render.chatThread.id } : null;
@@ -106,19 +104,23 @@ export async function postTarget(
  * `isSlackThread`); the file is read through the session's workspace
  * filesystem so sandbox confinement still applies.
  */
-export function createShareFileTool(requestContext: RequestContext, deps: ShareFileToolDeps = {}): IntegrationTools {
+export function createShareFileTool(
+  requestContext: RequestContext,
+  deps: ShareFileToolDeps = {},
+): Record<string, FactoryToolDef> {
   return {
-    attach_file: createTool({
-      id: 'attach_file',
+    attach_file: defineFactoryTool({
+      name: 'attach_file',
       description:
         'Upload a file from the workspace into this chat thread as an attachment. This is the only way the person you are talking to can receive a file you produced (a report, PDF, export, screenshot, image); they cannot open workspace paths. Call it whenever you have a file to hand over, then describe it briefly in your reply. The attachment posts on its own.',
-      inputSchema: z.object({
+      input: z.object({
         path: z.string().min(1).describe('Absolute path of the file inside the workspace'),
       }),
       execute: async ({ path }, context) => {
-        const controller = requestContext.get('controller') as AgentControllerRequestContext | undefined;
-        const workspace = controller?.workspace ?? context?.workspace;
-        const fs = workspace?.filesystem;
+        // fork(claude-agent): the controller's workspace, else the call's session workspace.
+        const controllerWorkspace = turnSession(requestContext)?.workspace as
+          Pick<SessionWorkspace, 'filesystem'> | undefined;
+        const fs = controllerWorkspace?.filesystem ?? context.workspace?.filesystem;
         if (!fs) throw new Error('No workspace filesystem is attached to this session.');
         const stat = await fs.stat(path);
         if (stat.type === 'directory') throw new Error(`${path} is a directory; attach a single file.`);

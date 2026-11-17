@@ -254,6 +254,20 @@ describe('Claude Agent workspace', () => {
     expect(workspace.sessionWorkspace).toMatchObject({ kind: 'local', checkoutDir: join(root, 'row-1', 'repo') });
   });
 
+  // fork(claude-agent): slice 4, Factory's tools read files (attach_file) through it.
+  it("hands Factory's tools the workspace's filesystem with the session workspace", async () => {
+    const { sandbox, finishClone } = startingSandbox();
+    await finishClone();
+    const filesystem = { stat: async () => ({}) };
+    const resolve = createClaudeAgentWorkspaceResolver({
+      resolveWorkspace: async () => ({ sandbox, filesystem }) as never,
+      getMastra: () => undefined,
+    });
+    const workspace = await resolve('agent-session-1', undefined);
+    expect(workspace.sessionWorkspace?.filesystem).toBe(filesystem);
+    expect((await resolverFor(sandbox)('agent-session-1', undefined)).sessionWorkspace?.filesystem).toBeUndefined();
+  });
+
   it('waits for a start still cloning before handing out the checkout', async () => {
     const { sandbox, entry, finishClone } = startingSandbox();
     let resolved = false;

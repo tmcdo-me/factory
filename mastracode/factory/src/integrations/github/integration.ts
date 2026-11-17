@@ -48,7 +48,8 @@ import type {
   VersionControl,
 } from '../../capabilities/version-control.js';
 import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
-import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
+import type { FactorySessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
+import type { FactoryIntegration, IntegrationContext } from '../base.js';
 import {
   GithubActivePullRequestPollWorker,
   GithubEventBusy,
@@ -1649,7 +1650,8 @@ export class GithubIntegration implements FactoryIntegration {
     return { action: 'created', commentId: String(data.id), url: data.html_url };
   }
 
-  sessionTools({ requestContext }: { requestContext: RequestContext }): IntegrationTools {
+  sessionTools({ requestContext }: { requestContext: RequestContext }): FactorySessionTools {
+    // fork(claude-agent)
     return createGithubSubscriptionTools(requestContext, this);
   }
 

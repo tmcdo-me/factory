@@ -2,9 +2,19 @@ import { CHAT_CHANNEL_RENDER_CONTEXT_KEY } from '@mastra/core/channels';
 import { RequestContext } from '@mastra/core/request-context';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import { markNewChannelSession } from './channel-session-link-processor.js';
-import { createReplyTool, FactoryReplyStreamProcessor, partialStringField, REPLY_TOOL_NAME } from './reply-tool.js';
+import {
+  createReplyTool as createReplyToolDefs,
+  FactoryReplyStreamProcessor,
+  partialStringField,
+  REPLY_TOOL_NAME,
+} from './reply-tool.js';
 import type { ShareFileToolDeps } from './share-file-tool.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createReplyTool = (...args: Parameters<typeof createReplyToolDefs>) =>
+  mastraSessionTools(createReplyToolDefs(...args), mastraCodeToolContext(args[0]));
 
 type ReplyTool = {
   inputSchema: { safeParse: (input: unknown) => { success: boolean } };

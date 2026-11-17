@@ -9,6 +9,7 @@ import { createSlackAdapter } from '@mastra/slack';
 import type { Chat } from 'chat';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import { SlackIntegration } from './integration.js';
 import type { SlackToolSettings } from './tool-settings.js';
 
@@ -146,7 +147,8 @@ async function slackSession(settings?: Partial<SlackToolSettings>) {
 
   const requestContext = new RequestContext();
   requestContext.set('controller', { threadId: 'thread-1', sessionId: 'session-1', resourceId: 'resource-1' });
-  const tools = await slack.agentTools({ requestContext });
+  // fork(claude-agent): as Mastra Code's agent gets them (slice 4).
+  const tools = mastraSessionTools(await slack.agentTools({ requestContext }), mastraCodeToolContext(requestContext));
   calls = [];
   const tool = (name: string) => tools[name] as unknown as Tool | undefined;
   const run = (name: string, input: Record<string, unknown>) => tool(name)!.execute(input, {});
@@ -190,14 +192,18 @@ describe('Slack tools on a Factory session, by default', () => {
     expect(sent('chat.postMessage').map(m => m.channel)).toEqual(['C1', 'C1']);
   });
 
-  it("refuses any other channel, even one the app is in, without asking Slack", async () => {
+  it('refuses any other channel, even one the app is in, without asking Slack', async () => {
     const { run } = await slackSession();
 
-    await expect(run('fetchChannelMessages', { channelId: 'slack:C2', limit: 5, direction: 'backward' })).rejects.toThrow(
-      'outside the channels this session can use: slack:C1',
+    await expect(
+      run('fetchChannelMessages', { channelId: 'slack:C2', limit: 5, direction: 'backward' }),
+    ).rejects.toThrow('outside the channels this session can use: slack:C1');
+    await expect(run('fetchThread', { threadId: 'slack:C2:1700000200.000200' })).rejects.toThrow(
+      'outside the channels',
     );
-    await expect(run('fetchThread', { threadId: 'slack:C2:1700000200.000200' })).rejects.toThrow('outside the channels');
-    await expect(run('postChannelMessage', { channelId: 'slack:C2', message: 'Hi' })).rejects.toThrow('outside the channels');
+    await expect(run('postChannelMessage', { channelId: 'slack:C2', message: 'Hi' })).rejects.toThrow(
+      'outside the channels',
+    );
     const search = await run('searchMessages', { query: 'deploy', channelIds: ['slack:C2'] });
     expect(search.matches).toEqual([]);
     expect(search.errors).toEqual([{ channelId: 'slack:C2', error: expect.stringContaining('outside the channels') }]);
@@ -214,7 +220,9 @@ describe('Slack tools on a Factory session, by default', () => {
     );
     expect(read.messages).toHaveLength(1);
     await expect(
-      duringSlackEvent(chat, () => run('fetchChannelMessages', { channelId: 'slack:C2', limit: 5, direction: 'backward' })),
+      duringSlackEvent(chat, () =>
+        run('fetchChannelMessages', { channelId: 'slack:C2', limit: 5, direction: 'backward' }),
+      ),
     ).rejects.toThrow('outside the channels this session can use');
   });
 
@@ -237,9 +245,9 @@ describe('Slack tools on a Factory session, with access granted', () => {
     await run('postChannelMessage', { channelId: 'slack:C2', message: 'On it.' });
     expect(sent('chat.postMessage')).toEqual([expect.objectContaining({ channel: 'C2', text: 'On it.' })]);
 
-    await expect(run('fetchChannelMessages', { channelId: 'slack:C4', limit: 5, direction: 'backward' })).rejects.toThrow(
-      'outside the channels this session can use: slack:C1, slack:C2',
-    );
+    await expect(
+      run('fetchChannelMessages', { channelId: 'slack:C4', limit: 5, direction: 'backward' }),
+    ).rejects.toThrow('outside the channels this session can use: slack:C1, slack:C2');
   });
 
   it('reads other channels but posts only in its own channel when access is read only', async () => {
@@ -272,7 +280,9 @@ describe('Slack tools on a Factory session, with access granted', () => {
   });
 
   it('rejects a channel grant that is not a Slack channel id when the integration is set up', () => {
-    expect(() => new SlackIntegration({ signingSecret: 'secret', tools: { channels: 'selected', channelIds: ['#eng'] } })).toThrow();
+    expect(
+      () => new SlackIntegration({ signingSecret: 'secret', tools: { channels: 'selected', channelIds: ['#eng'] } }),
+    ).toThrow();
   });
 });
 
@@ -376,7 +386,9 @@ describe('Slack tools on a Factory session, with every channel and DMs granted',
       workspace.users = users;
     }
 
-    expect(await run('findUser', { name: 'Sam' })).toEqual({ users: [{ id: 'USAM', name: 'Sam Lee', displayName: 'sam' }] });
+    expect(await run('findUser', { name: 'Sam' })).toEqual({
+      users: [{ id: 'USAM', name: 'Sam Lee', displayName: 'sam' }],
+    });
   });
 
   it('searches messages for every word, ignoring case, in the channels asked for', async () => {
@@ -391,7 +403,12 @@ describe('Slack tools on a Factory session, with every channel and DMs granted',
         userId: 'USAM',
         text: 'The staging deploy is failing on migrations',
       },
-      { channelId: 'slack:C2', ts: '1700000050.000050', userId: 'UALEX', text: 'Older: the STAGING deploy needs a rerun' },
+      {
+        channelId: 'slack:C2',
+        ts: '1700000050.000050',
+        userId: 'UALEX',
+        text: 'Older: the STAGING deploy needs a rerun',
+      },
     ]);
     expect(result.scanned).toBe(4);
   });
@@ -399,9 +416,9 @@ describe('Slack tools on a Factory session, with every channel and DMs granted',
   it("searches the session's own channel by default and reads only the newest `scan` messages", async () => {
     const { run } = await slackSession(wide);
 
-    expect((await run('searchMessages', { query: 'deploy' })).matches.map((m: { channelId: string }) => m.channelId)).toEqual(
-      ['slack:C1'],
-    );
+    expect(
+      (await run('searchMessages', { query: 'deploy' })).matches.map((m: { channelId: string }) => m.channelId),
+    ).toEqual(['slack:C1']);
 
     calls = [];
     const shallow = await run('searchMessages', { query: 'staging', channelIds: ['slack:C2'], scan: 2 });

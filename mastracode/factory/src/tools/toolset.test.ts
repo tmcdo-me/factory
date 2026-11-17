@@ -68,6 +68,13 @@ describe("a Mastra Code call's session workspace", () => {
     expect(none.workspace).toBeUndefined();
   });
 
+  it('is built from a filesystem alone, with no sandbox', () => {
+    const filesystem = { stat: async () => ({}) };
+    expect(mastraSessionWorkspace({ filesystem })).toMatchObject({ kind: 'remote', filesystem });
+    expect(mastraSessionWorkspace({ filesystem })?.sandbox).toBeUndefined();
+    expect(mastraSessionWorkspace({})).toBeUndefined();
+  });
+
   it("is `remote` for a provider that launches no processes, and can't spawn there", () => {
     const workspace = mastraSessionWorkspace({ sandbox: { provider: 'platform' } });
     expect(workspace?.kind).toBe('remote');

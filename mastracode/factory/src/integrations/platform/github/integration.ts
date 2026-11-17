@@ -48,7 +48,8 @@ import type {
   SourceControlInstallation,
   SourceControlStorageHandle,
 } from '../../../storage/domains/source-control/base.js';
-import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../../base.js';
+import type { FactorySessionTools } from '../../../tools/toolset.js'; // fork(claude-agent)
+import type { FactoryIntegration, IntegrationContext } from '../../base.js';
 import { GithubAppIdentity } from '../../github/app-identity.js';
 import type { GithubEventRules, GithubRuleOverrides } from '../../github/default-rules.js';
 import { resolveGithubRules } from '../../github/default-rules.js';
@@ -1162,7 +1163,8 @@ export class PlatformGithubIntegration implements FactoryIntegration {
     return { action: 'created', commentId: String(comment.id), url: comment.htmlUrl };
   }
 
-  sessionTools({ requestContext }: { requestContext: RequestContext }): IntegrationTools {
+  sessionTools({ requestContext }: { requestContext: RequestContext }): FactorySessionTools {
+    // fork(claude-agent)
     return createGithubSubscriptionTools(requestContext, this as unknown as GithubIntegration);
   }
 
