@@ -1038,6 +1038,7 @@ export class ClaudeAgentSessions {
             ...(record.callId ? { toolCallId: record.callId } : {}),
             interactionId: record.id,
             toolName: interactionToolName(record.request),
+            request: record.request,
           })),
         answer: async (sessionId, target, { answer, answeredBy }, requestContext) => {
           // Looked up first, as an approval is: a stale answer never starts Claude Code.

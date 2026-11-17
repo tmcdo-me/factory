@@ -400,6 +400,21 @@ describe('factory_inspect_work_item', () => {
   });
 });
 
+/** fork(claude-agent): the session rows the attention list checks visibility against: shared, unless named private. */
+function sessionRows(privateTo: Record<string, string> = {}): NonNullable<FactoryReadToolDependencies['sessions']> {
+  return {
+    getSourceControlBySessionId: async () => null,
+    getBySessionId: async sessionId =>
+      ({
+        sessionId,
+        orgId: 'org-1',
+        factoryProjectId: 'project-1',
+        userId: privateTo[sessionId] ?? 'someone-else',
+        visibility: privateTo[sessionId] ? 'private' : 'org',
+      }) as never,
+  };
+}
+
 const TRIAGED = { triage: { sessionId: 's', threadId: 't', branch: 'factory/item', startedBy: 'factory' } };
 
 describe('factory_list_attention', () => {
@@ -516,6 +531,7 @@ describe('factory_list_attention', () => {
     });
     const { deps, run } = setup({ items: [item({ id: 'x' })] });
     deps.liveSessions = () => liveSessions;
+    deps.sessions = sessionRows();
     type Waiting = { waiting: Array<{ sessionId: string; toolName: string; label: string; waitingSince: string }> };
 
     await expect(run<Waiting>('factory_list_attention', {})).resolves.toMatchObject({ waiting: [] });
@@ -549,6 +565,7 @@ describe('factory_list_attention', () => {
     );
     const { deps, run } = setup({ items: [item({ id: 'x' })] });
     deps.liveSessions = () => liveSessions;
+    deps.sessions = sessionRows();
     void broker.request(
       'session-asking',
       { kind: 'question', question: 'Which database?', options: [{ label: 'Postgres' }], selection: 'single' },
@@ -584,6 +601,29 @@ describe('factory_list_attention', () => {
         planPath: 'plan.md',
       },
     ]);
+  });
+
+  // fork(claude-agent): what another person's private session asks is theirs alone.
+  it("never lists another person's private session waiting on them, but lists the caller's own", async () => {
+    const pending = new PendingInteractions({
+      store: new InMemoryInteractionStore(),
+      projectOf: async () => ({ orgId: 'org-1', factoryProjectId: 'project-1' }),
+    });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    const liveSessions = alsoParked(
+      new LiveSessions({ onSessionCreated: () => () => {}, onSessionDeleted: () => () => {} }),
+      pending,
+    );
+    const { deps, run } = setup({ items: [item({ id: 'x' })] });
+    deps.liveSessions = () => liveSessions;
+    deps.sessions = sessionRows({ 'session-theirs': 'user-2', 'session-mine': 'user-1' });
+    void broker.request('session-theirs', { kind: 'question', question: 'Their secret?' }, { callId: 'toolu_a' });
+    void broker.request('session-mine', { kind: 'question', question: 'Mine?' }, { callId: 'toolu_b' });
+    await vi.waitFor(() => expect(liveSessions.parkedIn('project-1')).toHaveLength(2));
+
+    const result = await run<{ waiting: Array<{ sessionId: string }> }>('factory_list_attention', {});
+    expect(result.waiting.map(entry => entry.sessionId)).toEqual(['session-mine']);
+    expect(JSON.stringify(result)).not.toContain('Their secret?');
   });
 
   it('flags truncation when incidents are cut by the limit', async () => {

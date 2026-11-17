@@ -34,8 +34,13 @@ import type {
   SourceControlStorageHandle,
 } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
-import { answerParkedCall, answerParkedQuestion, questionAnswerSchema } from '../tools/approval-tools.js';
 import type { AnsweredQuestion } from '../tools/approval-tools.js'; // fork(claude-agent)
+import {
+  answerParkedCall,
+  answerParkedQuestion,
+  QUESTION_ANSWERERS, // fork(claude-agent)
+  questionAnswerSchema,
+} from '../tools/approval-tools.js';
 import type { FactoryRuntimeDelivery } from '../tools/deliver.js'; // fork(claude-agent)
 import { loose } from './route.js';
 import type { RouteAuth } from './route.js';
@@ -136,6 +141,8 @@ async function parkedAnswerer(
   c: Context,
   options: SourceControlSessionRoutesOptions,
   tenant: { orgId: string; userId: string },
+  /** `question`: an answer in words, which a follower may not give (the owner's rule). */
+  answering: 'decision' | 'question' = 'decision',
 ): Promise<
   | { response: Response }
   | {
@@ -157,7 +164,11 @@ async function parkedAnswerer(
           sessionId: session.sessionId,
         })
       : null;
-  if (permission !== 'allowed' && !(await followsCard(options, binding?.workItemId, tenant))) {
+  if (answering === 'question') {
+    if (permission !== 'allowed' && !(await filedCard(options, binding?.workItemId, tenant))) {
+      return { response: c.json({ error: QUESTION_ANSWERERS }, 403) };
+    }
+  } else if (permission !== 'allowed' && !(await followsCard(options, binding?.workItemId, tenant))) {
     return {
       response: c.json(
         { error: "Only the session's owner, an organization admin, or someone following its card can answer." },
@@ -168,6 +179,16 @@ async function parkedAnswerer(
   const controller = options.controller;
   if (!controller) return { response: c.json({ error: 'Sessions are not available on this server.' }, 503) };
   return { session, binding, controller };
+}
+
+/** fork(claude-agent): whether the viewer filed the card. */
+async function filedCard(
+  options: SourceControlSessionRoutesOptions,
+  workItemId: string | undefined,
+  tenant: { orgId: string; userId: string },
+): Promise<boolean> {
+  if (!workItemId || !options.workItems?.get) return false;
+  return (await options.workItems.get({ orgId: tenant.orgId, id: workItemId }))?.createdBy === tenant.userId;
 }
 
 /** Whether the viewer asked for the card's work: they filed it, or a session of theirs follows it. */
@@ -744,10 +765,15 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
             400,
           );
         }
-        const allowed = await parkedAnswerer(c, options, resolved.tenant);
+        const allowed = await parkedAnswerer(c, options, resolved.tenant, 'question');
         if ('response' in allowed) return allowed.response;
         const { session, binding, controller } = allowed;
         const runtime = options.runtimeSessions;
+        // Told to a Mastra Code session when someone other than its owner answers.
+        const answeredByName =
+          session.userId === resolved.tenant.userId
+            ? undefined
+            : (await options.users?.getUser(resolved.tenant.userId).catch(() => null))?.name;
         let answered: AnsweredQuestion;
         try {
           answered = await answerParkedQuestion(
@@ -758,6 +784,7 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
               ...(body.data.interactionId ? { interactionId: body.data.interactionId } : {}),
               answer: body.data.answer,
               answeredBy: resolved.tenant.userId,
+              ...(answeredByName ? { answeredByName } : {}),
             },
           );
         } catch (error) {

@@ -1511,7 +1511,12 @@ describe('ClaudeAgentSessions questions answered from outside the session', () =
     await vi.waitFor(async () => expect(await store.listPending({ sessionId: 's1' })).toHaveLength(1));
     const runs = sessions.runtimeSessions();
     expect(await runs.questions!.waiting('s1')).toEqual([
-      { toolCallId: 'toolu_ask', interactionId: expect.any(String), toolName: 'ask_user' },
+      {
+        toolCallId: 'toolu_ask',
+        interactionId: expect.any(String),
+        toolName: 'ask_user',
+        request: expect.objectContaining({ kind: 'question' }),
+      },
     ]);
     // A question is not a yes or no: the approval path doesn't list it.
     expect(await runs.approvals!.waiting('s1')).toEqual([]);
@@ -1790,7 +1795,13 @@ describe('ClaudeAgentSessions: a turn that ends asking the person in plain text'
     const parked = await runs.awaitReply!('s1', { question: 'Staging or production?' }, owner());
     const [pending] = await broker.listPending({ sessionId: 's1' });
     // No tool call asked it: only its interaction names it.
-    expect(await runs.questions!.waiting('s1')).toEqual([{ interactionId: pending!.id, toolName: 'ask_user' }]);
+    expect(await runs.questions!.waiting('s1')).toEqual([
+      {
+        interactionId: pending!.id,
+        toolName: 'ask_user',
+        request: { kind: 'question', question: 'Staging or production?' },
+      },
+    ]);
 
     const getSession = vi.fn(async () => null);
     await expect(

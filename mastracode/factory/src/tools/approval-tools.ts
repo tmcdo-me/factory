@@ -1,3 +1,4 @@
+import type { InteractionRequest } from '@factory/agent-runtime';
 import type { SuspensionAddress } from '@mastra/core/agent-controller';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -5,7 +6,7 @@ import { z } from 'zod';
 
 import type { IntegrationTools } from '../integrations/base.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
-import { pausedToolInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
+import { checkedAnswer, pausedCalls, pausedToolInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import type { FactoryMessaging } from './messaging-tools.js';
@@ -15,7 +16,9 @@ import type { FactoryToolScope } from './scope.js';
 
 export interface FactoryApprovalToolDependencies {
   sessions: Pick<SourceControlSessionLookup, 'getBySessionId'>;
-  workItems: Pick<WorkItemsStorage, 'findActiveRunBindingForSession' | 'listSessionSubscriptions'>;
+  workItems: Pick<WorkItemsStorage, 'findActiveRunBindingForSession' | 'listSessionSubscriptions'> &
+    // fork(claude-agent): who filed a card, who may answer its session's question.
+    Partial<Pick<WorkItemsStorage, 'getForProject'>>;
   auditRecorder: AuditRecorder;
   messaging: () => Promise<FactoryMessaging | null>;
 }
@@ -194,10 +197,13 @@ function ownerContext(session: { userId: string; orgId: string }): RequestContex
 const NOTHING_ASKED = 'This session is not waiting on a question. Open it to see what it needs.';
 
 /** fork(claude-agent): the questions (`ask_user`) a live Mastra Code session waits on. */
-function waitingQuestions(live: ApprovalGateSession): Array<{ toolCallId: string; toolName: string }> {
-  return [...live.displayState.get().pendingSuspensions.values()]
-    .filter(suspension => pausedToolInteraction(suspension)?.request.kind === 'question')
-    .map(({ toolCallId, toolName }) => ({ toolCallId, toolName }));
+function waitingQuestions(live: ApprovalGateSession): AnsweredQuestion[] {
+  return pausedCalls(live.displayState.get().pendingSuspensions).flatMap(call => {
+    const interaction = pausedToolInteraction(call);
+    return interaction?.request.kind === 'question'
+      ? [{ toolCallId: call.toolCallId, toolName: call.toolName, request: interaction.request }]
+      : [];
+  });
 }
 
 /** fork(claude-agent): a question a session waits on, named by its tool call and/or interaction id. */
@@ -205,6 +211,8 @@ export interface AnsweredQuestion {
   toolCallId?: string;
   interactionId?: string;
   toolName: string;
+  /** What it asks (the answer is checked against it). */
+  request?: InteractionRequest;
 }
 
 /** fork(claude-agent): the one question an answer is for: the one named, else the session's only one. */
@@ -242,6 +250,8 @@ export async function answerParkedQuestion(
     answer: string | string[];
     /** Who answered, recorded with the answer. */
     answeredBy?: string;
+    /** Their name, told to a Mastra Code session when they aren't its owner. */
+    answeredByName?: string;
   },
 ): Promise<AnsweredQuestion> {
   const { session, answer } = input;
@@ -255,24 +265,46 @@ export async function answerParkedQuestion(
   const questions = messaging.runtime?.questions;
   if (questions && (await messaging.runtime!.runs(session.sessionId))) {
     const question = theWaitingQuestion(await questions.waiting(session.sessionId), target);
+    const checked = question.request ? checkedAnswer(question.request, answer) : answer;
     const answered = await questions.answer(
       session.sessionId,
       {
         ...(question.toolCallId ? { toolCallId: question.toolCallId } : {}),
         ...(question.interactionId ? { interactionId: question.interactionId } : {}),
       },
-      { answer, ...(input.answeredBy ? { answeredBy: input.answeredBy } : {}) },
+      // The broker records who answered; the transcript shows it.
+      { answer: checked, ...(input.answeredBy ? { answeredBy: input.answeredBy } : {}) },
       requestContext,
     );
     if (answered === 'not_pending') throw new Error(ALREADY_ANSWERED);
-    return question;
+    return idsOf(question);
   }
   const live = (await messaging.controller.getSession(session.sessionId)) as ApprovalGateSession | null;
   const question = theWaitingQuestion(live ? waitingQuestions(live) : [], target);
+  const checked = question.request ? checkedAnswer(question.request, answer) : answer;
   const call = { toolCallId: question.toolCallId!, toolName: question.toolName };
-  await resumePausedCall(live!, call, answer, requestContext);
+  // Mastra Code keeps no record of who answered: someone other than the owner says so in the answer.
+  const resumeData =
+    input.answeredBy && input.answeredBy !== session.userId
+      ? `Answered by ${input.answeredByName ?? input.answeredBy}: ${Array.isArray(checked) ? checked.join(', ') : checked}`
+      : checked;
+  await resumePausedCall(live!, call, resumeData, requestContext);
   return call;
 }
+
+/** A question's ids and tool, without what it asks. */
+function idsOf({ toolCallId, interactionId, toolName }: AnsweredQuestion): AnsweredQuestion {
+  return { ...(toolCallId ? { toolCallId } : {}), ...(interactionId ? { interactionId } : {}), toolName };
+}
+
+/**
+ * fork(claude-agent): the owner's rule for a typed answer: only the session's owner, an org admin
+ * or the person who filed its card may answer its question. A follower may still approve or
+ * decline its plans and gated calls (upstream's rule), not answer for the owner in words.
+ * (Tool callers have no admin check: an admin answers on the web.)
+ */
+export const QUESTION_ANSWERERS =
+  "Only the session's owner, an organization admin, or the person who filed its card can answer its question; a follower can approve or decline its plans and tool calls.";
 
 /**
  * The session a caller's turn may answer: one in this Factory it can see, that reports to the
@@ -285,6 +317,10 @@ async function answerableSession(
   what: string,
 ) {
   requirePerson(scope, what);
+  // fork(claude-agent): a session never answers what it is waiting on itself.
+  if (sessionId === scope.sessionId) {
+    throw new Error('This is the session that is waiting: the person answers it here, not through a tool.');
+  }
   const row = await deps.sessions.getBySessionId(sessionId);
   if (!row || row.orgId !== scope.orgId || row.factoryProjectId !== scope.factoryProjectId) {
     throw new Error(`Session ${sessionId} was not found in this Factory.`);
@@ -386,6 +422,7 @@ export function createFactoryApprovalTools(
       'a `blocked` notice for a session parked on ask_user names the toolCallId.',
       'Give the answer as text, or as the labels of the options picked (several only when the question allows several).',
       'The answer is recorded as yours; the run carries on as the owner of the session that asked.',
+      "Only the asking session's owner or the person who filed its card may answer it (a follower may only approve or decline plans and tool calls).",
       'Answer only what the person in this conversation told you to answer.',
     ].join(' '),
     inputSchema: z
@@ -413,6 +450,12 @@ export function createFactoryApprovalTools(
       }),
     execute: async ({ sessionId, toolCallId, interactionId, answer: reply }) => {
       const { row, binding } = await answerableSession(scope, deps, sessionId, 'answer a question');
+      // The owner's rule for answering in words (see QUESTION_ANSWERERS).
+      const filed =
+        binding !== null &&
+        (await deps.workItems.getForProject?.(scope.orgId, scope.factoryProjectId, binding.workItemId))?.createdBy ===
+          scope.userId;
+      if (row.userId !== scope.userId && !filed) throw new Error(QUESTION_ANSWERERS);
 
       const answered = await answerParkedQuestion(deps, {
         session: row,
@@ -420,6 +463,7 @@ export function createFactoryApprovalTools(
         ...(interactionId ? { interactionId } : {}),
         answer: reply,
         answeredBy: scope.userId,
+        ...(scope.actorProfile?.name ? { answeredByName: scope.actorProfile.name } : {}),
       });
 
       deps.auditRecorder.record({

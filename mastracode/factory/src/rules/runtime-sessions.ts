@@ -1,5 +1,5 @@
 // fork(claude-agent): how the dispatcher reaches sessions that run on an agent runtime other than Mastra Code.
-import type { RunEndReason } from '@factory/agent-runtime';
+import type { InteractionRequest, RunEndReason } from '@factory/agent-runtime';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import type { AgentMessageDelivery, AgentMessageStore } from '../storage/domains/agent-messages/base.js';
@@ -162,6 +162,8 @@ export interface WaitingQuestion {
   toolCallId?: string;
   interactionId?: string;
   toolName: string;
+  /** What it asks, so an answer can be checked against its options. */
+  request?: InteractionRequest;
 }
 
 /** A session's calls that wait on a person's yes or no, and how each is answered. */

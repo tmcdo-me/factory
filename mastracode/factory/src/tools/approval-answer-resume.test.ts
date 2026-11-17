@@ -33,7 +33,7 @@ import { resolveFactoryCredentialTenant } from '../session/credential-policy.js'
 import { LiveSessions } from '../session/live-sessions.js';
 import { factoryPrincipalId } from '../storage/domains/projects/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { createFactoryApprovalTools } from './approval-tools.js';
+import { QUESTION_ANSWERERS, createFactoryApprovalTools } from './approval-tools.js';
 import { createFactoryReadTools } from './read-tools.js';
 import { createSessionApprovalNotifier, createSessionRunEndReporter } from './reports.js';
 import { observeSessionRunReports } from './run-watch.js';
@@ -129,6 +129,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       parkedOn?: keyof typeof PARKED;
       /** The person moved the card from their own session, rather than filing it. */
       movedFromOwnSession?: boolean;
+      /** fork(claude-agent): who filed the card (its owner unless said). */
+      filedBy?: string;
     }) {
       const parkedOn = options?.parkedOn ?? 'plan';
       const parked = PARKED[parkedOn];
@@ -244,7 +246,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       });
       const { item } = await seeded.workItems.prepareRunStart({
         orgId: ORG,
-        userId: owner,
+        userId: options?.filedBy ?? owner,
         factoryProjectId: project.id,
         workItem: {
           input: {
@@ -435,6 +437,10 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
             audit: { list: async () => ({ events: [] }) } as never,
             boards: createBoardRegistry(),
             liveSessions: () => liveSessions,
+            sessions: {
+              getSourceControlBySessionId: async () => sourceControl,
+              getBySessionId: sessionId => sourceControl.sessions.getBySessionId(sessionId),
+            },
           }).factory_list_attention as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
         ).execute({}, {})) as { waiting: Array<Record<string, unknown>> };
       /** The inbox the web app lists, signed in as `viewer`. */
@@ -685,6 +691,16 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
 
     // fork(claude-agent): a question is answered from outside the session too, with an answer
     // rather than a yes or no, by the same people, and the run carries on as the session's owner.
+    it('refuses an answer that does not fit the question, leaving it waiting', async () => {
+      const { answerQuestionOnWeb, waitingOn } = await parkedPhaseSession({ parkedOn: 'question' });
+
+      const response = await answerQuestionOnWeb(OWNER, ['main', 'release/1.x']);
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'This question takes one choice.' });
+      expect(waitingOn()).toBe('ask_user');
+    });
+
     it('lists the question with its options and the call that asked, in the inbox and factory_list_attention', async () => {
       const { attention, inbox, phase, item } = await parkedPhaseSession({ parkedOn: 'question' });
       const asked = {
@@ -714,12 +730,17 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       ]);
     });
 
+    // The owner's rule: an answer in words comes from the session's owner, an org admin, or the
+    // person who filed the card. Here the Factory owns the phase session and the requester filed it.
     it.each(['tool', 'web'] as const)(
-      'lets the person who asked answer the question from outside the session, and the run carries on with it as its owner (%s)',
+      'lets the person who filed the card answer the question from outside the session, and the run carries on with it as its owner (%s)',
       async surface => {
-        const { answerQuestion, answerQuestionOnWeb, errors, audit, waitingOn, inbox } = await parkedPhaseSession({
-          parkedOn: 'question',
-        });
+        const { answerQuestion, answerQuestionOnWeb, errors, audit, waitingOn, inbox, owner } =
+          await parkedPhaseSession({
+            parkedOn: 'question',
+            ownedByFactory: true,
+            filedBy: REQUESTER,
+          });
         const requestsBefore = mock.getRequests().length;
         resolved = [];
 
@@ -732,14 +753,33 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         }
 
         await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
-        expect(JSON.stringify(mock.getRequests().at(-1))).toContain('User answered: release/1.x');
+        // Not the owner: the session is told who answered.
+        const answerer = surface === 'web' ? `Person ${REQUESTER}` : REQUESTER;
+        expect(JSON.stringify(mock.getRequests().at(-1))).toContain(
+          `User answered: Answered by ${answerer}: release/1.x`,
+        );
         expect(errors).toEqual([]);
         expect(waitingOn()).toBeUndefined();
-        expect([...new Set(resolved.map(tenant => tenant?.userId))]).toEqual([OWNER]);
+        expect([...new Set(resolved.map(tenant => `${tenant?.userId} ${tenant?.credentialScope}`))]).toEqual([
+          `${owner} factory`,
+        ]);
         expect(audit).toEqual([expect.objectContaining({ actorId: REQUESTER, action: 'factory.run.answered' })]);
         expect((await inbox(REQUESTER)).items).toEqual([]);
       },
     );
+
+    it("refuses an answer in words from a follower who didn't file the card, while they may still approve its plans", async () => {
+      const { answerQuestionOnWeb, answerQuestion, waitingOn, audit } = await parkedPhaseSession({
+        parkedOn: 'question',
+      });
+
+      const response = await answerQuestionOnWeb(REQUESTER, 'main');
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: QUESTION_ANSWERERS });
+      await expect(answerQuestion('main')).rejects.toThrow(QUESTION_ANSWERERS);
+      expect(waitingOn()).toBe('ask_user');
+      expect(audit).toEqual([]);
+    });
 
     it('refuses a question answer from a teammate who neither owns the session nor follows its card', async () => {
       const { answerQuestionOnWeb, waitingOn, audit } = await parkedPhaseSession({ parkedOn: 'question' });
@@ -754,8 +794,9 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
     it('answers a question once when two people answer it at the same moment', async () => {
       const { answerQuestionOnWeb, audit, waitingOn } = await parkedPhaseSession({ parkedOn: 'question' });
 
+      // The session's owner, from two tabs.
       const responses = await Promise.all([
-        answerQuestionOnWeb(REQUESTER, 'main'),
+        answerQuestionOnWeb(OWNER, 'main'),
         answerQuestionOnWeb(OWNER, 'release/1.x'),
       ]);
 
@@ -767,7 +808,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
     it('refuses to take a plan as a question, leaving it waiting for a yes or no', async () => {
       const { answerQuestionOnWeb, waitingOn } = await parkedPhaseSession();
 
-      const response = await answerQuestionOnWeb(REQUESTER, 'Yes');
+      const response = await answerQuestionOnWeb(OWNER, 'Yes');
 
       expect(response.status).toBe(409);
       expect(await response.json()).toEqual({

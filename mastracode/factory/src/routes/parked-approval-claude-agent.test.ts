@@ -11,7 +11,11 @@ const SESSION = 'claude-session-1';
 
 async function setup(
   runs: boolean,
-  { viewer = 'user-1', follows = false }: { viewer?: string; follows?: boolean } = {},
+  {
+    viewer = 'user-1',
+    follows = false,
+    filedBy = 'user-1',
+  }: { viewer?: string; follows?: boolean; filedBy?: string } = {},
 ) {
   const seed = await createFactoryStorageForTests();
   const sourceControl = seed.sourceControl.forIntegration('github');
@@ -62,7 +66,7 @@ async function setup(
     clearSessionReferences: async () => 0,
     hasRunBindingForSession: async () => true,
     findActiveRunBindingForSession: async () => ({ workItemId: 'item-1' }) as never,
-    get: async () => ({ id: 'item-1', createdBy: 'user-1' }) as never,
+    get: async () => ({ id: 'item-1', createdBy: filedBy }) as never,
     listWorkItemSubscribers: async () => (follows ? [{ sessionId: 'follower-session' }] : []) as never,
   };
   const getSession = vi.fn(async () => null);
@@ -168,10 +172,10 @@ describe('answering a Claude Agent session from its card', () => {
 });
 
 describe("answering a Claude Agent session's question from outside it", () => {
-  it("answers through its runtime as the session's owner, recorded as the follower's, and audits it", async () => {
+  it("answers through its runtime as the session's owner, recorded as the card filer's, and audits it", async () => {
     const { postQuestion, answerQuestion, answer, getSession, audit } = await setup(true, {
       viewer: 'user-2',
-      follows: true,
+      filedBy: 'user-2',
     });
 
     const response = await postQuestion({ answer: ['Postgres', 'SQLite'] });
@@ -196,6 +200,14 @@ describe("answering a Claude Agent session's question from outside it", () => {
     expect(audit.record).toHaveBeenCalledWith(
       expect.objectContaining({ action: 'factory.run.answered', actorId: 'user-2' }),
     );
+  });
+
+  it("refuses a follower who didn't file the card: they may approve its plan, not answer for its owner", async () => {
+    const follower = await setup(true, { viewer: 'user-2', follows: true });
+    const response = await follower.postQuestion({ answer: 'Postgres' });
+    expect(response.status).toBe(403);
+    expect(follower.answerQuestion).not.toHaveBeenCalled();
+    expect((await follower.post({ decision: 'approve' })).status).toBe(200);
   });
 
   it('refuses someone who neither owns the session nor follows its card, and an empty answer', async () => {

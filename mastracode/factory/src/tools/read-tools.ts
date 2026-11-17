@@ -59,9 +59,36 @@ export interface FactoryReadToolDependencies {
   /** The live controller, for whether a session is mid-run and when it last moved; absent before the mount is up. */
   messaging?: () => Promise<Pick<FactoryMessaging, 'controller'> | null>;
   /** Finds the caller session's source-control provider, to tell which cards can't pick a repository. */
-  sessions?: Pick<SourceControlSessionLookup, 'getSourceControlBySessionId'>;
+  sessions?: Pick<SourceControlSessionLookup, 'getSourceControlBySessionId'> &
+    // fork(claude-agent): a waiting session is listed only when the caller may see it.
+    Partial<Pick<SourceControlSessionLookup, 'getBySessionId'>>;
   /** Which live sessions are parked on a tool prompt; absent before the mount is up. */
   liveSessions?: () => Pick<LiveSessions, 'parked' | 'parkedIn'> | undefined;
+}
+
+/**
+ * fork(claude-agent): the entries whose session the caller may see: one in this Factory that is
+ * shared or the caller's own (as the audit tool decides). Fails closed when a row can't be read.
+ */
+async function visibleSessions<Entry extends { sessionId: string }>(
+  scope: FactoryToolScope,
+  deps: Pick<FactoryReadToolDependencies, 'sessions'>,
+  entries: Entry[],
+): Promise<Entry[]> {
+  const lookup = deps.sessions?.getBySessionId;
+  if (!lookup || entries.length === 0) return [];
+  const visible = await Promise.all(
+    entries.map(async ({ sessionId }) => {
+      const row = await lookup(sessionId).catch(() => null);
+      return (
+        row !== null &&
+        row.orgId === scope.orgId &&
+        row.factoryProjectId === scope.factoryProjectId &&
+        (row.visibility !== 'private' || row.userId === scope.userId)
+      );
+    }),
+  );
+  return entries.filter((_, index) => visible[index]);
 }
 
 /** fork(claude-agent): what a waiting run asks, and how to answer it from here. */
@@ -447,9 +474,10 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
           items.filter(item => !item.externalSource && !isTerminalWorkItem(boards, item)),
         );
         const needsRepository = unplaced.items;
-        const waiting = (deps.liveSessions?.()?.parkedIn(scope.factoryProjectId) ?? []).sort(
-          (a, b) => a.run.suspendedAt - b.run.suspendedAt,
-        );
+        // fork(claude-agent): another person's private session is never listed, nor what it asks.
+        const waiting = (
+          await visibleSessions(scope, deps, deps.liveSessions?.()?.parkedIn(scope.factoryProjectId) ?? [])
+        ).sort((a, b) => a.run.suspendedAt - b.run.suspendedAt);
         return {
           incidents: incidents.map(group => ({
             failureCode: group.failureCode,

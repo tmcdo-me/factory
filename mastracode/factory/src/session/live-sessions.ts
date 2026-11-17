@@ -133,7 +133,8 @@ export class LiveSessions {
       const { toolName } = suspension;
       const suspendedAt = tracked.suspendedAt.get(toolCallId) ?? tracked.seenAt;
       if (!oldest || suspendedAt < oldest.suspendedAt) {
-        // fork(claude-agent): entries are keyed by run address; the call's own id is on the entry.
+        // fork(claude-agent): entries are keyed by run address; the call's own id is on the entry
+        // (else the key, as `pausedCalls` names it for the answer).
         const interaction = pausedToolInteraction({ ...suspension, toolCallId: suspension.toolCallId ?? toolCallId });
         oldest = { toolName, suspendedAt, ...(interaction ? { interaction } : {}) };
       }

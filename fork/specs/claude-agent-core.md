@@ -430,10 +430,17 @@ Each slice: implement → focused tests → manual check where noted → commit.
      it asks (`session/parked-interaction.ts`: the tool call or broker interaction, the question
      and its options, or the plan) into `factory_list_attention` (with `answerWith`, the tool that
      answers it) and the inbox's `agent-waiting` items; `factory_answer_question` and
-     `POST /web/user-sessions/:id/parked-question` take the answer, with the same authorization as
-     a plan (the session's owner, an org admin, the card's filer or a follower; for the tool, its
-     origin or a follower), the run carrying on as the session's owner and the answer audited as
-     `factory.run.answered`. A Mastra Code `ask_user` resumes through the controller's claimed
+     `POST /web/user-sessions/:id/parked-question` take the answer. **Owner's rule:** an answer in
+     words comes only from the session's owner, an org admin (web), or the person who filed its
+     card; a follower keeps upstream's approve/decline for plans and gated calls but can't answer a
+     question for the owner (the tool also needs the calling session to be the origin or a follower,
+     and never the waiting session itself, for questions and approvals alike). The answer is checked
+     against the question (one value for free text or a single choice; distinct values, at most one
+     of the person's own, for a multiple choice, as the in-session "Other…" allows). The run carries
+     on as the session's owner and the answer is audited as `factory.run.answered`; a Mastra Code
+     session answered by someone else is told so (`Answered by <name>: …`), a Claude Agent one
+     records it on the interaction. `factory_list_attention` never lists another person's private
+     session, and the inbox caps a plan at 64 KB and a gated call's arguments at 4 KB. A Mastra Code `ask_user` resumes through the controller's claimed
      suspension; a Claude Agent question (an `ask_user` call, or a question a board run's turn
      ended on in plain text, named by its interaction id) resolves through the broker. The UI's
      Waiting page (`/factories/:id/waiting`, sidebar count) lists every card session waiting on a

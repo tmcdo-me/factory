@@ -90,3 +90,46 @@ export function brokerInteraction(record: InteractionRecord): ParkedInteraction 
 export function answeringTool(interaction: ParkedInteraction): 'factory_answer_question' | 'factory_answer_approval' {
   return interaction.request.kind === 'question' ? 'factory_answer_question' : 'factory_answer_approval';
 }
+
+/**
+ * A Mastra Code session's paused calls, each named by its own tool call id, else by the key the
+ * display state holds it under (legacy entries), so every reader names a call the same way.
+ */
+export function pausedCalls(
+  pendingSuspensions: ReadonlyMap<string, Omit<PausedToolCall, 'toolCallId'> & { toolCallId?: string }>,
+): PausedToolCall[] {
+  return [...pendingSuspensions].map(([key, suspension]) => ({
+    ...suspension,
+    toolCallId: suspension.toolCallId ?? key,
+  }));
+}
+
+/**
+ * The answer a question takes from outside its session, checked against what it asks: one value
+ * for a question with no options or a single choice, one or more distinct values for a multiple
+ * choice. As in the session, where every question with options also offers "Other…", a value
+ * needn't be one of the labels; a multiple choice takes at most one value of the person's own.
+ * Throws a message for the person when the answer doesn't fit.
+ */
+export function checkedAnswer(request: InteractionRequest, answer: string | string[]): string | string[] {
+  if (request.kind !== 'question') throw new Error('This call waits for a yes or no, not an answer.');
+  const values = (Array.isArray(answer) ? answer : [answer]).map(value => value.trim()).filter(Boolean);
+  if (values.length === 0) throw new Error('Give an answer.');
+  const options = request.options ?? [];
+  if (options.length === 0 || request.selection !== 'multiple') {
+    if (values.length > 1) {
+      throw new Error(
+        options.length === 0 ? 'This question takes one answer in words.' : 'This question takes one choice.',
+      );
+    }
+    return values[0]!;
+  }
+  if (new Set(values).size !== values.length) throw new Error('Pick each option once.');
+  const labels = new Set(options.map(option => option.label));
+  if (values.filter(value => !labels.has(value)).length > 1) {
+    throw new Error(
+      `Pick from the options (${options.map(option => option.label).join(', ')}), with at most one answer of your own.`,
+    );
+  }
+  return values;
+}
