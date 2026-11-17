@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import { createContext } from 'react';
 
 import type { EffectiveThinkingLevel, ThinkingDefault } from '../services/thinkingLevels';

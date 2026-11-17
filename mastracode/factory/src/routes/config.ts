@@ -1,3 +1,4 @@
+import type { ThinkingLevelSetting } from '@factory/agent-runtime';
 import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
 import { MastraCodeGateway } from '@mastra/code-sdk/agents/mastracode-gateway';
 import { isClaudeSubscriptionCredential } from '@mastra/code-sdk/auth/claude-subscription-policy';
@@ -10,7 +11,6 @@ import type { CustomProviderSetting } from '@mastra/code-sdk/onboarding/settings
 import { AMAZON_BEDROCK_GATEWAY_ID } from '@mastra/code-sdk/providers/amazon-bedrock-gateway';
 import { GOOGLE_VERTEX_GATEWAY_ID } from '@mastra/code-sdk/providers/google-vertex-gateway';
 import { MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
 import { getModelReasoningOptions, MastraGateway } from '@mastra/core/llm';
 import type { ModelReasoningOption } from '@mastra/core/llm';
 import { RequestContext } from '@mastra/core/request-context';

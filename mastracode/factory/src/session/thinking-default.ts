@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import { DEFAULT_THINKING_LEVEL } from '../default-thinking-level.js';
