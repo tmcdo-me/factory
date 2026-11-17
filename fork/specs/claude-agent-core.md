@@ -865,6 +865,17 @@ Each slice: implement → focused tests → manual check where noted → commit.
      controller's own end (sandbox retirement, session deletion, the GitHub routes) still sees the
      capture pending. The thread is the one the session last reported (deleteSession clears it before
      the end is stored, #24893). Test: a reader waits through the gap. Still on controller events: `rules/watch-run.ts`.
+   - **Owner decisions (slice 7 planning):** (1) board rules read the Factory transcript: Mastra Code's
+     tool results are ingested from the event log (reconcile reads it instead of Mastra memory), with a
+     cut-over at the memory cursor's time so old results are never re-evaluated, and a `thread` marker on
+     `run.started` so a session's events can be told apart per bound thread. Live ingestion for Mastra Code
+     stays on the synchronous `processInputStep` hook (the phase-exit stamp and the pull request hand-off must
+     land before the agent reads the result; a hub listener is told after the append, too late), keyed by the
+     call id like Claude Agent's so both paths share one rule ingress id (a legacy message-id ingress that
+     already ran is checked and skipped). (2) `rules/watch-run.ts` stays private to the Mastra Code adapter
+     (it needs the structured error, observational-memory failures and an `agent_end`-synchronous
+     `supersededAtEnd`, none of which the hub carries); the adapter moves into `runtime-mastra-code` at the end
+     of slice 7, where it may import the controller.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
