@@ -1,4 +1,5 @@
 // fork(claude-agent): what sessions wait on a person for, read as parked runs, for both runtimes.
+import { InMemoryInteractionStore } from '@factory/agent-runtime';
 import type { InteractionRecord, InteractionRequest, InteractionStore } from '@factory/agent-runtime';
 
 import type { FactoryRunOutcome } from '../tools/reports.js';
@@ -18,6 +19,11 @@ export interface PendingInteractionsOptions {
   projectOf(sessionId: string): Promise<{ orgId: string; factoryProjectId?: string | null } | null | undefined>;
   /** Told whenever a session in a project starts or stops waiting on a person: boards and the inbox re-read. */
   onChanged?(sessionId: string, project: SessionProject): void;
+  /**
+   * Whether the session has a run in flight here. A gated call holds its run open; one whose run is
+   * gone (a restart: the approval persisted, answerable) is a parked run like any other wait.
+   */
+  isRunning?(sessionId: string): boolean;
   /** Told when a session asks a person something, as it asks (not for the ones loaded at start). */
   onRequested?(record: InteractionRecord, project: SessionProject): void;
 }
@@ -32,12 +38,8 @@ export function interactionToolName(request: InteractionRequest): string {
 /** Whether the interaction is one a runtime holds itself (Mastra Code's controller). */
 const heldByRuntime = (record: InteractionRecord) => record.heldBy !== undefined;
 
-/**
- * Whether a session waiting on this counts as a parked run. A gated call holds its run open until
- * someone allows it: its followers are told at once (an `approval` notice) and it is answered with
- * `factory_answer_approval`, but as before the session is not parked on it.
- */
-const parksTheRun = (record: InteractionRecord) => !(record.request.kind === 'tool_approval' && record.request.gate);
+/** Whether the record is a call waiting at its approval gate. */
+const isGate = (record: InteractionRecord) => record.request.kind === 'tool_approval' && record.request.gate === true;
 
 /** Whether a yes or no is all the request needs (`factory_answer_approval` can give it). */
 export function answersWithDecision(request: InteractionRequest): boolean {
@@ -123,25 +125,76 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     const at = Date.parse(record.requestedAt);
     this.#lastStamp = Math.max(Number.isFinite(at) ? at : Date.now(), this.#lastStamp + 1);
     record.requestedAt = new Date(this.#lastStamp).toISOString();
-    await this.#options.store.create(record);
+    try {
+      await this.#options.store.create(record);
+    } catch (error) {
+      // A call its runtime holds waits there whether or not it was stored: list it from memory.
+      if (!record.heldBy) throw error;
+      console.warn(`[factory] Unable to store ${record.id}; it is listed from memory until it settles.`, error);
+    }
     if (record.status === 'pending') this.#add(record, true);
   }
 
-  get(id: string): Promise<InteractionRecord | undefined> {
-    return this.#options.store.get(id);
+  async get(id: string): Promise<InteractionRecord | undefined> {
+    try {
+      return (await this.#options.store.get(id)) ?? this.#indexed(id);
+    } catch (error) {
+      const indexed = this.#indexed(id);
+      if (indexed) return indexed;
+      throw error;
+    }
+  }
+
+  #indexed(id: string): InteractionRecord | undefined {
+    for (const waiting of this.#waiting.values()) {
+      const found = waiting.get(id);
+      if (found) return found.record;
+    }
+    return undefined;
   }
 
   async settle(
     id: string,
     settlement: Parameters<InteractionStore['settle']>[1],
   ): Promise<InteractionRecord | undefined> {
-    const record = await this.#options.store.settle(id, settlement);
+    let record: InteractionRecord | undefined;
+    try {
+      record = await this.#options.store.settle(id, settlement);
+    } catch (error) {
+      // A held call settled by its runtime stops being listed, whether or not the write landed.
+      const indexed = this.#indexed(id);
+      if (indexed?.heldBy) this.#remove(indexed);
+      throw error;
+    }
+    // One that was only ever in memory (its write failed) settles there.
+    record ??= this.#settleIndexed(id, settlement);
     if (record) this.#remove(record);
     return record;
   }
 
-  listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]> {
-    return this.#options.store.listPending(filter);
+  #settleIndexed(id: string, settlement: Parameters<InteractionStore['settle']>[1]): InteractionRecord | undefined {
+    const indexed = this.#indexed(id);
+    if (!indexed?.heldBy || indexed.status !== 'pending') return undefined;
+    return settlement.status === 'resolved'
+      ? {
+          ...indexed,
+          status: 'resolved',
+          response: settlement.response,
+          resolvedBy: settlement.resolvedBy,
+          settledAt: settlement.settledAt,
+        }
+      : { ...indexed, status: 'cancelled', cancelReason: settlement.cancelReason, settledAt: settlement.settledAt };
+  }
+
+  async listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]> {
+    try {
+      return await this.#options.store.listPending(filter);
+    } catch (error) {
+      console.warn('[factory] Unable to list pending interactions; listing them from memory.', error);
+      return [...this.#waiting.entries()]
+        .filter(([sessionId]) => !filter?.sessionId || sessionId === filter.sessionId)
+        .flatMap(([, waiting]) => [...waiting.values()].map(entry => entry.record));
+    }
   }
 
   /**
@@ -186,12 +239,23 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
       .map(waiting => waiting.record);
   }
 
+  /**
+   * Whether a session waiting on this counts as a parked run. A gated call holds its run open until
+   * someone allows it: its followers are told at once (an `approval` notice) and it is answered with
+   * `factory_answer_approval`, but while its run is in flight the session is not parked on it. Run
+   * state is read as it is now: a synchronous `isParked` reader can lag a run that just ended by one
+   * round trip, until the next change re-reads it.
+   */
+  #parksTheRun(record: InteractionRecord): boolean {
+    return !(isGate(record) && (this.#options.isRunning?.(record.sessionId) ?? true));
+  }
+
   /** What the session has waited on longest, or nothing. */
   parked(sessionId: string): ParkedRun | undefined {
     let oldest: Waiting | undefined;
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
       if (waiting.hidden) continue;
-      if (!parksTheRun(waiting.record)) continue;
+      if (!this.#parksTheRun(waiting.record)) continue;
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }
     if (!oldest) return undefined;
@@ -260,6 +324,49 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     } catch (error) {
       console.warn('[factory] A pending-interaction listener failed.', error);
     }
+  }
+}
+
+/**
+ * The broker's store: `primary` once it is ready, else (its domain failed to start) one in memory,
+ * said once, so waiting calls are still recorded and listed for as long as the process runs.
+ */
+export class FallbackInteractionStore implements InteractionStore {
+  readonly #active: Promise<InteractionStore>;
+
+  constructor(
+    primary: InteractionStore & { ensureReady(): Promise<void> },
+    fallback: InteractionStore = new InMemoryInteractionStore(),
+  ) {
+    this.#active = primary.ensureReady().then(
+      () => primary,
+      error => {
+        console.warn(
+          "[factory] The agent-interactions storage domain isn't ready: what sessions wait on is kept in memory and lost on restart.",
+          error,
+        );
+        return fallback;
+      },
+    );
+  }
+
+  async create(record: InteractionRecord): Promise<void> {
+    return (await this.#active).create(record);
+  }
+
+  async get(id: string): Promise<InteractionRecord | undefined> {
+    return (await this.#active).get(id);
+  }
+
+  async settle(
+    id: string,
+    settlement: Parameters<InteractionStore['settle']>[1],
+  ): Promise<InteractionRecord | undefined> {
+    return (await this.#active).settle(id, settlement);
+  }
+
+  async listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]> {
+    return (await this.#active).listPending(filter);
   }
 }
 

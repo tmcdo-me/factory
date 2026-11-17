@@ -471,7 +471,7 @@ Each slice: implement → focused tests → manual check where noted → commit.
      missed is adopted. After a restart, held records whose session no longer waits on their call (asked
      of its controller and storage, without claiming) are settled, at most 100, one at a time. A
      Claude Agent record never writes `held_by`. Rollback: `UPDATE factory_agent_interactions SET status =
-     'cancelled' WHERE held_by IS NOT NULL AND status = 'pending'`. 5a–5c ship together (5a's gate
+'cancelled' WHERE held_by IS NOT NULL AND status = 'pending'`. 5a–5c ship together (5a's gate
      records carry `gate: true` only from 5b).
    - **5b** ✅ Readers on the broker. Whether a session is parked, on what and since when is read
      from the broker's index (`PendingInteractions`) for both runtimes: `LiveSessions` no longer reads
@@ -485,6 +485,10 @@ Each slice: implement → focused tests → manual check where noted → commit.
      outside. A Mastra Code call is still named by its tool call (no `interactionId`), and a question
      a tool other than `ask_user` asks is listed as `ask_user` (the record keeps what it asks, not the
      tool's name).
+     After review: a gate whose run is no longer in flight (a restart: its approval persisted and can
+     be answered) counts as parked. If the `agent-interactions` domain can't start, the broker keeps
+     its records in memory (`FallbackInteractionStore`, said once at start), and a Mastra Code call
+     whose write fails is still listed from memory and stops being listed when it settles.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's

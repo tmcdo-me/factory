@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveSession } from './live-sessions.js';
 import { LiveSessions } from './live-sessions.js';
 import {
+  FallbackInteractionStore,
   PendingInteractions,
   alsoParked,
   answersWithDecision,
@@ -144,6 +145,81 @@ describe('PendingInteractions', () => {
   });
 
   // Slice 5b: a Mastra Code session's waiting calls are broker records its controller holds.
+  // After a restart a gate's run is gone, but its approval persisted and can still be answered.
+  it('counts a gated call as a parked run once its run is no longer in flight', async () => {
+    const running = new Set(['s-plan']);
+    const pending = new PendingInteractions({
+      store: new InMemoryInteractionStore(),
+      projectOf: async sessionId => PROJECTS[sessionId] ?? null,
+      isRunning: sessionId => running.has(sessionId),
+    });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    await broker.track({
+      id: 'tool_approval:call-gate',
+      sessionId: 's-plan',
+      callId: 'call-gate',
+      heldBy: 'mastra-code',
+      request: { kind: 'tool_approval', toolName: 'ship_release', input: {}, gate: true },
+      requestedAt: new Date().toISOString(),
+    });
+
+    expect(pending.parked('s-plan')).toBeUndefined();
+    running.delete('s-plan');
+    expect(pending.parked('s-plan')).toMatchObject({ toolName: 'ship_release' });
+  });
+
+  it("lists and settles a Mastra Code session's calls from memory while its store fails", async () => {
+    class FailingStore extends InMemoryInteractionStore {
+      override async create(): Promise<void> {
+        throw new Error('database is locked');
+      }
+      override async settle(): Promise<undefined> {
+        throw new Error('database is locked');
+      }
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = new PendingInteractions({ store: new FailingStore(), projectOf: async () => null });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    const held = await broker.track({
+      id: 'question:call-ask',
+      sessionId: 's-ask',
+      callId: 'call-ask',
+      heldBy: 'mastra-code',
+      request: question,
+      requestedAt: new Date().toISOString(),
+    });
+
+    expect(pending.parked('s-ask')).toMatchObject({ toolName: 'ask_user' });
+    expect(await pending.get(held.id)).toMatchObject({ status: 'pending' });
+    await expect(broker.settleHeld(held.id, { status: 'cancelled', reason: 'aborted' })).rejects.toThrow('locked');
+    expect(pending.parked('s-ask')).toBeUndefined();
+    // A Claude Agent question is not taken in memory: its tool must hear the write failed.
+    await expect(broker.request('s-plan', plan, { callId: 'toolu_plan' })).rejects.toThrow('locked');
+    warn.mockRestore();
+  });
+
+  it('keeps what sessions wait on in memory when the storage domain fails to start', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broken = Object.assign(new InMemoryInteractionStore(), {
+      ensureReady: async () => {
+        throw new Error('migration failed');
+      },
+    });
+    const store = new FallbackInteractionStore(broken);
+    await store.create({
+      id: 'question:call-ask',
+      sessionId: 's-ask',
+      request: question,
+      requestedAt: new Date().toISOString(),
+      status: 'pending',
+    });
+
+    expect(await store.listPending()).toHaveLength(1);
+    expect(await broken.listPending()).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
   it("reports a Mastra Code session's paused call as parked, but not a call waiting at its approval gate", async () => {
     const { pending, broker, requested } = setup();
     const held = (id: string, sessionId: string, request: InteractionRecord['request']) =>
