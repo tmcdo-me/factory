@@ -236,8 +236,10 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
         userId: owner?.workosId ?? '',
         orgId: owner?.organizationId ?? '',
       });
-    const resolved =
-      kickoff.skill === undefined
+    const notification = kickoff.notification;
+    const resolved = notification
+      ? { contents: kickoff.prompt ?? '', skillName: undefined }
+      : kickoff.skill === undefined
         ? await resolvePromptInvocation(this.#controller, { sessionId, prompt: kickoff.prompt ?? '' })
         : kickoff.skill.resume === true
           ? await resolveSkillResumeInvocation(this.#controller, {
@@ -255,10 +257,12 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
     }
     const sendContext = contextFor();
     const deliveryId = kickoff.runId;
-    const landed = () => this.hasRun(sessionId, deliveryId);
+    // A notification kickoff has no signal of its own in the thread: the inbox's dedupe key stands in.
+    const landed = async () => (notification ? false : this.hasRun(sessionId, deliveryId));
+    const label = kickoff.label ?? SKILL_RUN_LABEL;
     const stale = async () => (kickoff.stillWanted ? !(await kickoff.stillWanted()) : false);
     // Safe under the caller's replay guard: it matches the delivery id, never the prompt's content.
-    const contents = withWorkItemDescription(resolved.contents, kickoff.description);
+    const contents = notification ? resolved.contents : withWorkItemDescription(resolved.contents, kickoff.description);
     // A skill kickoff is system-generated, not something the human typed: send it as a typed `skill`
     // signal so the model sees `<skill name="…">` and traces record the skill name.
     const signal =
@@ -289,12 +293,30 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
       timeoutMs: options.timeoutMs,
       autoApprovedTool: kickoff.autoApprovedTool,
       autoApproving: options.autoApproving,
-      approve: options.approver(sessionId, sendContext, SKILL_RUN_LABEL),
+      approve: options.approver(sessionId, sendContext, label),
       onAgentEnd: kickoff.superseded,
-      label: SKILL_RUN_LABEL,
+      label,
       runStillActive: () => this.isThreadRunning(thread.id),
     });
-    const sendKickoff = async () => {
+    const sendKickoff = async (generation = 0) => {
+      if (notification) {
+        return awaitNotification(
+          () =>
+            session.sendNotificationSignal(
+              {
+                source: 'factory',
+                kind: 'run-kickoff',
+                summary: contents,
+                priority: 'high',
+                payload: { message: contents },
+                sourceId: notification.sourceId,
+                dedupeKey: generation === 0 ? notification.dedupeKey : notification.retryDedupeKey(generation),
+              },
+              { ifActive: { behavior: 'deliver' }, ifIdle: { behavior: 'wake' }, requestContext: sendContext },
+            ),
+          true,
+        ) as Promise<{ action?: string }>;
+      }
       const result = session.sendSignal(
         { id: deliveryId, ...signal, contents },
         // Without `requireDelivery` the session resolves `accepted` on the next tick and swallows wake
@@ -314,7 +336,8 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
     };
     try {
       let settled = await sendKickoff();
-      while (settled.action === 'deliver') {
+      let generation = 0;
+      while (settled?.action === 'deliver') {
         // `deliver` means the signal was queued onto a run already in flight. If that run ends before
         // draining its queue the prompt is dropped silently, so confirm the message landed in the
         // thread rather than trusting the ack.
@@ -322,6 +345,8 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
         // Another run can start while the previous one is finishing: follow each run boundary until the
         // kickoff either lands on an active run or wakes a new one.
         if (!(await run.wait())) {
+          // A prepared start's kickoff stays retryable here; a decision's is a terminal code.
+          if (notification) throw new Error('Factory kickoff is waiting on a run that has not ended.');
           throw new FactoryDispatchError(
             'run_terminal_event_missing',
             'Factory skill invocation is waiting on a run whose terminal event was not observed.',
@@ -332,7 +357,8 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
         if (await landed()) break;
         if (await stale()) throw new FactoryDecisionSuperseded();
         run.arm();
-        settled = await sendKickoff();
+        generation += 1;
+        settled = await sendKickoff(generation);
       }
       await kickoff.delivered?.();
     } catch (error) {

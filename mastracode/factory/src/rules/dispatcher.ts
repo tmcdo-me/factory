@@ -3262,76 +3262,37 @@ export class FactoryDecisionDispatcher {
             });
             return;
           }
+          // fork(claude-agent): Mastra Code's adapter sends the kickoff as a `run-kickoff` notification, follows
+          // every run boundary until it wakes the idle session, and watches the run's own verdict, not the
+          // delivery's: a kickoff delivered into a run that is already terminating is consumed without
+          // execution, and completing the pending start on the delivery ack alone would strand the card.
           await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
           const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
-          const requestContext = factoryRequestContext({
+          const kickoffKey = `factory-kickoff:${record.kickoffKey}`;
+          const autoApprovedTool = await this.#autoApprovedExitTool({ ...record, workItemId: binding.workItemId });
+          await this.#runOnSeam({
+            seam: this.#mastraCode,
             session,
             binding,
-            userId: startedBy,
+            startedBy,
             orgId: record.orgId,
-          });
-          // The run's own verdict, not the delivery's: a kickoff delivered
-          // into a run that is already terminating is consumed without
-          // execution, and completing the pending start on the delivery ack
-          // alone strands the card with a success ledger entry.
-          const since = new Date();
-          const run = watchRun(session, {
-            timeoutMs: this.#skillCompletionObservationTimeoutMs,
-            autoApprovedTool: await this.#autoApprovedExitTool({ ...record, workItemId: binding.workItemId }),
-            autoApproving: this.#autoApproving,
-            approve: this.#approver(binding.sessionId, requestContext, 'Factory kickoff run'), // fork(claude-agent)
+            attempts: record.attempts,
             label: 'Factory kickoff run',
-            runStillActive: () => this.#mastraCode.isThreadRunning(binding.threadId),
+            kickoff: {
+              runId: `${kickoffKey}:${record.attempts}`,
+              prompt: record.message,
+              label: 'Factory kickoff run',
+              thread: { id: binding.threadId, resourceId: binding.resourceId },
+              ...(autoApprovedTool ? { autoApprovedTool } : {}),
+              notification: {
+                sourceId: record.id,
+                dedupeKey: kickoffKey,
+                retryDedupeKey: generation => `${kickoffKey}:retry:${record.attempts}:${generation}`,
+              },
+            },
+            approvedBy: startedBy,
+            workItemName: item?.title,
           });
-          const sendKickoff = (dedupeKey: string) =>
-            awaitNotification(
-              () =>
-                session.sendNotificationSignal(
-                  {
-                    source: 'factory',
-                    kind: 'run-kickoff',
-                    summary: record.message!,
-                    priority: 'high',
-                    payload: { message: record.message },
-                    sourceId: record.id,
-                    dedupeKey,
-                  },
-                  { ifActive: { behavior: 'deliver' }, ifIdle: { behavior: 'wake' }, requestContext },
-                ),
-              true,
-            );
-          try {
-            let settled = await sendKickoff(`factory-kickoff:${record.kickoffKey}`);
-            let deliveryGeneration = 0;
-            while (settled?.action === 'deliver') {
-              // `deliver` only proves the signal was queued onto a run already
-              // in flight. If that run ends without draining its queue the
-              // kickoff is dropped silently. Another run can start while the
-              // previous one is finishing, so follow every run boundary until
-              // the kickoff wakes an idle session. The generation-scoped
-              // dedupeKey defeats inbox dedupe and the kickoff key keeps a
-              // duplicate run bounded, while a dropped kickoff strands the card.
-              if (!(await run.wait())) {
-                throw new Error('Factory kickoff is waiting on a run that has not ended.');
-              }
-              run.arm();
-              deliveryGeneration += 1;
-              settled = await sendKickoff(
-                `factory-kickoff:${record.kickoffKey}:retry:${record.attempts}:${deliveryGeneration}`,
-              );
-            }
-            await this.#recordRunStart(
-              session,
-              binding,
-              `factory-kickoff:${record.kickoffKey}:${record.attempts}`,
-              startedBy,
-              run.endReason,
-              item?.title,
-            );
-            await this.#reportingRunEnd({ binding, startedBy, since, attempts: record.attempts }, () => run.settle());
-          } finally {
-            run.close();
-          }
         },
       );
       const completed = await this.#storage.completePendingStart(leaseIdentity(record, this.#ownerId), new Date());

@@ -75,6 +75,14 @@ export interface RuntimeKickoff {
   superseded?: () => Promise<boolean>;
   /** Said once the kickoff reached the session (a goal's reminder, for an adapter that owns the goal). */
   delivered?: () => Promise<void>;
+  /** The run's name in errors (default: the skill run's). */
+  label?: string;
+  /**
+   * fork(claude-agent): a prepared start's kickoff goes to Mastra Code as a `run-kickoff` notification
+   * (the inbox dedupes it on the key) rather than a skill or prompt signal; `prompt` is its text. A
+   * kickoff delivered onto a run that ends without draining it is sent again under `retryDedupeKey`.
+   */
+  notification?: { sourceId: string; dedupeKey: string; retryDedupeKey(generation: number): string };
 }
 
 /**

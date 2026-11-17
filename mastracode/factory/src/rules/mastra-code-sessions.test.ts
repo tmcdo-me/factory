@@ -240,6 +240,87 @@ describe('MastraCodeRuntimeSessions.kickoff', () => {
     expect(live.listeners.size).toBe(0);
   });
 
+  it('a prepared start goes as a run-kickoff notification, sent again under a retry key when it was queued onto a run that ended', async () => {
+    const live = liveSession();
+    const outputs = [{ action: 'deliver' }, { action: 'wake', output: { consumeStream: async () => {} } }];
+    live.sendNotificationSignal.mockImplementation(
+      async () =>
+        ({
+          persisted: Promise.resolve(),
+          accepted: Promise.resolve(outputs.shift()),
+        }) as never,
+    );
+    const notification = {
+      sourceId: 'rec1',
+      dedupeKey: 'factory-kickoff:k',
+      retryDedupeKey: (generation: number) => `factory-kickoff:k:retry:${generation}`,
+    };
+    const pending = kickoffSetup(live).kickoff(
+      's',
+      {
+        runId: 'factory-kickoff:k:1',
+        prompt: 'begin',
+        thread: prompt.thread,
+        notification,
+        label: 'Factory kickoff run',
+      },
+      ctx(),
+    );
+    // The run the first copy was queued onto ends without draining it.
+    await vi.waitFor(() => expect(live.sendNotificationSignal).toHaveBeenCalledTimes(1));
+    live.emit({ type: 'agent_end', reason: 'complete' });
+    const started = await pending;
+    expect(live.sendSignal).not.toHaveBeenCalled();
+    const sent = live.sendNotificationSignal.mock.calls.map(([n]) => n);
+    expect(sent[0]).toMatchObject({
+      source: 'factory',
+      kind: 'run-kickoff',
+      summary: 'begin',
+      sourceId: 'rec1',
+      dedupeKey: 'factory-kickoff:k',
+    });
+    expect(sent[1]).toMatchObject({ dedupeKey: 'factory-kickoff:k:retry:1' });
+    live.emit({ type: 'agent_end', reason: 'complete' });
+    expect(await started.ended).toMatchObject({ reason: 'complete' });
+  });
+
+  describe('a delivery queued onto a run whose end is never seen', () => {
+    const quick = (live: ReturnType<typeof liveSession>) =>
+      new MastraCodeRuntimeSessions(
+        { getSession: vi.fn(async () => live.session as never), listActiveThreadRuns: vi.fn(() => [] as never) },
+        { timeoutMs: 20, autoApproving: new Set(), approver: () => undefined },
+      );
+
+    it('stays a plain, retryable error for a prepared start', async () => {
+      const live = liveSession();
+      live.sendNotificationSignal.mockImplementation(
+        async () => ({ persisted: Promise.resolve(), accepted: Promise.resolve({ action: 'deliver' }) }) as never,
+      );
+      const error = await quick(live)
+        .kickoff(
+          's',
+          {
+            runId: 'factory-kickoff:k:1',
+            prompt: 'begin',
+            thread: prompt.thread,
+            notification: { sourceId: 'rec1', dedupeKey: 'k', retryDedupeKey: g => `k:retry:${g}` },
+          },
+          ctx(),
+        )
+        .catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(Error);
+      expect(error).not.toBeInstanceOf(FactoryDispatchError);
+      expect((error as Error).message).toContain('has not ended');
+    });
+
+    it("is the terminal run_terminal_event_missing for a decision's kickoff", async () => {
+      const live = liveSession('deliver');
+      await expect(quick(live).kickoff('s', prompt, ctx())).rejects.toMatchObject({
+        code: 'run_terminal_event_missing',
+      });
+    });
+  });
+
   it('closing a kickoff that nobody follows drops its watch and settles it, answering nothing more', async () => {
     const live = liveSession();
     const approve = vi.fn(async () => async () => {});

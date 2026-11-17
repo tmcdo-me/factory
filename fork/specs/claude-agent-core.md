@@ -252,8 +252,10 @@ inside a product to _other_ users, which this fork does not do.
 
 - **Context providers** replace Mastra state-signal input processors: work item, phase, environment,
   repo instructions. The seam evaluates them at each turn and hands them to the adapter.
-- **Goals** (`maxRuns` re-kick until the exit tool succeeds) move from Mastra's objective API into a
-  Factory-owned loop over `RuntimeSession` — runtime-neutral.
+- **Goals** (`maxRuns` re-kick until the exit tool succeeds): Claude Agent runs use a Factory-owned
+  loop over `RuntimeSession` (`#holdSeamGoal` / `judgeRuntimeGoal`). Mastra Code keeps its own objective
+  loop (`FactoryRuntimeSessions.ownsGoal`). Owner decision (permanent, not interim): there is no plan to
+  move Mastra's objective API into the Factory loop; the two coexist behind `ownsGoal`.
 - **Models:** `runtime.listModels()`; session model = `{ runtimeId, modelId }` stored on Factory's
   session row. Project default `{runtimeId, modelId}`; per-session override.
 - **Credentials:** adapter-specific. Mastra Code keeps the tenant credential resolver; Claude Agent
@@ -830,6 +832,21 @@ Each slice: implement → focused tests → manual check where noted → commit.
      (the dispatcher's own run watch, which answers paused calls). Tests: `session/observers-on-hub.test.ts`
      runs the real mirror, publisher and hub; `session/controller-event-hub.ts` feeds the older suites'
      fake sessions through the same mapper.
+   - **6k** ✅ Prepared starts (`#dispatchPendingStart`) on Mastra Code go through the same seam path as a
+     skill kickoff (`#runOnSeam` with the Mastra Code adapter and the controller session), so the dispatcher no
+     longer builds a run watch, sends the notification or records the run itself. `RuntimeKickoff.notification`
+     (`{sourceId, dedupeKey, retryDedupeKey}`) makes the adapter send the text as a `run-kickoff` notification
+     (deliver onto a run in flight, wake an idle session, inbox-deduped on the kickoff key) instead of a
+     skill or prompt signal, follow every run boundary and send it again under the retry key until it wakes
+     the session, and `RuntimeKickoff.label` names the run in errors. A wait on a run that never ends still
+     fails as a plain, retryable error for these (a decision's kickoff keeps `run_terminal_event_missing`).
+     Exit-tool auto-approval is unchanged (the old pending-start watch already got `approve` and
+     `autoApprovedTool`). The one new side effect: the adapter moves the session to the binding's thread
+     before sending a prepared start (`MastraCodeRuntimeSessions.kickoff`, as for a skill kickoff). Test:
+     `mastra-code-sessions.test.ts` (notification kickoff and its retry; a delivery queued onto a run whose
+     end is never seen stays a plain retryable error for a prepared start and is `run_terminal_event_missing`
+     for a decision); the dispatcher's pending-start
+     suites run unchanged.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
