@@ -102,6 +102,24 @@ describe('attach_file', () => {
     await expect(tool.execute({ path: '/workspace/report.pdf' }, {})).rejects.toBe(boom);
   });
 
+  // fork(claude-agent): the call's session workspace is the fallback, filesystem-only included (slice 4).
+  it("reads through the call's workspace filesystem when the controller holds none", async () => {
+    const post = vi.fn(async () => ({}));
+    const fs = {
+      stat: vi.fn(async (path: string) => ({ name: 'r.txt', path, type: 'file', size: 2 })),
+      readFile: vi.fn(async () => Buffer.from('hi')),
+    };
+    const requestContext = new RequestContext();
+    requestContext.set('channel', { platform: 'slack', isDM: true });
+    requestContext.set(CHAT_CHANNEL_RENDER_CONTEXT_KEY, { platform: 'slack', chatThread: { post } });
+    requestContext.set('controller', { sessionId: 's1', threadId: 't1' });
+    const tool = (await createShareFileTool(requestContext)).attach_file as AttachFile;
+    await expect(
+      tool.execute({ path: '/workspace/r.txt' }, { requestContext, workspace: { filesystem: fs } }),
+    ).resolves.toMatchObject({ attached: true, bytes: 2 });
+    expect(fs.readFile).toHaveBeenCalledWith('/workspace/r.txt');
+  });
+
   it('fails clearly when the session has no workspace', async () => {
     const post = vi.fn();
     const requestContext = new RequestContext();

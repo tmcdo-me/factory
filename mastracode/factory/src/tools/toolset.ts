@@ -54,25 +54,26 @@ function turnIds(requestContext: RequestContext | undefined): { sessionId: strin
 
 /**
  * The seam's view of a Mastra Code agent's workspace: its sandbox (commands, and processes where the
- * sandbox can launch them) and the session's checkout in it. `undefined` without a sandbox.
+ * sandbox can launch them), the session's checkout in it, and its filesystem. `undefined` when the
+ * agent's workspace has neither a sandbox nor a filesystem.
  */
 export function mastraSessionWorkspace(workspace: unknown): SessionWorkspace | undefined {
   const { sandbox, filesystem } = (workspace ?? {}) as Pick<SessionWorkspace, 'filesystem'> & {
     sandbox?: MastraSandbox;
   };
-  if (!sandbox) return undefined;
-  const processes = sessionSandboxProcesses(sandbox);
+  if (!sandbox && !filesystem) return undefined;
+  const processes = sandbox ? sessionSandboxProcesses(sandbox) : undefined;
   return {
     // A provider that launches no processes (Platform, E2B) runs only commands: `remote`.
     kind: processes?.kind ?? 'remote',
-    checkoutDir: sessionLayout(findSessionSandboxEntry(sandbox))?.root ?? '',
-    sandbox,
+    checkoutDir: (sandbox && sessionLayout(findSessionSandboxEntry(sandbox))?.root) ?? '',
+    ...(sandbox ? { sandbox } : {}),
     ...(filesystem ? { filesystem } : {}),
     env: async () =>
       Object.fromEntries(
-        Object.entries((sandbox as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {}).filter(
-          (entry): entry is [string, string] => typeof entry[1] === 'string',
-        ),
+        Object.entries(
+          (sandbox as { getEnv?(): Record<string, string | undefined> } | undefined)?.getEnv?.() ?? {},
+        ).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
       ),
     spawn: (command, args, options) => {
       if (!processes) throw new Error("This session's sandbox cannot launch processes");

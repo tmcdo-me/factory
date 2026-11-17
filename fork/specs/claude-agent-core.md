@@ -414,13 +414,15 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `github_refresh_token`, `github_upsert_factory_triage_comment`, `github_subscribe_pr`,
      `github_unsubscribe_pr`. Slack: `attach_file` (reads through the controller's workspace
      filesystem, else the call's session workspace's: `SessionWorkspace.filesystem`, which Claude
-     Agent's session workspace now carries), `reply_in_thread` (its streamed post keyed by
+     Agent's session workspace now carries, and which a Mastra Code agent's workspace with a
+     filesystem and no sandbox gives too: `SessionWorkspace.sandbox` is optional for it), `reply_in_thread` (its streamed post keyed by
      `ctx.callId`), and Factory's own `findChannel`, `searchMessages`, `findUser`,
      `sendDirectMessage`. The Chat SDK's Slack tools (`fetchMessages`, `postMessage` and the like,
      from `chat/ai`) are that library's own and stay as they are, reaching Claude Agent through
      `runMastraTool` like a deployment's configured tools. An integration's `agentTools` and
      `sessionTools` return `FactorySessionTools`. Both files read the turn's session through
-     `turnSession`, which no longer needs a session id (empty ids where the controller names none).
+     `turnSession`, which no longer needs a session id (empty ids where the controller names none); a
+     subscription from a turn that names no session is refused.
      Inventory: `integrations/slack/share-file-tool.ts`, `integrations/github/session-subscriptions.ts`
      (its pull request subscriptions themselves went through the runtime in 6c).
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
@@ -597,6 +599,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
+   Still reading the turn's session straight from the request context's `controller` entry rather
+   than through `turnSession` (slice 4 moved the tools, the tool scope and the source-control and
+   GitHub subscription code): `factory.ts`, `workspace.ts`, `rules/binding-context.ts` (4 reads),
+   `rules/processor.ts`, `session/credential-policy.ts`, `session/environment-state-processor.ts`,
+   `session/thinking-default.ts`, `storage/domains/audit/agent-audit.ts`,
+   `storage/domains/audit/domain.ts`, `integrations/slack/integration.ts`,
+   `integrations/slack/channel-session-link-processor.ts`, `integrations/slack/run-error-card.ts`.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

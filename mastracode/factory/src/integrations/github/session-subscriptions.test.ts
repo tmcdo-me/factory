@@ -362,6 +362,19 @@ describe('GitHub subscription entry points', () => {
     expect(mocks.subscribe).not.toHaveBeenCalled();
   });
 
+  // fork(claude-agent): a turn whose controller names no session has nothing to subscribe.
+  it('rejects the explicit tool path when the turn names no session', async () => {
+    await expect(
+      subscribeCurrentSessionToPullRequest(
+        authenticatedRequestContext(undefined, 'thread-1', ''),
+        123,
+        'explicit-tool',
+        githubStub,
+      ),
+    ).rejects.toThrow('GitHub subscriptions require an authenticated repository session with an active thread.');
+    expect(mocks.subscribe).not.toHaveBeenCalled();
+  });
+
   it('subscribes the exact session after verifying the active-project PR', async () => {
     const requestContext = authenticatedRequestContext();
 

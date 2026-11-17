@@ -114,7 +114,7 @@ async function resolveSessionTarget(requestContext: RequestContext, github: Gith
   const orgId = sessionOrgId(requestContext);
   const userId = sessionUserId(requestContext);
   const factoryProjectId = context?.state().factoryProjectId;
-  if (!context || !context.threadId || !factoryProjectId || !orgId || !userId) {
+  if (!context?.sessionId || !context.threadId || !factoryProjectId || !orgId || !userId) {
     throw new Error('GitHub subscriptions require an authenticated repository session with an active thread.');
   }
   const sourceControl = github.sourceControlStorage;
