@@ -47,9 +47,10 @@ export async function computeMastraStateSignal(
   provider: ContextProvider,
   args: ComputeStateSignalArgs,
 ): Promise<ComputeStateSignalResult> {
+  const previous = previousFromSignals(args);
   const request: ContextRequest = {
     requestContext: args.requestContext,
-    ...(previousFromSignals(args) ? { previous: previousFromSignals(args)! } : {}),
+    ...(previous ? { previous } : {}),
   };
   const block = await provider.provide(request);
   return block ? mastraStateSignal(block) : undefined;

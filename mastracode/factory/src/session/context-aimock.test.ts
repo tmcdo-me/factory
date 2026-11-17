@@ -2,7 +2,7 @@
 // environment, `factory-phase` and `factory-work-item`), on a real Mastra Code server driven by a mock
 // model. Pins the model-visible text per turn: the first turn carries each block, a changed card adds
 // an update, an unchanged turn adds nothing.
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -185,6 +185,14 @@ describe('Factory context in a Mastra Code session', () => {
     if (process.env.CONTEXT_GOLDEN) {
       writeFileSync(process.env.CONTEXT_GOLDEN, JSON.stringify({ first, second, third }, null, 2));
     }
+    // The same three turns captured on the code before slice 6i (#74's head, 5575701f91, where the
+    // processors wrote these blocks themselves), through this test with CONTEXT_GOLDEN set. Only ids
+    // (card and work item UUIDs) and ISO timestamps are normalised, in contextBlocks above; every other
+    // byte the model sees is compared as is.
+    const before = JSON.parse(
+      readFileSync(path.join(import.meta.dirname, '__fixtures__/context-before-6i.json'), 'utf8'),
+    );
+    expect({ first, second, third }).toEqual(before);
     expect(first.map(tagOf)).toEqual(['<factory-environment', '<factory-phase', '<factory-work-item']);
     expect(first.join('\n')).toContain('Factory work phase: Planning (planning)');
     expect(first.join('\n')).toContain('/sandbox/hello');
