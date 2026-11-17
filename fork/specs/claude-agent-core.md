@@ -800,6 +800,28 @@ Each slice: implement → focused tests → manual check where noted → commit.
      report), and the phase context's `controller` request-context reads (the session address; the review
      runtime's model and thinking level), which go with the processor's tool-result ingestion (slice 5
      transcript work) and the request-context `controller` entry (slice 7).
+   - **6j** ✅ Observers on the event hub: `SessionEventHub.listen(sessionId, listener)` (live, in order,
+     once stored; a throwing listener is warned about and skipped) lets the Mastra Code run observers hear
+     Factory's events instead of the controller's. `tools/run-watch.ts` (`observeSessionRunReports`,
+     `heartbeatOpenRunUntilEnd`), `session/run-audit.ts` (`observeSessionRunEnd`) and
+     `session/first-exec-capture.ts` take `{sessionId, events}` and no longer import agent-controller.
+     The parked-tool join is deterministic because it needs no second pipeline: `tool.started` (name),
+     `interaction.requested` (call id, `tool_approval` kind = approval) and `run.ended` are one ordered
+     stream (the broker's `track` queue is not consulted). The mirror now keeps what the observers read
+     off the controller events: `run.ended.error` carries the failure text (`toPersistedErrorIdentity(...)
+.reason`, else the message; failed run reports quote it exactly as before), and `usage` carries
+     `totalTokens` and `cacheCreationInputTokens[/5m/1h]` so run audits record the same usage. Ledger
+     reasons stay the dispatcher's own (`suspended` = `awaiting_interaction`). Behaviour differences:
+     observers hear an event once it is stored (a storage append later than the controller's
+     synchronous callback; the audit and heartbeat tolerate either order, as before); the mirror's
+     `agent_end` without an `agent_start` says nothing; a call parked for approval is not kept by the
+     first-exec capture across the run end (as before). Left on controller events, on purpose:
+     `first-message-capture` (the mirror shows a user's typed message and a Mastra "signal" alike as
+     `message.started` role `user`; the TTFI anchor ignores signals) and `filesystem-capture` (its
+     `onBeforeAgentEnd` hook runs before `agent_end` and has no hub equivalent), plus `rules/watch-run.ts`
+     (the dispatcher's own run watch, which answers paused calls). Tests: `session/observers-on-hub.test.ts`
+     runs the real mirror, publisher and hub; `session/controller-event-hub.ts` feeds the older suites'
+     fake sessions through the same mapper.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

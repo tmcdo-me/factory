@@ -29,6 +29,7 @@ import { DecisionAttentionProvider, failedDecisionAttentionSpec } from '../route
 import { prepareFactoryRuleBinding } from '../routes/surface.js';
 import { fakeRouteAuth, mountApiRoutes } from '../routes/test-utils.js';
 import { WorkItemRoutes } from '../routes/work-items.js';
+import { hubOf } from '../session/controller-event-hub.js';
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { PendingInteractions } from '../session/pending-interactions.js'; // fork(claude-agent)
 import { FACTORY_OPEN_RUNS_SETTING, observeSessionRunEnd, waitForSessionRunAudit } from '../session/run-audit.js';
@@ -549,7 +550,7 @@ describe('FactoryDecisionDispatcher', () => {
       });
       await bindWorkRun(storage, item.id);
       const { controller, session, emitAgentEnd } = createSession(undefined, { agentEndReason: reason });
-      observeSessionRunEnd(session, { audit: seed.audit });
+      observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
       const prepareBinding = vi.fn();
       const dispatcher = new FactoryDecisionDispatcher({
         controller: controller as never,
@@ -2850,7 +2851,7 @@ describe('FactoryDecisionDispatcher', () => {
       ],
     });
     controller.listActiveThreadRuns.mockReturnValue([{ runId: 'run-1', threadId: binding.threadId }]);
-    observeSessionRunEnd(session, { audit: seed.audit });
+    observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
     const dispatcher = new FactoryDecisionDispatcher({
       controller: controller as never,
       boards: autoStartingBoards(),
@@ -2915,7 +2916,7 @@ describe('FactoryDecisionDispatcher', () => {
         ],
       });
       controller.listActiveThreadRuns.mockReturnValue([{ runId: 'run-1', threadId: binding.threadId }]);
-      observeSessionRunEnd(session, { audit: seed.audit });
+      observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
       const running = (await storage.get({ orgId: 'org-1', id: item.id }))!;
       await storage.commitRuleEvaluation({
         ...scope,
@@ -3024,7 +3025,7 @@ describe('FactoryDecisionDispatcher', () => {
       // Nothing live in this process's registry: the entry is either an orphan
       // or a run another replica is hosting.
       controller.listActiveThreadRuns.mockReturnValue([]);
-      observeSessionRunEnd(session, { audit: seed.audit });
+      observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
       const dispatcher = new FactoryDecisionDispatcher({
         controller: controller as never,
         boards: autoStartingBoards(),
@@ -3080,7 +3081,7 @@ describe('FactoryDecisionDispatcher', () => {
           streamActive: true,
         });
         controller.listActiveThreadRuns.mockReturnValue([{ runId: 'run-1', threadId: binding.threadId }]);
-        observeSessionRunEnd(session, { audit: seed.audit });
+        observeSessionRunEnd(session, { audit: seed.audit, ...hubOf(session as never) });
         const dispatcher = new FactoryDecisionDispatcher({
           controller: controller as never,
           boards: autoStartingBoards(),
@@ -8520,7 +8521,7 @@ describe('board phase automation', () => {
       }
     };
     observeSessionRunReports(
-      session as never,
+      hubOf(session as never),
       async outcome => {
         if (outcome.status === 'blocked') told.push(outcome.toolName);
       },

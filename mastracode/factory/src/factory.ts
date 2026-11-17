@@ -1511,6 +1511,7 @@ export class MastraFactory {
       ...(this.#projectBoards ? { intakeRoutes: storedBoardsStorage } : {}),
       transitionService,
       auditRecorder: auditDomain,
+      events: agentEventHub,
       sessions: sourceControlSessions,
       sessionModel: {
         projects: factoryProjectsStorage,
@@ -2767,6 +2768,8 @@ export class MastraFactory {
         sourceControl: { sessions: sourceControlSessions },
       });
       observeSessionFirstExec(session, {
+        // fork(claude-agent): slice 6. Heard on the event hub, as are the run audit and reports below.
+        events: agentEventHub,
         sourceControl: { sessions: sourceControlSessions },
       });
       observeSessionThreadTitle(session, {
@@ -2777,13 +2780,13 @@ export class MastraFactory {
             .publish(session.identity.getId(), { type: 'session.renamed', title })
             .catch(error => console.warn('[factory] Unable to log a session rename.', error)),
       });
-      observeSessionRunEnd(session, { audit: auditDomain });
+      observeSessionRunEnd(session, { audit: auditDomain, events: agentEventHub, sessionId: session.identity.getId() });
       // Every run end of a work or side session reaches whoever follows it, however
       // the run started; re-attached when a session is created again.
       // fork(claude-agent): a call it holds for a person (a gate, a plan, a question) is announced
       // from the interaction broker (`announceWaiting`), on the run window kept here.
       observeSessionRunReports(
-        session,
+        { sessionId: session.identity.getId(), events: agentEventHub },
         (outcome, since) =>
           reportSessionRunEnd({
             sessionId: session.identity.getId(),

@@ -46,6 +46,28 @@ export class SessionEventHub {
     return next;
   }
 
+  /**
+   * Call `listener` with each event published for the session from now on, in order, once it is
+   * stored (nothing is replayed). Returns the function that stops listening. A listener that
+   * throws is reported and skipped: it never fails the publish or the other listeners.
+   */
+  listen(sessionId: string, listener: (envelope: EventEnvelope) => void): () => void {
+    const safe: Listener = envelope => {
+      try {
+        listener(envelope);
+      } catch (error) {
+        console.warn(`[factory] event listener for session ${sessionId} failed.`, error);
+      }
+    };
+    const listeners = this.#listeners.get(sessionId) ?? new Set<Listener>();
+    this.#listeners.set(sessionId, listeners);
+    listeners.add(safe);
+    return () => {
+      listeners.delete(safe);
+      if (listeners.size === 0 && this.#listeners.get(sessionId) === listeners) this.#listeners.delete(sessionId);
+    };
+  }
+
   /** Stored events after `afterSeq`, then live events, until `signal` aborts. */
   async *subscribe(
     sessionId: string,

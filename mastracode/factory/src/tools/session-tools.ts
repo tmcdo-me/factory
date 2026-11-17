@@ -23,6 +23,7 @@ import {
   resolveFactorySessionModel,
 } from '../session/factory-session.js';
 import { recordSessionRunStart } from '../session/run-audit.js';
+import type { SessionEventListening } from '../session/run-audit.js';
 import { resolveWorkItemRepository } from '../session/work-item-repository.js';
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
 import type { ModelCredentialsStorage } from '../storage/domains/credentials/base.js';
@@ -79,6 +80,8 @@ export interface FactorySessionToolDependencies {
   /** A fixed registry, or the per-project boards. */
   boards: BoardRegistry | ProjectBoardSource;
   auditRecorder: AuditRecorder;
+  /** fork(claude-agent): slice 6. Where a session's runs end, for the kickoff's heartbeat. */
+  events: SessionEventListening;
   /** The browser Start's coordinator; absent until the Factory runtime is ready. */
   startCoordinator: () => Pick<FactoryStartCoordinator, 'prepare'> | undefined;
 }
@@ -508,7 +511,10 @@ export function createFactorySessionTools(
     // Heartbeat from before the kickoff so a fast run's end is seen; the open-run
     // entry and audit follow the accepted kickoff, as the dispatcher records them.
     // The run's end reaches this item's followers through the session's listener.
-    const heartbeat = heartbeatOpenRunUntilEnd(session, kickoffId);
+    const heartbeat = heartbeatOpenRunUntilEnd(session, kickoffId, {
+      sessionId: prepared.sessionId,
+      events: deps.events,
+    });
     const kickoffContext = new RequestContext();
     kickoffContext.set('user', { workosId: ownerUserId, organizationId: scope.orgId });
     try {

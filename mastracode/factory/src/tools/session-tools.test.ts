@@ -8,6 +8,7 @@ import { createBoardRegistry } from '../boards/index.js';
 import { primeTenantCredentialsForTenant } from '../routes/tenant-credentials.js';
 import { fakeRouteAuth } from '../routes/test-utils.js';
 import { FactoryStartCoordinator } from '../rules/start-coordinator.js';
+import { hubOf } from '../session/controller-event-hub.js';
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { createSourceControlSessionLookup } from '../session/factory-session.js';
 import {
@@ -228,7 +229,7 @@ async function setup(
   prime.mockImplementation(async () => void calls.push('prime'));
   // Every session gets the run-report listener, as the Factory's session-created hook attaches it.
   const { controller, created, liveModels } = fakeController(calls, session =>
-    observeSessionRunReports(session, (outcome, since) =>
+    observeSessionRunReports(hubOf(session), (outcome, since) =>
       reportSessionRunEnd({
         sessionId: session.identity.getResourceId(),
         threadId: session.thread.getId(),
@@ -312,6 +313,13 @@ async function setup(
     workItems: seeded.seed.workItems,
     boards: createBoardRegistry(),
     auditRecorder: audit,
+    // The kickoff heartbeat listens for the session's run end, as the hub carries it.
+    events: {
+      listen: (sessionId: string, listener: never) => {
+        const entry = created.find(candidate => candidate.session.identity.getId() === sessionId);
+        return hubOf(entry!.session as never).events.listen(sessionId, listener);
+      },
+    },
     startCoordinator: () => (coordinatorOption === 'none' ? undefined : { prepare }),
   };
   const toolsFor = (scope: FactoryToolScope) => {

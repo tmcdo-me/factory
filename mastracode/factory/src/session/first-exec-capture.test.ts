@@ -1,6 +1,7 @@
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { describe, expect, it, vi } from 'vitest';
 
+import { hubOf } from './controller-event-hub.js';
 import { observeSessionFirstExec } from './first-exec-capture.js';
 import type { FirstExecCaptureDependencies, FirstExecCaptureSession } from './first-exec-capture.js';
 
@@ -44,7 +45,7 @@ describe('observeSessionFirstExec', () => {
   it('marks the first exec on the first successful workspace tool_end and unsubscribes', () => {
     const { session, listeners, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     emit(toolStart('call-1', 'mastra_workspace_read_file'));
     emit(toolEnd('call-1'));
@@ -59,7 +60,7 @@ describe('observeSessionFirstExec', () => {
     for (const toolName of ['view', 'execute_command', 'search_content', 'string_replace_lsp']) {
       const { session, emit } = createSession();
       const dependencies = createDependencies();
-      observeSessionFirstExec(session, dependencies);
+      observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
       emit(toolStart('call-1', toolName));
       emit(toolEnd('call-1'));
@@ -71,7 +72,7 @@ describe('observeSessionFirstExec', () => {
   it('ignores non-workspace tools (memory, notifications, subagent)', () => {
     const { session, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     for (const toolName of ['updateWorkingMemory', 'notification_inbox', 'subagent', 'random_custom_tool']) {
       emit(toolStart(`call-${toolName}`, toolName));
@@ -84,7 +85,7 @@ describe('observeSessionFirstExec', () => {
   it('stays subscribed past failed tool calls and marks on the first success only', () => {
     const { session, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     emit({ type: 'agent_start' });
     emit(toolStart('call-1', 'execute_command'));
@@ -103,7 +104,7 @@ describe('observeSessionFirstExec', () => {
   it('ignores approval-denied and abort-while-parked tool_end events (denied: true)', () => {
     const { session, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     // Mirrors SessionRunEngine's tool-output-denied path: tool_start, then a
     // tool_end with isError=false but denied=true and the denial reason as result.
@@ -125,7 +126,7 @@ describe('observeSessionFirstExec', () => {
   it('drops in-flight tool_start entries on agent_end so aborted runs do not leak state', () => {
     const { session, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     // Simulate several runs that abort before their tool calls complete.
     for (let i = 0; i < 3; i++) {
@@ -147,7 +148,7 @@ describe('observeSessionFirstExec', () => {
   it('preserves genuinely suspended tool calls across agent_end and clears cancelled suspensions', () => {
     const { session, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     // A tool that suspends mid-run: agent_end fires with reason 'suspended',
     // and the eventual resumed tool_end must still resolve its tool name.
@@ -190,7 +191,7 @@ describe('observeSessionFirstExec', () => {
     const dependencies = createDependencies();
     dependencies.sourceControl.sessions.markFirstMeaningfulExec = vi.fn().mockRejectedValue(new Error('db down'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    observeSessionFirstExec(session, dependencies);
+    observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     emit(toolStart('call-1', 'view'));
     emit(toolEnd('call-1'));
@@ -206,7 +207,7 @@ describe('observeSessionFirstExec', () => {
   it('stops observing when the returned unsubscribe is called before any exec', () => {
     const { session, listeners, emit } = createSession();
     const dependencies = createDependencies();
-    const unsubscribe = observeSessionFirstExec(session, dependencies);
+    const unsubscribe = observeSessionFirstExec(session, { ...dependencies, events: hubOf(session).events });
 
     unsubscribe();
     expect(listeners).toHaveLength(0);

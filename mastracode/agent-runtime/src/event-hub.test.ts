@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { SessionEventHub } from './event-hub';
 import { InMemoryEventLog } from './event-log';
@@ -73,5 +73,33 @@ describe('SessionEventHub', () => {
     const pending = subscription.next();
     controller.abort();
     expect((await pending).done).toBe(true);
+  });
+
+  it('calls live listeners with stored events from now on, and stops when told to', async () => {
+    const hub = new SessionEventHub(new InMemoryEventLog());
+    await hub.publish('s', text('old'));
+    const heard: number[] = [];
+    const stop = hub.listen('s', envelope => heard.push(envelope.seq));
+    await hub.publish('other', text('elsewhere'));
+    await hub.publish('s', text('1'), text('2'));
+    stop();
+    await hub.publish('s', text('3'));
+
+    expect(heard).toEqual([2, 3]);
+  });
+
+  it('keeps publishing when a listener throws', async () => {
+    const hub = new SessionEventHub(new InMemoryEventLog());
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const heard: number[] = [];
+    hub.listen('s', () => {
+      throw new Error('boom');
+    });
+    hub.listen('s', envelope => heard.push(envelope.seq));
+
+    await expect(hub.publish('s', text('1'))).resolves.toHaveLength(1);
+    expect(heard).toEqual([1]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
   });
 });
