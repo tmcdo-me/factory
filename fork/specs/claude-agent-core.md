@@ -813,7 +813,15 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `totalTokens` and `cacheCreationInputTokens[/5m/1h]` so run audits record the same usage. Ledger
      reasons stay the dispatcher's own (`suspended` = `awaiting_interaction`). Behaviour differences:
      observers hear an event once it is stored (a storage append later than the controller's
-     synchronous callback; the audit and heartbeat tolerate either order, as before); the mirror's
+     synchronous callback; the audit and heartbeat tolerate either order, as before), and still hear
+     it, as an unstored envelope with `seq` 0, when the append fails (`subscribe` clients never do), so
+     a run end is reported and audited whatever storage does; `heartbeatOpenRunUntilEnd` also stops
+     after an hour without any event; observers are kept per session id (`replaceable-observers.ts`) and
+     a session created again under an id replaces its predecessor's, so a run end is reported and
+     audited once; the run reports forget in-flight tool and interaction calls at each run end; the
+     mirror maps an `agent_end` with no reason, and the synthetic end it emits for an `agent_start`
+     while a run is open, to `complete`, so the audit records them where the controller path skipped a
+     reason-less end (kept: the run did end, and the open-run ledger needs it closed); the mirror's
      `agent_end` without an `agent_start` says nothing; a call parked for approval is not kept by the
      first-exec capture across the run end (as before). Left on controller events, on purpose:
      `first-message-capture` (the mirror shows a user's typed message and a Mastra "signal" alike as

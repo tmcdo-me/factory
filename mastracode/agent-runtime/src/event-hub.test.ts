@@ -102,4 +102,26 @@ describe('SessionEventHub', () => {
     expect(warn).toHaveBeenCalled();
     warn.mockRestore();
   });
+
+  it('tells listeners of events whose append failed, but never subscribers', async () => {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    const failing = vi.spyOn(log, 'append').mockRejectedValueOnce(new Error('disk full'));
+    const heard: string[] = [];
+    hub.listen('s', ({ event }) => heard.push(event.type));
+    const controller = new AbortController();
+    const seen: string[] = [];
+    void (async () => {
+      for await (const { event } of hub.subscribe('s', { signal: controller.signal })) seen.push(event.type);
+    })();
+
+    await expect(hub.publish('s', { type: 'run.ended', runId: 'r', reason: 'complete' })).rejects.toThrow('disk full');
+    failing.mockRestore();
+    await hub.publish('s', text('after'));
+    controller.abort();
+
+    expect(heard).toEqual(['run.ended', 'message.delta']);
+    expect(seen).not.toContain('run.ended');
+    expect((await hub.log.list('s')).map(e => e.seq)).toEqual([1]);
+  });
 });

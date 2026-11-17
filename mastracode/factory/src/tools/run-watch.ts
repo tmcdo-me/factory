@@ -69,6 +69,10 @@ export function observeSessionRunReports(
       toolNames.set(event.callId, event.name);
       return;
     }
+    if (event.type === 'interaction.resolved') {
+      interactionCalls.delete(event.interactionId);
+      return;
+    }
     if (event.type === 'interaction.requested') {
       const { callId, request } = event.interaction;
       if (!callId) return;
@@ -102,6 +106,8 @@ export function observeSessionRunReports(
     const outcome = runOutcome(ledgerRunEndReason(event.reason), parked, event.error ?? lastError);
     parked = undefined;
     lastError = undefined;
+    toolNames.clear();
+    interactionCalls.clear();
     if (!outcome) return;
     // Not an end: the Factory answers the call and the same run carries on in its window.
     if (outcome.status === 'blocked' && outcome.toolCallId && answersItself?.(outcome.toolCallId)) return;
@@ -116,6 +122,9 @@ export function observeSessionRunReports(
   });
 }
 
+/** A run silent this long (no event of any kind) stops being renewed. */
+const HEARTBEAT_SILENCE_LIMIT_MS = 60 * 60_000;
+
 /**
  * Renew a kicked-off run's open-run entry until the run ends, like the
  * dispatcher's heartbeat, so no dispatcher starts the role again meanwhile.
@@ -129,11 +138,16 @@ export function heartbeatOpenRunUntilEnd(
   let endReason: RunEndReason;
   let unsubscribe = () => {};
   const timer = setInterval(
-    () => void heartbeatSessionOpenRun(session, kickoffId),
+    () => {
+      if (Date.now() - lastHeard > HEARTBEAT_SILENCE_LIMIT_MS) return stop();
+      void heartbeatSessionOpenRun(session, kickoffId);
+    },
     Math.floor(FACTORY_OPEN_RUN_STALE_MS / 3),
   );
   timer.unref?.();
   let stopped = false;
+  // Backstop: a run end that never reaches us (a dropped event) must not renew the entry forever.
+  let lastHeard = Date.now();
   const stop = () => {
     if (stopped) return;
     stopped = true;
@@ -141,6 +155,7 @@ export function heartbeatOpenRunUntilEnd(
     unsubscribe();
   };
   unsubscribe = events.listen(sessionId, ({ event }) => {
+    lastHeard = Date.now();
     if (event.type !== 'run.ended') return;
     endReason ??= ledgerRunEndReason(event.reason);
     stop();

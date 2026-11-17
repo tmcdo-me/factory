@@ -1,3 +1,4 @@
+import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { InMemoryNotificationsStorage } from '@mastra/core/notifications';
 import { describe, expect, it, vi } from 'vitest';
@@ -5,7 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { hubOf } from '../session/controller-event-hub.js';
 import { createProviderWorkItemForTests } from '../storage/test-utils.js';
 import { createSessionApprovalNotifier, createSessionRunEndReporter } from './reports.js';
-import { observeSessionRunReports } from './run-watch.js';
+import { heartbeatOpenRunUntilEnd, observeSessionRunReports } from './run-watch.js';
 
 function fakeSession() {
   const listeners = new Set<(event: AgentControllerEvent) => void>();
@@ -529,5 +530,16 @@ describe('createSessionApprovalNotifier', () => {
     const { notify, deliver } = notifier(false);
     await notify(request);
     expect(deliver).not.toHaveBeenCalled();
+  });
+});
+
+describe('heartbeatOpenRunUntilEnd', () => {
+  it('stops at a run end even when the event could not be stored', async () => {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    vi.spyOn(log, 'append').mockRejectedValueOnce(new Error('disk full'));
+    const heartbeat = heartbeatOpenRunUntilEnd({} as never, 'k1', { sessionId: 's', events: hub });
+    await hub.publish('s', { type: 'run.ended', runId: 'r', reason: 'error' }).catch(() => {});
+    expect(heartbeat.endReason()).toBe('error');
   });
 });

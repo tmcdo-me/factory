@@ -15,6 +15,8 @@ type Listener = (envelope: EventEnvelope) => void;
 export class SessionEventHub {
   readonly #log: EventLog;
   readonly #listeners = new Map<string, Set<Listener>>();
+  /** `listen` observers: also told of events whose append failed, which `subscribe` clients must never see. */
+  readonly #observers = new Map<string, Set<Listener>>();
   readonly #tails = new Map<string, Promise<unknown>>();
 
   constructor(log: EventLog) {
@@ -31,9 +33,19 @@ export class SessionEventHub {
     const next = previous
       .catch(() => undefined)
       .then(async () => {
-        const envelopes = await this.#log.append(sessionId, events);
+        let envelopes: EventEnvelope[];
+        try {
+          envelopes = await this.#log.append(sessionId, events);
+        } catch (error) {
+          // Storage failed: observers still hear what happened (a run's end must not go unreported),
+          // as unstored envelopes (`seq` 0). `subscribe` clients replay from the log, so they never do.
+          const at = new Date().toISOString();
+          for (const event of events) this.#notify(this.#observers, { sessionId, seq: 0, at, event });
+          throw error;
+        }
         for (const envelope of envelopes) {
-          for (const listener of this.#listeners.get(sessionId) ?? []) listener(envelope);
+          this.#notify(this.#observers, envelope);
+          this.#notify(this.#listeners, envelope);
         }
         return envelopes;
       });
@@ -46,9 +58,13 @@ export class SessionEventHub {
     return next;
   }
 
+  #notify(registry: Map<string, Set<Listener>>, envelope: EventEnvelope): void {
+    for (const listener of [...(registry.get(envelope.sessionId) ?? [])]) listener(envelope);
+  }
+
   /**
    * Call `listener` with each event published for the session from now on, in order, once it is
-   * stored (nothing is replayed). Returns the function that stops listening. A listener that
+   * stored (nothing is replayed). If storing fails, the listener still hears the events, with `seq` 0. Returns the function that stops listening. A listener that
    * throws is reported and skipped: it never fails the publish or the other listeners.
    */
   listen(sessionId: string, listener: (envelope: EventEnvelope) => void): () => void {
@@ -59,12 +75,12 @@ export class SessionEventHub {
         console.warn(`[factory] event listener for session ${sessionId} failed.`, error);
       }
     };
-    const listeners = this.#listeners.get(sessionId) ?? new Set<Listener>();
-    this.#listeners.set(sessionId, listeners);
+    const listeners = this.#observers.get(sessionId) ?? new Set<Listener>();
+    this.#observers.set(sessionId, listeners);
     listeners.add(safe);
     return () => {
       listeners.delete(safe);
-      if (listeners.size === 0 && this.#listeners.get(sessionId) === listeners) this.#listeners.delete(sessionId);
+      if (listeners.size === 0 && this.#observers.get(sessionId) === listeners) this.#observers.delete(sessionId);
     };
   }
 
