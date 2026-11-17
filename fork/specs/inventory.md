@@ -49,7 +49,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `sandbox/context-sandboxes.ts`                         |  151 | 7     |                                                                                                                  |
 | [ ]  | `session/credential-policy.ts`                         |   99 | 7     |                                                                                                                  |
 | [ ]  | `session/factory-session.ts`                           |  423 | 7     |                                                                                                                  |
-| [ ]  | `session/filesystem-capture.ts`                        |  329 | 7     |                                                                                                                  |
+| [x]  | `session/filesystem-capture.ts`                        |  329 | 7     | no agent-controller import: the capture trigger hears the event hub (6l)                                         |
 | [ ]  | `session/first-exec-capture.ts`                        |  127 | 7     |                                                                                                                  |
 | [x]  | `session/first-message-capture.ts`                     |   50 | 7     | hears the session on the event hub; typed-as-signal messages carry `signal: true` (6l)                           |
 | [ ]  | `session/live-sessions.ts`                             |  154 | 7     |                                                                                                                  |

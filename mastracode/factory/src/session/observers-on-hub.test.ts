@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { observeSessionRunReports } from '../tools/run-watch.js';
+import { observeSessionFilesystem } from './filesystem-capture.js';
 import { observeSessionFirstExec } from './first-exec-capture.js';
 import { observeSessionFirstMessage } from './first-message-capture.js';
 import { observeSessionRunEnd, recordSessionRunStart } from './run-audit.js';
@@ -140,5 +141,40 @@ describe('observers on the event hub', () => {
     emit(message('a1', 'assistant'));
     await settle();
     expect(markFirstMessage).toHaveBeenCalledExactlyOnceWith({ sessionId: 'session-1' });
+  });
+
+  it('captures the filesystem when a run that touched the workspace ends, and not a chat-only run', async () => {
+    const { hub, session, emit, settle } = setup();
+    const executeCommand = vi.fn(async () => ({
+      success: true,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      executionTimeMs: 1,
+    }));
+    const captured = vi.fn(async () => {});
+    const getBySessionId = vi.fn(async () => null);
+    observeSessionFilesystem(
+      {
+        ...session,
+        thread: { requireId: () => 'thread-1' },
+        getWorkspace: () => ({ sandbox: { executeCommand } }),
+      },
+      { events: hub, filesystem: { replaceFiles: captured }, sourceControl: { sessions: { getBySessionId } } },
+    );
+
+    emit({ type: 'agent_start' }, { type: 'agent_end', reason: 'complete' });
+    await settle();
+    await Promise.resolve();
+    expect(getBySessionId).not.toHaveBeenCalled();
+
+    emit(
+      { type: 'agent_start' },
+      { type: 'tool_start', toolCallId: 'c1', toolName: 'execute_command', args: {} },
+      { type: 'tool_end', toolCallId: 'c1', result: 'ok', isError: false },
+      { type: 'agent_end', reason: 'complete' },
+    );
+    await settle();
+    await vi.waitFor(() => expect(getBySessionId).toHaveBeenCalled());
   });
 });

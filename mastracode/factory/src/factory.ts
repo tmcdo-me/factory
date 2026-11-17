@@ -2765,7 +2765,10 @@ export class MastraFactory {
     const hubObservers = createReplaceableObservers();
     prepared.base.controller.onSessionCreated(session => {
       const hubSessionId = session.identity.getId();
-      observeSessionFilesystem(session, {
+      // The capture hears a run's end first (the hub tells its listeners in the order they were added),
+      // so it is pending before anything that reacts to that end can read the listing.
+      const stopFilesystem = observeSessionFilesystem(session, {
+        events: agentEventHub,
         filesystem: filesystemStorage,
         sourceControl: { sessions: sourceControlSessions },
       });
@@ -2817,7 +2820,7 @@ export class MastraFactory {
           ),
         },
       );
-      hubObservers.replace(hubSessionId, [stopFirstMessage, stopFirstExec, stopRunEnd, stopRunReports]);
+      hubObservers.replace(hubSessionId, [stopFilesystem, stopFirstMessage, stopFirstExec, stopRunEnd, stopRunReports]);
       observeSessionThreadStamp(session);
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {

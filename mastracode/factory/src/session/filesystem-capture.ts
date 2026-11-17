@@ -1,4 +1,4 @@
-import type { AgentControllerEvent, SessionBeforeAgentEndListener } from '@mastra/core/agent-controller';
+import type { EventEnvelope } from '@factory/agent-runtime';
 import type { WorkspaceSandbox } from '@mastra/core/workspace';
 import { peekSessionSandbox, sessionLayout } from '../sandbox/session-sandbox.js';
 import type { SessionLayoutRepository } from '../sandbox/session-sandbox.js';
@@ -52,8 +52,6 @@ export interface FilesystemCaptureSession {
   readonly identity: { getId(): string };
   readonly thread: { requireId(): string };
   getWorkspace(): { sandbox?: Pick<WorkspaceSandbox, 'executeCommand'> } | undefined;
-  onBeforeAgentEnd(listener: SessionBeforeAgentEndListener): () => void;
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 export interface FilesystemCaptureDependencies {
@@ -61,6 +59,11 @@ export interface FilesystemCaptureDependencies {
   sourceControl: {
     sessions: Pick<SourceControlStorageHandle['sessions'], 'getBySessionId'>;
   };
+}
+
+export interface FilesystemObserverDependencies extends FilesystemCaptureDependencies {
+  /** fork(claude-agent): slice 7. The session's events are heard on Factory's event hub. */
+  events: { listen(sessionId: string, listener: (envelope: EventEnvelope) => void): () => void };
 }
 
 export function parseFilesystemCaptureFiles(output: string): FilesystemFile[] {
@@ -237,7 +240,7 @@ export async function waitForPendingFilesystemCapture(sessionId: string, timeout
 
 export function observeSessionFilesystem(
   session: FilesystemCaptureSession,
-  dependencies: FilesystemCaptureDependencies,
+  dependencies: FilesystemObserverDependencies,
 ): () => void {
   let fallbackChain = Promise.resolve();
   // Capture only runs after a turn that actually touched the workspace: a
@@ -245,57 +248,31 @@ export function observeSessionFilesystem(
   // the only way the listing can have changed. Without this gate every chat
   // turn would run two sandbox execs — and since executeCommand resumes an
   // idle VM, a pure-chat turn would keep waking a sandbox it never used.
-  // Same bookkeeping as first-exec capture: tool names resolve at tool_end
-  // via the tool_start map, and suspended calls survive agent_end so a
+  // Same bookkeeping as first-exec capture: tool names resolve at `tool.ended`
+  // via the `tool.started` map, and suspended calls survive the run's end so a
   // resumed run's eventual completion still counts for that turn.
   let workspaceTouched = false;
   const toolNames = new Map<string, string>();
   const suspended = new Set<string>();
-  const unsubscribeEvents = session.subscribe(event => {
-    switch (event.type) {
-      case 'tool_start': {
-        toolNames.set(event.toolCallId, event.toolName);
-        return;
-      }
-      case 'tool_suspended': {
-        suspended.add(event.toolCallId);
-        return;
-      }
-      case 'tool_suspension_cancelled': {
-        toolNames.delete(event.toolCallId);
-        suspended.delete(event.toolCallId);
-        return;
-      }
-      case 'agent_end': {
-        for (const id of toolNames.keys()) {
-          if (!suspended.has(id)) toolNames.delete(id);
-        }
-        return;
-      }
-      case 'tool_end': {
-        const toolName = toolNames.get(event.toolCallId);
-        toolNames.delete(event.toolCallId);
-        suspended.delete(event.toolCallId);
-        if (event.isError || event.denied) return;
-        if (isMeaningfulToolName(toolName)) workspaceTouched = true;
-        break;
-      }
+  // The thread the session was on when it last said anything: the hub tells a run's end once its
+  // events are stored, by which time a deleted session has already cleared its thread (#24893).
+  let lastThreadId: string | undefined;
+  const rememberThread = () => {
+    try {
+      lastThreadId = session.thread.requireId();
+    } catch {
+      // Cleared: keep the last one.
     }
-  });
-  const unsubscribeEnd = session.onBeforeAgentEnd(() => {
-    // onBeforeAgentEnd fires before agent_end is emitted, so every tool_end
-    // of the finishing run has already been observed; read then reset.
+  };
+  const capture = () => {
     if (!workspaceTouched) return;
     workspaceTouched = false;
-    // Chain so captures stay sequential (last write wins), but do NOT return
-    // the chain: finishAgentRun awaits every listener before emitting
-    // agent_end, and the capture's sandbox execs (git status + artifacts
-    // find, 30s timeouts each) must not gate turn completion. Readers that
-    // need the fresh listing await the pending capture through
-    // waitForPendingFilesystemCapture instead. The un-returned chain cannot
-    // leak an unhandled rejection: captureSessionFilesystem's entire body
-    // runs inside its own try/catch, and disposal of this listener does not
-    // cancel an in-flight chain, so a final turn's capture still persists.
+    // Chain so captures stay sequential (last write wins). The capture's sandbox execs (git status +
+    // artifacts find, 30s timeouts each) never gate anything: readers that need the fresh listing
+    // await the pending capture through waitForPendingFilesystemCapture instead. The un-returned chain
+    // cannot leak an unhandled rejection: captureSessionFilesystem's entire body runs inside its own
+    // try/catch, and disposal of this listener does not cancel an in-flight chain, so a final turn's
+    // capture still persists.
     let sessionId: string;
     try {
       sessionId = session.identity.getId();
@@ -305,12 +282,9 @@ export function observeSessionFilesystem(
       fallbackChain = fallbackChain.then(() => captureSessionFilesystem(session, dependencies));
       return;
     }
-    let threadId: string;
-    try {
-      threadId = session.thread.requireId();
-    } catch {
-      return;
-    }
+    rememberThread();
+    const threadId = lastThreadId;
+    if (!threadId) return;
     const ids = { sessionId, threadId };
     const chain = (pendingCaptures.get(sessionId) ?? Promise.resolve()).then(() =>
       captureSessionFilesystem(session, dependencies, ids),
@@ -321,9 +295,48 @@ export function observeSessionFilesystem(
         pendingCaptures.delete(sessionId);
       }
     });
-  });
-  return () => {
-    unsubscribeEvents();
-    unsubscribeEnd();
   };
+  let sessionId: string | undefined;
+  try {
+    sessionId = session.identity.getId();
+  } catch {
+    // Nothing to listen for.
+  }
+  if (sessionId === undefined) return () => {};
+  rememberThread();
+  return dependencies.events.listen(sessionId, ({ event }) => {
+    switch (event.type) {
+      case 'tool.started': {
+        toolNames.set(event.callId, event.name);
+        return;
+      }
+      case 'interaction.requested': {
+        // A call parked for approval has not run, and does not count.
+        const { callId, request } = event.interaction;
+        if (callId && request.kind !== 'tool_approval') suspended.add(callId);
+        return;
+      }
+      case 'interaction.cancelled': {
+        const callId = event.interactionId.slice(event.interactionId.indexOf(':') + 1);
+        toolNames.delete(callId);
+        suspended.delete(callId);
+        return;
+      }
+      case 'tool.ended': {
+        const toolName = toolNames.get(event.callId);
+        toolNames.delete(event.callId);
+        suspended.delete(event.callId);
+        rememberThread();
+        if (event.error !== undefined || event.denied) return;
+        if (isMeaningfulToolName(toolName)) workspaceTouched = true;
+        return;
+      }
+      case 'run.ended': {
+        for (const id of toolNames.keys()) {
+          if (!suspended.has(id)) toolNames.delete(id);
+        }
+        capture();
+      }
+    }
+  });
 }
