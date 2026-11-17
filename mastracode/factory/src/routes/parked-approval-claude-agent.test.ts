@@ -141,11 +141,12 @@ describe('answering a Claude Agent session from its card', () => {
     );
   });
 
-  it('leaves a Mastra Code session to the controller', async () => {
-    const { post, getSession, answer } = await setup(false);
+  // Slice 5c: a Mastra Code session's calls are answered through the interaction broker's records of
+  // them (none here), never through Claude Agent's runtime.
+  it('leaves a Mastra Code session to the interaction broker', async () => {
+    const { post, answer } = await setup(false);
     const response = await post({ decision: 'approve' });
     expect(response.status).toBe(409);
-    expect(getSession).toHaveBeenCalledWith(SESSION);
     expect(answer).not.toHaveBeenCalled();
   });
 

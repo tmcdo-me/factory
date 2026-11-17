@@ -190,15 +190,27 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
       : { ...indexed, status: 'cancelled', cancelReason: settlement.cancelReason, settledAt: settlement.settledAt };
   }
 
+  /** What waits, less what is hidden (its runtime let go of it): nothing answers that. */
   async listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]> {
+    let listed: InteractionRecord[];
     try {
-      return await this.#options.store.listPending(filter);
+      listed = await this.#options.store.listPending(filter);
     } catch (error) {
       console.warn('[factory] Unable to list pending interactions; listing them from memory.', error);
-      return [...this.#waiting.entries()]
+      listed = [...this.#waiting.entries()]
         .filter(([sessionId]) => !filter?.sessionId || sessionId === filter.sessionId)
         .flatMap(([, waiting]) => [...waiting.values()].map(entry => entry.record));
     }
+    return listed.filter(record => !this.isHidden(record.id));
+  }
+
+  /** Whether a held record is hidden: its runtime let go of the call, and its outcome is on the way. */
+  isHidden(id: string): boolean {
+    for (const waiting of this.#waiting.values()) {
+      const found = waiting.get(id);
+      if (found) return found.hidden === true;
+    }
+    return false;
   }
 
   /**
@@ -236,10 +248,14 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     if (project) this.#notify(() => this.#options.onChanged?.(sessionId, project));
   }
 
-  /** The pending interactions a session holds for one tool call, from memory. */
-  waitingOn(sessionId: string, callId: string): InteractionRecord[] {
+  /**
+   * The pending interactions a session holds for one tool call, from memory. A hidden one (its runtime
+   * let go of the call) is left out unless `includeHidden`: only the runtime's own report of how the
+   * call ended may find it, nothing answering it.
+   */
+  waitingOn(sessionId: string, callId: string, { includeHidden = false } = {}): InteractionRecord[] {
     return [...(this.#waiting.get(sessionId)?.values() ?? [])]
-      .filter(waiting => waiting.record.callId === callId)
+      .filter(waiting => waiting.record.callId === callId && (includeHidden || !waiting.hidden))
       .map(waiting => waiting.record);
   }
 

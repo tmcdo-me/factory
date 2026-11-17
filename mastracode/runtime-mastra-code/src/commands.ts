@@ -1,10 +1,4 @@
-import type {
-  CommandFailure,
-  CommandRequest,
-  CommandResult,
-  InteractionResponse,
-  SessionCommands,
-} from '@factory/agent-runtime';
+import type { CommandFailure, CommandRequest, CommandResult, SessionCommands } from '@factory/agent-runtime';
 import type { Mastra } from '@mastra/core/mastra';
 import {
   ABORT_AGENT_CONTROLLER_SESSION_ROUTE,
@@ -13,6 +7,8 @@ import {
   SEND_AGENT_CONTROLLER_MESSAGE_ROUTE,
   SWITCH_AGENT_CONTROLLER_MODEL_ROUTE,
 } from '@mastra/server/handlers/agent-controller';
+
+import { mastraCodeResumeData } from './answers';
 
 /**
  * Session commands for Mastra Code sessions, carried out by Mastra's own agent-controller route
@@ -72,7 +68,7 @@ export function createMastraCodeSessionCommands(options: {
       }
       return call(AGENT_CONTROLLER_TOOL_SUSPENSION_ROUTE, sessionId, request, {
         toolCallId,
-        resumeData: resumeData(response),
+        resumeData: mastraCodeResumeData(response),
       });
     },
 
@@ -89,19 +85,6 @@ function callIdOf(interactionId: string | undefined): string | undefined {
   if (!interactionId) return undefined;
   const separator = interactionId.indexOf(':');
   return separator >= 0 ? interactionId.slice(separator + 1) || undefined : undefined;
-}
-
-/** What Mastra's suspended tools expect to resume with. */
-function resumeData(response: Exclude<InteractionResponse, { kind: 'tool_approval' }>): unknown {
-  if (response.kind === 'question') return response.answer;
-  return {
-    action: response.action,
-    ...(response.feedback ? { feedback: response.feedback } : {}),
-    // submit_plan records these so its result replays the plan the human approved.
-    ...(response.plan?.path ? { path: response.plan.path } : {}),
-    ...(response.plan?.title ? { title: response.plan.title } : {}),
-    ...(response.plan?.content ? { plan: response.plan.content } : {}),
-  };
 }
 
 function toResult(result: unknown): CommandResult {

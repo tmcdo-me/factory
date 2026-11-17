@@ -6,13 +6,18 @@ import path from 'node:path';
 
 import { LLMock } from '@copilotkit/aimock';
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime'; // fork(claude-agent)
-import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code'; // fork(claude-agent)
+import {
+  answerMastraCodeCall,
+  createMastraCodeSessionCommands,
+  mastraCodeSessionToAnswer,
+} from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import { createMastraCode } from '@mastra/code-sdk';
 import {
   resolveAuthenticatedCredentialTenant,
   setCredentialStoreProvider,
 } from '@mastra/code-sdk/agents/credential-resolver';
 import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
+import { Agent } from '@mastra/core/agent'; // fork(claude-agent)
 import { EventEmitterPubSub } from '@mastra/core/events';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -174,13 +179,14 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       mock.onMessage(/.*/, { content: 'Carrying on.' });
       const shipped: string[] = [];
 
-      const code = await createMastraCode({
+      // fork(claude-agent): kept so a test can start the server again over the same storage.
+      const codeOptions = (storage: Awaited<ReturnType<typeof sessionStorage>>) => ({
         cwd: directory,
         homeDir: directory,
         configDir: '.mastracode-test',
         settingsPath,
-        storage: await sessionStorage(backend),
-        storageBackend: backend === 'libsql' ? 'libsql' : 'pg',
+        storage,
+        storageBackend: backend === 'libsql' ? ('libsql' as const) : ('pg' as const),
         pubsub: new EventEmitterPubSub(),
         disableMcp: true,
         disableHooks: true,
@@ -204,6 +210,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
           }),
         },
       });
+      const code = await createMastraCode(codeOptions(await sessionStorage(backend)));
       stops.push(() => code.controller.shutdown?.());
 
       const seeded = await createFactoryStorageForTests();
@@ -361,25 +368,20 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       });
       // Slice 5b: the inbox, factory_list_attention and the board read parked runs from the broker.
       liveSessions.addParkedSource(pendingInteractions);
-      const mastraCodeCommands = createMastraCodeSessionCommands({
-        mastra: () => ({ getAgentController: () => code.controller }) as never,
-        controllerId: 'code',
-      });
+      // As the Factory server answers: the controller's session, live or recovered, takes the answer.
       const broker = new InteractionBroker({
         store: pendingInteractions,
         hub: new SessionEventHub(agentEvents),
-        answerHeld: (record, response, { context }) =>
-          mastraCodeCommands.answer(
-            record.sessionId,
-            { interactionId: record.id, ...(record.callId ? { callId: record.callId } : {}) },
-            response,
-            { context },
-          ),
+        answerHeld: async (record, response, { context }) => {
+          const held = await mastraCodeSessionToAnswer(code.controller, record.sessionId, context as RequestContext);
+          if (!held) return { ok: false, reason: 'session_not_found' };
+          return answerMastraCodeCall(held as never, record, response, context);
+        },
       });
       observeSessionAgentEvents(session, new SessionEventHub(agentEvents), {
         interactions: {
           broker,
-          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId, { includeHidden: true }),
           hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
         },
       });
@@ -435,7 +437,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         sessions: sourceControl.sessions,
         workItems: seeded.workItems,
         auditRecorder: { record: (event: { actorId: string }) => audit.push(event) } as never,
-        messaging: async () => ({ controller: code.controller }) as never,
+        messaging: async () => ({ controller: code.controller, interactions: broker }) as never, // fork(claude-agent)
       });
       const answer = (decision: 'approve' | 'decline') =>
         (
@@ -464,6 +466,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
               },
             } as never,
             controller: code.controller as never,
+            interactions: broker, // fork(claude-agent)
             audit: { record: (event: { actorId: string }) => audit.push(event) } as never,
             workItems: seeded.workItems,
           }),
@@ -552,8 +555,58 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         ownerContext, // fork(claude-agent)
         interactionStore, // fork(claude-agent)
         pendingInteractions, // fork(claude-agent)
-        controller: code.controller, // fork(claude-agent)
         liveSessions, // fork(claude-agent)
+        controller: code.controller, // fork(claude-agent)
+        /**
+         * fork(claude-agent): the server stops and starts again over the same storage (libsql), and
+         * answers with a broker over the same interaction records, as a restarted Factory does.
+         */
+        restart: async () => {
+          await code.controller.shutdown?.();
+          const restarted = await createMastraCode(
+            codeOptions(new LibSQLStore({ id: 'approval-answer', url: `file:${path.join(directory, 'mastra.db')}` })),
+          );
+          stops.push(() => restarted.controller.shutdown?.());
+          const index = new PendingInteractions({
+            store: interactionStore,
+            projectOf: sessionId => sourceControl.sessions.getBySessionId(sessionId),
+          });
+          await index.load();
+          const restartedBroker = new InteractionBroker({
+            store: index,
+            hub: new SessionEventHub(agentEvents),
+            answerHeld: async (record, response, { context }) => {
+              const held = await mastraCodeSessionToAnswer(
+                restarted.controller,
+                record.sessionId,
+                context as RequestContext,
+              );
+              if (!held) return { ok: false, reason: 'session_not_found' };
+              return answerMastraCodeCall(held as never, record, response, context);
+            },
+          });
+          const restartedTools = createFactoryApprovalTools(scope, {
+            sessions: sourceControl.sessions,
+            workItems: seeded.workItems,
+            auditRecorder: { record: () => undefined } as never,
+            messaging: async () => ({ controller: restarted.controller, interactions: restartedBroker }) as never,
+          });
+          return {
+            index,
+            answer: (decision: 'approve' | 'decline') =>
+              (
+                restartedTools.factory_answer_approval as unknown as {
+                  execute: (input: unknown, context: unknown) => Promise<unknown>;
+                }
+              ).execute({ sessionId: phase.sessionId, toolCallId: parked.toolCallId, decision }, {}),
+            answerQuestion: (reply: string) =>
+              (
+                restartedTools.factory_answer_question as unknown as {
+                  execute: (input: unknown, context: unknown) => Promise<unknown>;
+                }
+              ).execute({ sessionId: phase.sessionId, toolCallId: parked.toolCallId, answer: reply }, {}),
+          };
+        },
         projectOf: (sessionId: string) => sourceControl.sessions.getBySessionId(sessionId), // fork(claude-agent)
       };
     }
@@ -578,6 +631,39 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         },
       });
     });
+
+    // fork(claude-agent): slice 5c. Answers from outside go through the broker to the controller.
+    it.runIf(backend === 'libsql').each(['plan', 'question'] as const)(
+      'answers a session parked before a restart through the broker, and the run carries on as its owner (%s)',
+      async parkedOn => {
+        const { restart, interactionStore, errors, phase } = await parkedPhaseSession({
+          parkedOn,
+          filedBy: REQUESTER,
+        });
+        const restarted = await restart();
+        expect(restarted.index.parked(phase.sessionId)).toMatchObject({ toolName: PARKED[parkedOn].toolName });
+        const requestsBefore = mock.getRequests().length;
+        resolved = [];
+
+        if (parkedOn === 'plan') await restarted.answer('approve');
+        else await restarted.answerQuestion('main');
+
+        await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+        expect(errors).toEqual([]);
+        expect([...new Set(resolved.map(tenant => tenant?.userId))]).toEqual([OWNER]);
+        // The model is told the answer, from whoever gave it.
+        if (parkedOn === 'question') {
+          expect(JSON.stringify(mock.getRequests().at(-1))).toContain(`Answered by ${REQUESTER}: main`);
+        }
+        expect(restarted.index.parked(phase.sessionId)).toBeUndefined();
+        const id = `${parkedOn === 'plan' ? 'plan_approval' : 'question'}:${PARKED[parkedOn].toolCallId}`;
+        expect(await interactionStore.get(id)).toMatchObject({ status: 'resolved', resolvedBy: REQUESTER });
+        // fork(claude-agent): the record keeps the answer as given; only the model is told who gave it.
+        if (parkedOn === 'question') {
+          expect((await interactionStore.get(id))?.response).toEqual({ kind: 'question', answer: 'main' });
+        }
+      },
+    );
 
     it('stops listing a parked session once its run is aborted', async () => {
       const { session, phase, liveSessions, project } = await parkedPhaseSession({ parkedOn: 'question' });
@@ -617,20 +703,6 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         ]);
       },
     );
-
-    it('settles the broker record with its answer once the call is answered the way the session answers it today', async () => {
-      const { answer, broker, phase, interactionStore } = await parkedPhaseSession();
-      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
-
-      await answer('approve');
-
-      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toEqual([]));
-      // Its outcome, read from the tool's result: not dropped when the snapshot let it go first.
-      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({
-        status: 'resolved',
-        response: { kind: 'plan_approval', action: 'approved' },
-      });
-    });
 
     it('records who answered a call in the session itself, through its own prompt card', async () => {
       const { broker, phase, interactionStore, ownerContext, controller, session, pendingInteractions } =
@@ -850,6 +922,46 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         expect(errors).toEqual([]);
         expect([...new Set(resolved.map(tenant => tenant?.userId))]).toEqual([OWNER]);
         expect(audit.map(event => event.actorId)).toEqual([REQUESTER]);
+      },
+    );
+
+    // fork(claude-agent): slice 5c review. The controller drops the call from its state as it resumes it;
+    // something else the session says meanwhile publishes that, then the resume fails and the call is put
+    // back. The call still waits, so its record must too, and a second answer carries the run on.
+    it.each(['plan', 'question'] as const)(
+      'keeps the call and its record waiting when the resume fails after the session let it go (%s)',
+      async parkedOn => {
+        const { broker, phase, ownerContext, session, interactionStore, waitingOn, liveSessions } =
+          await parkedPhaseSession({ parkedOn });
+        const id = `${parkedOn === 'plan' ? 'plan_approval' : 'question'}:${PARKED[parkedOn].toolCallId}`;
+        const response =
+          parkedOn === 'plan'
+            ? ({ kind: 'plan_approval', action: 'approved' } as const)
+            : ({ kind: 'question', answer: 'main' } as const);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const resume = vi.spyOn(Agent.prototype, 'sendStreamResume').mockImplementationOnce(async () => {
+          session.emit({ type: 'state_changed', state: {}, changedKeys: [] });
+          await new Promise(resolve => setTimeout(resolve, 50));
+          throw new Error('The model provider is unreachable');
+        });
+
+        await expect(broker.resolve(id, response, { resolvedBy: OWNER, context: ownerContext() })).rejects.toThrow(
+          /still waits on it/,
+        );
+        expect(resume).toHaveBeenCalledTimes(1);
+        expect(waitingOn()).toBe(PARKED[parkedOn].toolName);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(await interactionStore.get(id)).toMatchObject({ status: 'pending' });
+        expect(liveSessions.parked(phase.sessionId)).toMatchObject({ toolName: PARKED[parkedOn].toolName });
+        resume.mockRestore();
+        warn.mockRestore();
+
+        const requestsBefore = mock.getRequests().length;
+        expect((await broker.resolve(id, response, { resolvedBy: OWNER, context: ownerContext() })).status).toBe(
+          'delivered',
+        );
+        await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+        expect(await interactionStore.get(id)).toMatchObject({ status: 'resolved', resolvedBy: OWNER });
       },
     );
 

@@ -1,4 +1,7 @@
 // fork(claude-agent): also factory_answer_question's checks.
+import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
+import { answerMastraCodeCall, mastraCodeInteractionRequest } from '@factory/runtime-mastra-code';
+import type { MastraCodeWaitingCall } from '@factory/runtime-mastra-code';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -56,6 +59,7 @@ function setup({
   armed = true,
   live = true,
   parkedTool,
+  parkedCallId = 'call-1',
   filedBy = 'someone-else',
   as = {},
 }: {
@@ -65,6 +69,8 @@ function setup({
   armed?: boolean;
   live?: boolean;
   parkedTool?: string;
+  /** fork(claude-agent): the paused call's id, when another call waits at its gate too. */
+  parkedCallId?: string;
   /** fork(claude-agent): who filed the card. */
   filedBy?: string;
   /** fork(claude-agent): the calling turn, where it differs from `scope`. */
@@ -121,6 +127,50 @@ function setup({
     respondToToolSuspension,
   };
   const record = vi.fn();
+  // fork(claude-agent): what the session waits on, as its controller reports it to the broker (slice 5c).
+  const broker = new InteractionBroker({
+    store: new InMemoryInteractionStore(),
+    hub: new SessionEventHub(new InMemoryEventLog()),
+    answerHeld: async (held, response, { context }) =>
+      live ? answerMastraCodeCall(session, held, response, context) : { ok: false, reason: 'session_not_found' },
+  });
+  const waiting: MastraCodeWaitingCall[] = [
+    // One call is either at its gate or paused, never both.
+    ...(armed && (!parkedTool || parkedCallId !== 'call-1')
+      ? [{ toolCallId: 'call-1', toolName: 'factory_transition_work_item', args: {}, gate: true }]
+      : []),
+    ...(parkedTool
+      ? [
+          {
+            toolCallId: parkedCallId,
+            toolName: parkedTool,
+            resumeSchema: RESUME_SCHEMAS[parkedTool],
+            ...(parkedTool === 'ask_user'
+              ? {
+                  suspendPayload: {
+                    question: 'Which branch?',
+                    options: [{ label: 'main' }, { label: 'release' }],
+                    selectionMode: 'single_select',
+                  },
+                }
+              : {}),
+          },
+        ]
+      : []),
+  ];
+  const tracked = (async () => {
+    for (const call of waiting) {
+      const request = mastraCodeInteractionRequest(call);
+      await broker.track({
+        id: `${request.kind}:${call.toolCallId}`,
+        sessionId: WORKER,
+        callId: call.toolCallId,
+        heldBy: 'mastra-code',
+        request,
+        requestedAt: new Date().toISOString(),
+      });
+    }
+  })();
   const tools = createFactoryApprovalTools(
     { ...scope, ...as },
     {
@@ -142,18 +192,27 @@ function setup({
         getForProject: async () => ({ id: ITEM, createdBy: filedBy }) as never,
       },
       auditRecorder: { record } as never,
-      messaging: async () => ({ controller: { getSession: async () => (live ? session : null) } }) as never,
+      // fork(claude-agent): the session's waiting calls are the broker's records, answered through its controller.
+      messaging: async () => ({ interactions: broker }) as never,
     },
   );
-  const answer = (input: Record<string, unknown>) =>
-    (
+  const answer = async (input: Record<string, unknown>) => {
+    await tracked;
+    return (
       tools.factory_answer_approval as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
     ).execute({ sessionId: WORKER, toolCallId: 'call-1', ...input }, {});
-  const answerQuestion = (input: Record<string, unknown>) =>
-    (
+  };
+  const answerQuestion = async (input: Record<string, unknown>) => {
+    await tracked;
+    return (
       tools.factory_answer_question as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
     ).execute({ sessionId: WORKER, toolCallId: 'call-1', ...input }, {});
-  return { answer, answerQuestion, session, respondToToolApproval, respondToToolSuspension, record };
+  };
+  const messaging = async () => {
+    await tracked;
+    return { interactions: broker } as never;
+  };
+  return { answer, answerQuestion, session, respondToToolApproval, respondToToolSuspension, record, messaging };
 }
 
 describe('factory_answer_approval', () => {
@@ -346,16 +405,14 @@ describe('factory_answer_approval', () => {
 
 describe('answering without naming the tool call', () => {
   const session = { sessionId: WORKER, userId: 'someone-else', orgId: 'org-1' };
-  const answerOnly = (live: unknown) =>
-    answerParkedCall(
-      { messaging: async () => ({ controller: { getSession: async () => live } }) as never },
-      { session, decision: 'approve', declineReason: 'No.' },
-    );
+  // fork(claude-agent): the session's waiting calls are the broker's records (slice 5c).
+  const answerOnly = (messaging: () => Promise<never>) =>
+    answerParkedCall({ messaging }, { session, decision: 'approve', declineReason: 'No.' });
 
   it('answers the one call that is waiting', async () => {
-    const { session: live, respondToToolApproval } = setup();
+    const { messaging, respondToToolApproval } = setup();
 
-    await expect(answerOnly(live)).resolves.toEqual({
+    await expect(answerOnly(messaging)).resolves.toEqual({
       toolCallId: 'call-1',
       toolName: 'factory_transition_work_item',
     });
@@ -363,14 +420,12 @@ describe('answering without naming the tool call', () => {
   });
 
   it('asks which call to answer when several are waiting, answering none', async () => {
-    const { session: live, respondToToolApproval, respondToToolSuspension } = setup({ parkedTool: 'sign_off' });
-    live.displayState.get = () => ({
-      pendingSuspensions: new Map([
-        ['run-address', { toolCallId: 'call-2', toolName: 'sign_off', resumeSchema: RESUME_SCHEMAS.sign_off }],
-      ]),
+    const { messaging, respondToToolApproval, respondToToolSuspension } = setup({
+      parkedTool: 'sign_off',
+      parkedCallId: 'call-2',
     });
 
-    await expect(answerOnly(live)).rejects.toThrow(
+    await expect(answerOnly(messaging)).rejects.toThrow(
       'This session waits on 2 approvals (factory_transition_work_item: call-1, sign_off: call-2). Name the toolCallId to answer.',
     );
     expect(respondToToolApproval).not.toHaveBeenCalled();
@@ -378,9 +433,9 @@ describe('answering without naming the tool call', () => {
   });
 
   it('says to open the session when it waits on no approval', async () => {
-    const { session: live } = setup({ armed: false, parkedTool: 'ask_user' });
+    const { messaging } = setup({ armed: false, parkedTool: 'ask_user' });
 
-    await expect(answerOnly(live)).rejects.toThrow('This session is not waiting on an approval. Open it');
+    await expect(answerOnly(messaging)).rejects.toThrow('This session is not waiting on an approval. Open it');
   });
 });
 
@@ -449,13 +504,13 @@ describe('answering a Claude Agent session', () => {
     ).rejects.toThrow('That call was already answered');
   });
 
-  it('leaves a Mastra Code session to the controller, as before', async () => {
-    const { session: live, respondToToolApproval } = setup();
+  it('leaves a Mastra Code session to its controller, through the broker', async () => {
+    const { messaging, respondToToolApproval } = setup();
     const { runtime, answer } = onRuntime([{ toolCallId: 'toolu_plan', toolName: 'submit_plan' }], false);
 
     await expect(
       answerParkedCall(
-        { messaging: async () => ({ controller: { getSession: async () => live }, runtime }) as never },
+        { messaging: async () => ({ ...((await messaging()) as object), runtime }) as never },
         { session, decision: 'approve', declineReason: 'No.' },
       ),
     ).resolves.toEqual({ toolCallId: 'call-1', toolName: 'factory_transition_work_item' });

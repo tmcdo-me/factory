@@ -30,11 +30,14 @@ export class InteractionCancelledError extends Error {
 export class InteractionAnswerRefusedError extends Error {
   readonly interactionId: string;
   readonly reason: Exclude<CommandFailure, 'not_pending'>;
-  constructor(interactionId: string, reason: Exclude<CommandFailure, 'not_pending'>, message?: string) {
-    super(`The answer to interaction ${interactionId} was refused (${reason})${message ? `: ${message}` : ''}`);
+  /** What the runtime said, for the person who answered. */
+  readonly detail: string | undefined;
+  constructor(interactionId: string, reason: Exclude<CommandFailure, 'not_pending'>, detail?: string) {
+    super(`The answer to interaction ${interactionId} was refused (${reason})${detail ? `: ${detail}` : ''}`);
     this.name = 'InteractionAnswerRefusedError';
     this.interactionId = interactionId;
     this.reason = reason;
+    this.detail = detail;
   }
 }
 
@@ -157,7 +160,15 @@ export class InteractionBroker {
   async resolve(
     id: string,
     response: InteractionResponse,
-    options: { resolvedBy?: string; context?: unknown } = {},
+    options: {
+      resolvedBy?: string;
+      context?: unknown;
+      /**
+       * fork(claude-agent): what a runtime that holds the interaction is handed, when it is told more
+       * than the answer the record keeps (who gave it, say).
+       */
+      delivered?: InteractionResponse;
+    } = {},
   ): Promise<ResolveOutcome> {
     const existing = await this.#store.get(id);
     if (!existing || existing.status !== 'pending') return { status: 'not_pending' };
@@ -279,7 +290,7 @@ export class InteractionBroker {
   async #resolveHeld(
     existing: InteractionRecord,
     response: InteractionResponse,
-    options: { resolvedBy?: string; context?: unknown },
+    options: { resolvedBy?: string; context?: unknown; delivered?: InteractionResponse },
   ): Promise<ResolveOutcome> {
     const { id } = existing;
     if (!this.#answerHeld) throw new Error(`Nothing delivers answers to ${existing.heldBy} sessions`);
@@ -288,7 +299,7 @@ export class InteractionBroker {
     try {
       let result: CommandResult;
       try {
-        result = await this.#answerHeld(existing, response, {
+        result = await this.#answerHeld(existing, options.delivered ?? response, {
           ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
           ...(options.context !== undefined ? { context: options.context } : {}),
         });
@@ -312,6 +323,9 @@ export class InteractionBroker {
         return { status: 'delivered', record: record ?? existing };
       }
       if (result.reason === 'not_pending') {
+        // A call its runtime let go of is settled by its outcome (its result, or the grace window),
+        // which this answer never saw.
+        if (!reported && this.#store.isHidden?.(id)) return { status: 'not_pending' };
         await this.#store.settle(
           id,
           this.#settlementOf(reported ?? { status: 'cancelled', reason: HELD_INTERACTION_GONE }),

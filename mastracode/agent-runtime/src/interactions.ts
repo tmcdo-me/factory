@@ -101,4 +101,9 @@ export interface InteractionStore {
    * again (`track`), for a store that keeps an index of what is pending to take it in.
    */
   adopt?(record: InteractionRecord): void;
+  /**
+   * Whether a held record is out of sight while its outcome is on the way (its runtime let go of the
+   * call): not answerable, and settled by that outcome, not by an answer's `not_pending`.
+   */
+  isHidden?(id: string): boolean;
 }

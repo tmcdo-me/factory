@@ -176,6 +176,8 @@ export interface FactoryApiRoutesDeps {
   startRuntimes?: FactoryStartRuntimes;
   /** fork(claude-agent): sessions on another agent runtime; integrations deliver their events through it. */
   runtimeSessions?: import('../rules/runtime-sessions.js').FactoryRuntimeSessions;
+  /** fork(claude-agent): the interaction broker, where a Mastra Code session's waiting calls are answered. */
+  interactions?: import('../tools/approval-tools.js').FactoryInteractions;
   onFactoryRuntime?: (runtime: {
     transitionService: FactoryTransitionService;
     startCoordinator: FactoryStartCoordinator;
@@ -834,6 +836,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           ...(deps.moveThread ? { moveThread: deps.moveThread } : {}),
           ...(githubStorage ? { githubRepositories: githubStorage.repositories } : {}),
           ...(deps.runtimeSessions ? { runtimeSessions: deps.runtimeSessions } : {}), // fork(claude-agent)
+          ...(deps.interactions ? { interactions: deps.interactions } : {}), // fork(claude-agent)
         });
   // Absent known integrations still get their disabled-status stub.
   const absentStubs = ['github']
