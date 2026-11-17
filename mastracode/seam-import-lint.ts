@@ -21,7 +21,6 @@ export const factoryAllowList: string[] = [
   'src/integrations/base.ts',
   'src/integrations/github/routes.ts',
   'src/integrations/mastra-code-subscription-sessions.ts',
-  'src/integrations/slack/slack.ts',
   'src/rules/binding-context.ts',
   'src/rules/dispatcher.ts',
   'src/rules/mastra-code-sessions.ts',
