@@ -4,6 +4,7 @@ import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { Hono } from 'hono';
 import { describe, expect, it, onTestFinished } from 'vitest';
 
+import { ciFollowSettings } from '../integrations/github/ci-follow.js';
 import { ClaudeAgentConcurrency } from '../session/claude-agent-concurrency.js';
 import { AgentSessionsStorage } from '../storage/domains/agent-sessions/base.js';
 import { buildAgentRuntimeRoutes } from './agent-runtimes.js';
@@ -46,6 +47,7 @@ async function setup(
       projects: { get: async ({ orgId, id }) => (orgId === 'org-1' && id === 'p1' ? { id } : null) },
       historyPredatesLog: options.historyPredatesLog,
       claudeAgentConcurrency: concurrency,
+      ciFollow: ciFollowSettings(sessions, {}),
     }),
   );
   return { app, sessions, log, concurrency };
@@ -229,6 +231,30 @@ describe('agent runtime routes', () => {
       expect((await anonymous.app.request(path)).status).toBe(401);
       const noOrg = await setup({ authEnabled: true, user: { workosId: 'user-bob' } });
       expect((await noOrg.app.request(path, put({ maxConcurrent: 1 }))).status).toBe(403);
+    });
+  });
+
+  // fork(claude-agent): how the project follows its pull requests' CI and reviews.
+  describe('pull request CI follow-up', () => {
+    const path = '/web/factory/projects/p1/ci-follow';
+
+    it('shows the status only by default, and lets an organization administrator turn on fixing', async () => {
+      const { app } = await setup();
+      expect(await (await app.request(path)).json()).toEqual({ mode: 'status', maxAttempts: 3, canChange: true });
+      expect(await (await app.request(path, put({ mode: 'autofix' }))).json()).toEqual({
+        mode: 'autofix',
+        maxAttempts: 3,
+        canChange: true,
+      });
+      expect(await (await app.request(path)).json()).toMatchObject({ mode: 'autofix' });
+      expect((await app.request(path, put({ mode: 'always' }))).status).toBe(400);
+    });
+
+    it("lets a member read it but not change it, and no one change another organization's project", async () => {
+      const member = await setup({ user: alice, admin: false });
+      expect(await (await member.app.request(path)).json()).toMatchObject({ canChange: false });
+      expect((await member.app.request(path, put({ mode: 'autofix' }))).status).toBe(403);
+      expect((await member.app.request('/web/factory/projects/other/ci-follow')).status).toBe(404);
     });
   });
 });

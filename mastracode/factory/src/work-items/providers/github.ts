@@ -16,6 +16,8 @@ export const githubWorkItemAdapter = externalAdapter('github', {
     'draft',
     'merged',
     'headBranch',
+    // fork(claude-agent): where a pull request's head lives, so a fork's same-named branch isn't the card's.
+    'headRepositoryId',
     'baseBranch',
     'requestedReviewers',
   ],

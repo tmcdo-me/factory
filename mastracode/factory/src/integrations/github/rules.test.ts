@@ -4021,6 +4021,22 @@ describe('GithubRules and the shared board list', () => {
         'pullRequestMerged',
         pullRequestEvent('closed', 'shared-pr-merged', { pull_request: { state: 'closed', merged: true } }),
       ],
+      // fork(claude-agent): the repository's CI failed on the head, as the active poll reports it.
+      [
+        'pullRequestChecksFailed',
+        {
+          ...pullRequestEvent('completed', 'shared-pr-checks-failed'),
+          event: 'check_suite',
+          payload: {
+            ...pullRequestEvent('completed', 'shared-pr-checks-failed').payload,
+            factory_checks: {
+              headSha: 'a'.repeat(40),
+              signature: 'test=failure',
+              failing: [{ name: 'test', conclusion: 'failure' }],
+            },
+          },
+        },
+      ],
     ];
     expect(new Set(deliveries.map(([event]) => event))).toEqual(new Set(FACTORY_GITHUB_EVENTS));
 

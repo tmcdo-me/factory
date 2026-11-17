@@ -388,6 +388,8 @@ describe('ClaudeAgentSession', () => {
       'WebFetch',
       'ToolSearch',
     ]);
+    // fork(claude-agent): a person merges pull requests, never Claude (even under bypassPermissions).
+    expect(options.disallowedTools).toContain('Bash(gh pr merge:*)');
     for (const outside of [
       'RemoteTrigger',
       'PushNotification',

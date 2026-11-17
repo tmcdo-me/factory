@@ -62,8 +62,14 @@ async function setup() {
     sandboxProvider: 'local',
     sandboxWorkdir: '/workspace',
   });
+  // fork(claude-agent): the run's own branch, in the repository itself.
   const pullsGet = vi.fn().mockResolvedValue({
-    data: { number: 17, html_url: 'https://github.com/acme/repo/pull/17', base: { repo: { id: 10 } } },
+    data: {
+      number: 17,
+      html_url: 'https://github.com/acme/repo/pull/17',
+      base: { repo: { id: 10 } },
+      head: { ref: 'feature', repo: { id: 10 } },
+    },
   });
   const github = {
     getInstallationOctokit: vi.fn(() => ({ pulls: { get: pullsGet } })),
@@ -150,6 +156,21 @@ describe('recordFactoryPullRequestProvenance', () => {
 
     pullsGet.mockResolvedValueOnce({
       data: { number: 17, html_url: 'https://github.com/other/repo/pull/17', base: { repo: { id: 99 } } },
+    });
+    await recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, input);
+    expect(await integrationStorage.subscriptions.listByTarget('factory-pr-provenance:10:17')).toEqual([]);
+  });
+
+  // fork(claude-agent): the run only named it; GitHub says its head is a fork's.
+  it("records nothing for a pull request whose head isn't the card's own", async () => {
+    const { sourceControl, integrationStorage, workItems, github, input, pullsGet } = await setup();
+    pullsGet.mockResolvedValueOnce({
+      data: {
+        number: 17,
+        html_url: 'https://github.com/acme/repo/pull/17',
+        base: { repo: { id: 10 } },
+        head: { ref: 'feature', repo: { id: 99 } },
+      },
     });
     await recordFactoryPullRequestProvenance(github, sourceControl, integrationStorage, workItems, input);
     expect(await integrationStorage.subscriptions.listByTarget('factory-pr-provenance:10:17')).toEqual([]);

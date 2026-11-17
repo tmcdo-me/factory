@@ -463,6 +463,44 @@ Each slice: implement → focused tests → manual check where noted → commit.
      the reviews and comments since its card entered the column (at most 15 minutes back), and a
      repository whose cards can't be read keeps what was seen of it. The full sweeps keep their
      cadence. Check runs and statuses are not polled here (`active-pull-request-poll.ts`).
+   - **6g** ✅ A card follows its pull request's CI and reviews (Settings → Manage Factory → "Pull
+     request checks": off, show status (the default), or show status and fix; only an organization
+     admin changes it, others see it disabled). The active pull request poll (6f) also reads the
+     head's check runs (every page) and commit statuses, conditionally, for same-repository heads;
+     Factory's own check runs don't count (its app, or the `external_id` `factory-review` it gives
+     the ones it publishes), and `check_suite`, `check_run` and `status` webhooks only make the poll
+     read again: within 5 seconds of the first, never later than the tick already due, a steady
+     stream never postponing it, one arriving during a tick polling again after it. The status is
+     kept on the card's record of the pull request (its source row, `pullRequestCi`), so the
+     card's revision, which runs and moves check, doesn't change for it; it shows as a badge on the
+     card and in list rows: "Checks failing" (a failed check or status; a cancelled run is not a
+     failure) before "Changes requested" before "Checks running" before "Ready to merge" (an
+     approval and every check green); reviews count only from people with write access; green and
+     not approved shows nothing; a card that leaves its working column, or a project turned off,
+     clears it. With fixing on, the card's own pull request (its head in the repository itself, on
+     the card's own branch or the one its run's provenance names; never a fork's, never one only a
+     tool result named, which records no provenance either) is followed: a failure goes to the
+     board's rules as `pullRequestChecksFailed` once per head and failure, and only once nothing on
+     the head still runs; a change request or a comment from someone with write access does too.
+     The card goes from pull request review back to Build with a message to its own run: the
+     failing checks' names, links and excerpts (or the review or comment) only inside escaped
+     `<untrusted-…>` elements said to be data, never instructions; the run fixes and pushes, CI
+     runs again and the card follows. What fixing doesn't act on keeps upstream's notice to the run
+     (Factory's own verdict, feedback from anyone else, a phase it doesn't move from, a held fix
+     while building). At most `FACTORY_CI_AUTOFIX_MAX_ATTEMPTS` (default 3) moves per pull request,
+     each taken atomically before the move commits (and given back if it doesn't); a new pull
+     request starts its own count. Past them, for a failure an earlier attempt already sent back,
+     or when the count can't be read, the move waits for a person (`consent: 'required'`: a
+     proposal in the inbox that only an organization admin may approve; `factory_resolve_proposal`
+     refuses it). Factory never merges. Claude Agent sessions are denied `Bash(gh pr merge:*)` (it holds
+     under `bypassPermissions`), but that is defense in depth only (`gh api` and `git push` to the
+     default branch stay open, and a `gh api` pattern would block the API calls Claude needs): the
+     real control is GitHub's branch protection or rulesets on the default branch, with a required
+     review and no bypass for the app's installation token. A failure told to a run still building
+     (no attempt spent) is told once per failure signature, so push, fail the same way, tell
+     can't loop. A comment's payload names no head, so the card's attached record of the pull request
+     must say its head lives in the repository itself (`headRepositoryId`, now kept with the pull
+     request's facts). Build runs respect the Claude Agent cap.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

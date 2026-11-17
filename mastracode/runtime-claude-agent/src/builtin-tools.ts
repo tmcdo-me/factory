@@ -59,4 +59,9 @@ export const CLAUDE_AGENT_DISALLOWED_TOOLS = [
   // Factory owns the session's checkout; Claude Code must not move it into worktrees of its own.
   'EnterWorktree',
   'ExitWorktree',
+  // A person merges a pull request; Factory never does (its CI follow-up sends fixes, never merges).
+  // A deny rule holds under `bypassPermissions` too. Defense in depth only: `gh api` and a push to the
+  // default branch stay open, so the real control is the repository's branch protection or rulesets.
+  // (A `gh api` pattern would block the API calls Claude needs for its own work.)
+  'Bash(gh pr merge:*)',
 ] as const;

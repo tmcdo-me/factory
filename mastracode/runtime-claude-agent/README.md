@@ -48,7 +48,9 @@ Isolation: a session gets nothing of the operator's Claude setup beyond the mode
 - **Built-in tools:** an allow-list (`tools`): shell, files, search, notebooks, subagents, the todo
   list, web search and fetch. Schedules and wake-ups, notifications, remote triggers, messages to
   other sessions, workflows and worktrees stay off, as do Claude Code's own question and plan prompts
-  (Factory's `ask_user` and `submit_plan` replace them). See `builtin-tools.ts`.
+  (Factory's `ask_user` and `submit_plan` replace them). `gh pr merge` is denied too, as defense in
+  depth only: protect the default branch with GitHub branch protection or rulesets (a required
+  review, no bypass for Factory's app), which is the real control. See `builtin-tools.ts`.
 
 ## In a sandbox (Fly.io Sprites)
 

@@ -26,7 +26,12 @@ export interface GithubWebhookHandlerOptions {
    * that reached Factory by the active pull request poll too is handled once.
    */
   eventClaims?: GithubEventClaims;
+  /** fork(claude-agent): told of a check or status event (CI changed on some head). */
+  onChecksChanged?: () => void;
 }
+
+/** fork(claude-agent): GitHub's CI events, which the active pull request poll follows. */
+const CHECK_EVENTS = new Set(['check_suite', 'check_run', 'status']);
 
 /**
  * fork(claude-agent): what an event is, however it reached Factory (a webhook, the active pull request
@@ -118,6 +123,10 @@ const SUPPORTED_GITHUB_WEBHOOK_EVENTS = new Set([
   'pull_request',
   'pull_request_review',
   'pull_request_review_comment',
+  // fork(claude-agent): CI on a pull request's head: the active pull request poll reads it again.
+  'check_suite',
+  'check_run',
+  'status',
   // Direct pushes to the default branch drive base-checkpoint rebuilds and
   // the environment build hand-off; the subscription dispatcher ignores them.
   'push',
@@ -751,9 +760,14 @@ export async function handleGithubWebhook(
     return { status: 202, body: { ok: true, ignored: true } };
   }
 
-  const metadata = normalizeGithubWebhookMetadata(parsed);
-  console.info('[GitHub Webhook]', metadata);
 
+  // fork(claude-agent): CI on some head changed; the active pull request poll reads it, soon. Check
+  // events come many to a push, so they aren't logged one by one.
+  if (CHECK_EVENTS.has(parsed.event)) {
+    options.onChecksChanged?.();
+    return { status: 202, body: { ok: true } };
+  }
+  console.info('[GitHub Webhook]', normalizeGithubWebhookMetadata(parsed));
   // fork(claude-agent): once per event, also when the active pull request poll saw it first.
   let ignored = false;
   const controller = options.controller;

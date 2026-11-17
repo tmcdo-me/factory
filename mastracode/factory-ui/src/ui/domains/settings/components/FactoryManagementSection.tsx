@@ -13,6 +13,7 @@ import {
 
 import { AgentRuntimeSection } from './AgentRuntimeSection';
 import { EnvironmentSection } from './EnvironmentSection';
+import { PullRequestCiSection } from './PullRequestCiSection';
 import { SettingsSubsection } from './SettingsSubsection';
 import { TrashIcon } from '@mastra/playground-ui/icons/TrashIcon';
 
@@ -42,6 +43,7 @@ export function FactoryManagementSection() {
     <>
       <EnvironmentSection factoryId={factory.id} />
       <AgentRuntimeSection factoryId={factory.id} /> {/* fork(claude-agent) */}
+      <PullRequestCiSection factoryId={factory.id} /> {/* fork(claude-agent) */}
       <SettingsSubsection scope="factory" title="Danger zone">
         <SettingsContainer>
           <SettingsRow label={`Delete ${factory.name}`} description="Also unlinks its repositories.">

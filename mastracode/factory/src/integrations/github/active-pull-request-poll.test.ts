@@ -554,4 +554,49 @@ describe('GithubActivePullRequestPollWorker', () => {
     await host.instance.stop();
     expect(lease.calls.at(-1)).toBe('release');
   });
+
+  // fork(claude-agent): check webhooks nudge the poll; a steady stream of them must not starve it.
+  it('polls within seconds of the first check event, however many keep coming, and after one during a tick', async () => {
+    vi.useFakeTimers();
+    try {
+      const lease = sharedLease();
+      let release: (() => void) | undefined;
+      const ticks: number[] = [];
+      const poll = vi.fn(async () => {
+        ticks.push(Date.now());
+        if (ticks.length === 2) await new Promise<void>(resolve => (release = resolve));
+        return { pullRequests: 0, fetched: 0, notModified: 0, delivered: 0, failed: 0, errors: [] };
+      });
+      const worker = new GithubActivePullRequestPollWorker({
+        poll,
+        sourceControl: {
+          projectRepositories: { listConfiguredExternalKeys: async () => [], listByExternalRepository: async () => [] },
+          repositories: { findByExternalId: async () => null },
+        },
+        intervalMs: 60_000,
+      });
+      await worker.init({ pubsub: lease.provider, logger: { debug() {}, info() {}, warn() {}, error() {} } } as never);
+      await worker.start();
+      const start = Date.now();
+      // A check event every second: the first tick comes 5 seconds after the first one, not never.
+      for (let second = 0; second < 6; second++) {
+        worker.nudge();
+        await vi.advanceTimersByTimeAsync(1_000);
+      }
+      expect(ticks).toHaveLength(1);
+      expect(ticks[0]! - start).toBeLessThanOrEqual(5_000);
+      // Another burst starts a second tick, which is still running when more events arrive.
+      worker.nudge();
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(ticks).toHaveLength(2);
+      worker.nudge();
+      release?.();
+      await vi.advanceTimersByTimeAsync(5_000);
+      // The event during that tick polls again soon after it, not an interval later.
+      expect(ticks).toHaveLength(3);
+      await worker.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });

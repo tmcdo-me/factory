@@ -162,6 +162,12 @@ export async function recordFactoryPullRequestProvenance(
       }
     }
 
+    // fork(claude-agent): shown not to be the card's at this revision, and so never recorded: asked again
+    // only once the card changes.
+    if (!recorded) {
+      const verdict = ownHeadVerdicts.get(verdictKey);
+      if (verdict?.own === false && verdict.revision === input.item.revision) return;
+    }
     const { data } = await github
       .getInstallationOctokit(installationId)
       .pulls.get({ owner, repo, pull_number: pullRequestNumber });
@@ -175,6 +181,9 @@ export async function recordFactoryPullRequestProvenance(
       ownsHead(input, reportedHead.ref);
     rememberOwnHeadVerdict(verdictKey, ownHead ? { own: true } : { own: false, revision: input.item.revision });
     if (held) return ownHead ? { attached: true, attachedAt: held.createdAt } : undefined;
+    // fork(claude-agent): GitHub says the head isn't the card's own (a fork's, another branch): the run
+    // only named it, so nothing records it as the card's.
+    if (!ownHead) return;
 
     if (!recorded) {
       await integrationStorage.subscriptions.create({
@@ -321,6 +330,8 @@ function pullRequestSourceFacts(repositoryId: number, pullRequest: Record<string
       ? pullRequest.labels.map(label => record(label).name).filter((name): name is string => typeof name === 'string')
       : [],
     headBranch: typeof head.ref === 'string' ? head.ref : '',
+    // fork(claude-agent): where the head lives (the repository itself, for a card's own pull request).
+    ...(typeof record(head.repo).id === 'number' ? { headRepositoryId: record(head.repo).id } : {}),
     baseBranch: typeof base.ref === 'string' ? base.ref : '',
     ...(typeof author === 'string' ? { author } : {}),
   };

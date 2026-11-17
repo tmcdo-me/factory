@@ -77,6 +77,7 @@ import { ENVIRONMENT_BUILD_WORKFLOW_ID } from './environment/build-workflow.js';
 import { touchFeed } from './feed-events.js';
 import type { FactoryIntegration, IntegrationPostToolContext, IntegrationTools } from './integrations/base.js';
 import { reconcileGithubAcceptanceLabels } from './integrations/github/acceptance-labels.js';
+import { ciFollowSettings } from './integrations/github/ci-follow.js';
 import type { GithubRuleOverrides } from './integrations/github/default-rules.js';
 import type { GithubIntegration } from './integrations/github/integration.js';
 import {
@@ -633,6 +634,7 @@ export class MastraFactory {
   /** fork(claude-agent): live Claude Agent sessions. */
   #claudeAgentSessions: ClaudeAgentSessions | undefined;
   #claudeAgentConcurrency: ClaudeAgentConcurrency | undefined; // fork(claude-agent)
+  #ciFollow: ReturnType<typeof ciFollowSettings> | undefined; // fork(claude-agent)
   /** fork(claude-agent): whether this process runs Claude Agent sessions. */
   #claudeAgentHost: ClaudeAgentHost | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
@@ -1898,6 +1900,22 @@ export class MastraFactory {
       identity: claudeAgentHostIdentity(claudeAgentHome()),
     });
     this.#claudeAgentHost = claudeAgentHost;
+    // fork(claude-agent): each project's following of its pull requests' CI and reviews (Settings).
+    const ciFollow = ciFollowSettings({
+      getSetting: async key => {
+        await agentSessionsStorage.ensureReady();
+        return agentSessionsStorage.getSetting(key);
+      },
+      setSetting: async (key, value) => {
+        await agentSessionsStorage.ensureReady();
+        await agentSessionsStorage.setSetting(key, value);
+      },
+      updateSetting: async (key, change) => {
+        await agentSessionsStorage.ensureReady();
+        return agentSessionsStorage.updateSetting(key, change);
+      },
+    });
+    this.#ciFollow = ciFollow;
     // fork(claude-agent): a GitHub event is handled once, whether the webhook or the active pull request
     // poll brought it; the poll runs first in the process that runs Claude Agent sessions.
     if (githubIntegration) {
@@ -1906,6 +1924,7 @@ export class MastraFactory {
         return githubEventsStorage;
       });
       githubIntegration.activePollPreferred = () => claudeAgentHost.held();
+      githubIntegration.ciFollow = ciFollow;
     }
     // fork(claude-agent): without the domain, Claude Agent sessions' held messages live in memory only.
     const agentMessagesReady = storage.isDomainReady('agent-messages');
@@ -2559,6 +2578,7 @@ export class MastraFactory {
               return historyPredatesEventLog({ conversation: controller, events: agentEventHub.log, sessionId });
             },
             claudeAgentConcurrency,
+            ...(this.#ciFollow ? { ciFollow: this.#ciFollow } : {}),
           }),
           // fork(claude-agent): Factory's runtime-neutral session API.
           ...buildAgentSessionRoutes({

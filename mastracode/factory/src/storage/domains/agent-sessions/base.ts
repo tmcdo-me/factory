@@ -164,4 +164,30 @@ export class AgentSessionsStorage extends FactoryStorageDomain {
   async setSetting(key: string, value: unknown): Promise<void> {
     await this.ops.upsertOne<SettingRow>(SETTINGS, ['key'], { key, value, updated_at: new Date() });
   }
+
+  /**
+   * fork(claude-agent): read, change and write one setting atomically, across processes sharing the
+   * database too (in one transaction: LibSQL's standalone `updateAtomic` serializes one client only);
+   * resolves with what was written. `change` may run again when a concurrent first write wins.
+   */
+  async updateSetting<T = unknown>(key: string, change: (current: T | undefined) => T): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.storage.withTransaction(async ops => {
+          let written: { value: T } | undefined;
+          await ops.updateAtomic<SettingRow>(SETTINGS, { key }, current => {
+            written = { value: change((current.value ?? undefined) as T | undefined) };
+            return { value: written.value, updated_at: new Date() };
+          });
+          if (written) return written.value;
+          const value = change(undefined);
+          await ops.insertOne<SettingRow>(SETTINGS, { key, value, updated_at: new Date() });
+          return value;
+        });
+      } catch (error) {
+        // Another writer created the row first: read it again and change what it wrote.
+        if (!(error instanceof UniqueViolationError) || attempt >= 2) throw error;
+      }
+    }
+  }
 }

@@ -8,6 +8,8 @@
  * - `PUT  /web/factory/sessions/:sessionId/runtime` — choose it, before the session's first message;
  *   owner-only (`createSessionAccessGuard`).
  * - `GET|PUT /web/factory/projects/:projectId/runtime` — the project's default for new sessions.
+ * - `GET|PUT /web/factory/projects/:projectId/ci-follow` — how the project follows its pull requests'
+ *   CI and reviews: `off`, `status` (the default), or `autofix`; changing it takes an org admin.
  * - `GET|PUT /web/factory/runtimes/claude-agent/concurrency` — how many Claude Agent turns run at once,
  *   on this whole server (spec slice 13).
  */
@@ -18,6 +20,8 @@ import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import { z } from 'zod';
 
+import { CI_FOLLOW_MODES } from '../integrations/github/ci-follow.js';
+import type { CiFollowMode } from '../integrations/github/ci-follow.js';
 import { CLAUDE_AGENT_MAX_CONCURRENT_LIMIT } from '../session/claude-agent-concurrency.js';
 import type { ClaudeAgentConcurrency } from '../session/claude-agent-concurrency.js';
 import type { AgentSessionsStorage } from '../storage/domains/agent-sessions/base.js';
@@ -36,6 +40,7 @@ const RUNTIME_IDS = RUNTIME_CATALOG.map(runtime => runtime.id) as [string, ...st
 
 const sessionRuntimeBody = z.object({ runtimeId: z.enum(RUNTIME_IDS), modelId: z.string().min(1).optional() });
 const projectRuntimeBody = z.object({ runtimeId: z.enum(RUNTIME_IDS) });
+const ciFollowBody = z.object({ mode: z.enum(CI_FOLLOW_MODES) });
 /** A cap, `0` for no limit, or `null` to follow the server's default. */
 const concurrencyBody = z.object({
   maxConcurrent: z.number().int().min(0).max(CLAUDE_AGENT_MAX_CONCURRENT_LIMIT).nullable(),
@@ -58,6 +63,12 @@ export interface AgentRuntimeRoutesDependencies {
   historyPredatesLog?: (sessionId: string) => Promise<boolean>;
   /** The Claude Agent concurrency cap; without it the concurrency routes answer 404. */
   claudeAgentConcurrency?: Pick<ClaudeAgentConcurrency, 'state' | 'set'>;
+  /** Each project's following of its pull requests' CI and reviews; without it those routes answer 404. */
+  ciFollow?: {
+    mode(project: { orgId: string; factoryProjectId: string }): Promise<CiFollowMode>;
+    setMode(project: { orgId: string; factoryProjectId: string }, mode: CiFollowMode): Promise<void>;
+    maxAttempts: number;
+  };
 }
 
 export function buildAgentRuntimeRoutes({
@@ -67,6 +78,7 @@ export function buildAgentRuntimeRoutes({
   projects,
   historyPredatesLog,
   claudeAgentConcurrency,
+  ciFollow,
 }: AgentRuntimeRoutesDependencies): ApiRoute[] {
   const viewer = async (c: ReturnType<typeof loose>) => {
     if (!auth.enabled()) return { ok: true as const, orgId: undefined };
@@ -213,6 +225,48 @@ export function buildAgentRuntimeRoutes({
         if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
         await claudeAgentConcurrency.set(parsed.data.maxConcurrent);
         return c.json(claudeAgentConcurrency.state());
+      },
+    }),
+    // fork(claude-agent): how the project follows its pull requests' CI and reviews.
+    registerApiRoute('/web/factory/projects/:projectId/ci-follow', {
+      method: 'GET',
+      requiresAuth: false,
+      handler: async cc => {
+        const c = loose(cc);
+        const found = await projectScope(c);
+        if (found.status !== 200) return c.json(scopeError(found.status), found.status);
+        if (!ciFollow) return c.json({ error: 'not_found' }, 404);
+        const project = { orgId: found.scope.orgId, factoryProjectId: found.scope.projectId };
+        return c.json({
+          mode: await ciFollow.mode(project),
+          maxAttempts: ciFollow.maxAttempts,
+          canChange: await isAdmin(c, found.scope.orgId),
+        });
+      },
+    }),
+    registerApiRoute('/web/factory/projects/:projectId/ci-follow', {
+      method: 'PUT',
+      requiresAuth: false,
+      handler: async cc => {
+        const c = loose(cc);
+        const found = await projectScope(c);
+        if (found.status !== 200) return c.json(scopeError(found.status), found.status);
+        if (!ciFollow) return c.json({ error: 'not_found' }, 404);
+        // Auto-fix moves cards and starts runs on its own: an organization administrator decides.
+        if (!(await isAdmin(c, found.scope.orgId))) {
+          return c.json(
+            {
+              error: 'organization_admin_required',
+              message: 'Organization administrator access is required to change how pull requests are followed.',
+            },
+            403,
+          );
+        }
+        const parsed = ciFollowBody.safeParse(await c.req.json().catch(() => undefined));
+        if (!parsed.success) return c.json({ error: 'Invalid request', issues: parsed.error.issues }, 400);
+        const project = { orgId: found.scope.orgId, factoryProjectId: found.scope.projectId };
+        await ciFollow.setMode(project, parsed.data.mode);
+        return c.json({ mode: parsed.data.mode, maxAttempts: ciFollow.maxAttempts, canChange: true });
       },
     }),
   ];

@@ -61,6 +61,7 @@ import type { ConditionalGithubGet } from './active-pull-request-poll.js';
 import type { GithubEventRules, GithubRuleOverrides } from './default-rules.js';
 import { resolveGithubRules } from './default-rules.js';
 import { attachGithubIssueReconciler } from './issue-reconciler.js';
+import { FACTORY_CHECK_EXTERNAL_ID } from './pull-request-ci.js';
 import { GithubReconcileWorker } from './reconcile-worker.js';
 import { reconcileInterval, reconciliationEnabled } from './reconciliation-config.js';
 import { buildGithubRoutes, ingestLinkedRepositoryBacklog } from './routes.js';
@@ -71,7 +72,7 @@ import {
   githubRulesOptions,
   openPullRequestLister,
 } from './rules.js';
-import type { ReconcileIssueState, ReconcilePullRequestState } from './rules.js';
+import type { CiFollowSettings, ReconcileIssueState, ReconcilePullRequestState } from './rules.js';
 import type { GitIdentity } from './sandbox.js';
 import {
   createGithubSubscriptionTools,
@@ -1156,6 +1157,8 @@ export class GithubIntegration implements FactoryIntegration {
         ...parts,
         name: input.name,
         head_sha: input.headSha,
+        // fork(claude-agent): Factory's own check, which the CI follow-up must not read as the repository's CI.
+        external_id: FACTORY_CHECK_EXTERNAL_ID,
         ...(status === 'in-progress'
           ? { status: 'in_progress' as const }
           : { status: 'completed' as const, conclusion: status, completed_at: new Date().toISOString() }),
@@ -1423,12 +1426,20 @@ export class GithubIntegration implements FactoryIntegration {
       // The webhook is handling it right now: read it again next tick, in case that fails.
       if (outcome === 'busy') throw new GithubEventBusy(event.deliveryId);
     };
-    return new GithubActivePullRequestPollWorker({
-      poll: createActivePullRequestPoll(options, { get: input => this.conditionalGet(input), deliver }),
+    const ciFollow = this.ciFollow;
+    this.#activePollWorker = new GithubActivePullRequestPollWorker({
+      poll: createActivePullRequestPoll(options, {
+        get: input => this.conditionalGet(input),
+        deliver,
+        ...(ciFollow
+          ? { ci: { mode: project => ciFollow.mode(project), ...(this.slug ? { ownApp: this.slug } : {}) } }
+          : {}),
+      }),
       sourceControl: ctx.storage.sourceControl,
       intervalMs,
       ...(this.activePollPreferred ? { preferred: this.activePollPreferred } : {}),
     });
+    return this.#activePollWorker;
   }
 
   /**
@@ -1442,6 +1453,16 @@ export class GithubIntegration implements FactoryIntegration {
    * running Claude Agent sessions); another takes the poll's lease only once it was left free.
    */
   activePollPreferred: (() => Promise<boolean>) | undefined;
+
+  /** fork(claude-agent): each project's CI follow-up setting and its pull requests' fix attempts. */
+  ciFollow: CiFollowSettings | undefined;
+
+  #activePollWorker: GithubActivePullRequestPollWorker | undefined;
+
+  /** fork(claude-agent): a check finished or a status changed (a webhook): poll the active pull requests soon. */
+  nudgeActivePoll(): void {
+    this.#activePollWorker?.nudge();
+  }
 
   /** fork(claude-agent): a REST read conditional on its last ETag; a `304` is free against the rate limit. */
   readonly conditionalGet: ConditionalGithubGet = async ({ installationId, path, etag }) => {

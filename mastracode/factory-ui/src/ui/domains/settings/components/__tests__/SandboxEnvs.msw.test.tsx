@@ -112,7 +112,14 @@ describe('Environment variables settings', () => {
     expect(screen.queryByRole('textbox', { name: 'Name' })).not.toBeInTheDocument();
     const headings = screen.getAllByRole('heading').map(heading => heading.textContent);
     // fork(claude-agent): the Factory's agent runtime sits above the danger zone.
-    expect(headings).toEqual(['Environment', 'Environment variables', 'Builds', 'Agent runtime', 'Danger zone']);
+    expect(headings).toEqual([
+      'Environment',
+      'Environment variables',
+      'Builds',
+      'Agent runtime',
+      'Pull request checks', // fork(claude-agent)
+      'Danger zone',
+    ]);
   });
 
   it('shows an empty state when there are no variables', async () => {

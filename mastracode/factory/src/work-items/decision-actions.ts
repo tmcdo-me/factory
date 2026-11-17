@@ -11,7 +11,11 @@ import type { FactoryAuditEmit } from './create-work-item.js';
 
 export type FactoryDecisionActionResult =
   | { ok: true; decision: FactoryDeferredDecisionRecord }
-  | { ok: false; code: 'decision_not_retryable' | 'decision_not_proposed'; message: string };
+  | {
+      ok: false;
+      code: 'decision_not_retryable' | 'decision_not_proposed' | 'decision_held_for_person';
+      message: string;
+    };
 
 interface DecisionActionArgs {
   workItems: WorkItemsStorage;
@@ -63,13 +67,30 @@ export async function resolveFactoryProposal({
   userId,
   decisionId,
   action,
+  approvesHeld = false,
 }: DecisionActionArgs & {
   audit: FactoryAuditEmit;
   userId: string;
   action: 'approve' | 'dismiss';
+  /**
+   * fork(claude-agent): whether this caller may approve a move held for a person (`consent: 'required'`,
+   * an auto-fix past its attempts): only a person in Factory with the role that turns auto-fix on.
+   */
+  approvesHeld?: boolean;
 }): Promise<FactoryDecisionActionResult> {
   await workItems.ensureReady();
   const now = new Date();
+  if (action === 'approve' && !approvesHeld) {
+    const held = await workItems.getDeferredDecision(orgId, factoryProjectId, decisionId);
+    if ((held?.decision as { consent?: unknown } | undefined)?.consent === 'required') {
+      return {
+        ok: false,
+        code: 'decision_held_for_person',
+        message:
+          'This move waits for a person: an organization administrator approves it on the board or in the inbox.',
+      };
+    }
+  }
   const decision =
     action === 'approve'
       ? await workItems.approveDeferredDecision(orgId, factoryProjectId, decisionId, now, userId)

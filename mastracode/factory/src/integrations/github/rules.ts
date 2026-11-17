@@ -183,6 +183,10 @@ export function boardEventFor(context: Pick<FactoryGithubRuleContext, 'event' | 
 
 function eventName(parsed: ParsedGithubWebhook): FactoryGithubEventName | undefined {
   const action = string(parsed.payload.action);
+  // fork(claude-agent): only the active pull request poll names failing checks (`factory_checks`).
+  if (parsed.event === 'check_suite' && action === 'completed' && object(parsed.payload.factory_checks)) {
+    return 'pullRequestChecksFailed';
+  }
   if (parsed.event === 'issues' && action === 'opened') return 'issueOpened';
   if (parsed.event === 'issues' && action === 'edited') {
     const changes = object(parsed.payload.changes);
@@ -443,6 +447,8 @@ function pullRequestProvenance(
 export interface GithubRulesIntegration {
   readonly rules: GithubEventRules;
   readonly slug?: string;
+  /** fork(claude-agent): each project's CI follow-up setting and fix attempts (set by the host). */
+  readonly ciFollow?: CiFollowSettings;
   /**
    * Factory's own GitHub login, used to ignore its own writes. Optional because
    * not every integration can name itself; when absent, self-recognition falls
@@ -469,6 +475,42 @@ export interface GithubRulesOptions {
   boards: BoardRegistry | ProjectBoardSource;
   /** Hands a push to a linked repository off for an environment build. */
   onRepositoryPush?: IntegrationHooks['onRepositoryPush'];
+  /** fork(claude-agent): how each project follows its pull requests' CI and reviews, and fix attempts. */
+  ciFollow?: CiFollowSettings;
+}
+
+/**
+ * fork(claude-agent): a project's setting for its pull requests' CI and reviews (`off`, `status`:
+ * the card shows CI, `autofix`: failures and review feedback go back to Build too), and the fix
+ * attempts its cards' runs made per pull request.
+ */
+export interface CiFollowSettings {
+  mode(project: { orgId: string; factoryProjectId: string }): Promise<'off' | 'status' | 'autofix'>;
+  /** Fix attempts most for one pull request before a person decides. */
+  maxAttempts: number;
+  /** The attempts so far; `unreadable` when they could not be read (a fix then waits for a person). */
+  attempts(key: CiFollowAttemptKey): Promise<{ attempts: number; signatures: string[]; unreadable?: boolean }>;
+  /**
+   * Take one attempt, atomically: `reserved` only while attempts remain and the failure (`signature`)
+   * wasn't sent back before. Throws when the count can't be read or written.
+   */
+  reserveAttempt(key: CiFollowAttemptKey, signature: string | undefined): Promise<{ reserved: boolean }>;
+  /** Give back an attempt reserved for a fix that was not committed after all. */
+  releaseAttempt(key: CiFollowAttemptKey, signature: string | undefined): Promise<void>;
+  /**
+   * Note a failure told to a run still building (no attempt spent), atomically: `fresh` only when it
+   * wasn't sent back before, so the same failure is never told twice.
+   */
+  rememberFailure(key: CiFollowAttemptKey, signature: string): Promise<{ fresh: boolean }>;
+  /** Forget a failure noted for a message that was not committed after all. */
+  forgetFailure(key: CiFollowAttemptKey, signature: string): Promise<void>;
+}
+
+export interface CiFollowAttemptKey {
+  orgId: string;
+  factoryProjectId: string;
+  repositoryId: number;
+  pullRequestNumber: number;
 }
 
 /** Identity under which label and assignee syncs are recorded. */
@@ -883,6 +925,19 @@ export class GithubRules {
         ? undefined
         : resolvedItem;
     const intake = intakeTarget(this.#boards(project));
+    // fork(claude-agent): failing checks the poll named, and the project's CI follow-up setting.
+    const checks = checksOf(parsed.payload.factory_checks);
+    const attemptKey = pullRequestNumber
+      ? { orgId: project.orgId, factoryProjectId: project.factoryProjectId, repositoryId, pullRequestNumber }
+      : undefined;
+    const ciFollow =
+      this.options.ciFollow && attemptKey
+        ? {
+            mode: await this.options.ciFollow.mode(project),
+            maxAttempts: this.options.ciFollow.maxAttempts,
+            ...(await this.options.ciFollow.attempts(attemptKey)),
+          }
+        : undefined;
     const actor = await githubActor(this.options.github, {
       installationId,
       repository: repositoryName,
@@ -940,6 +995,25 @@ export class GithubRules {
       pullRequestIntake = false,
       attempt = 1,
     ): Promise<{ status: 'ignored' | 'committed' | 'replayed' | 'missing' }> => {
+      // fork(claude-agent): whether the card owns the pull request (same-repository head, its own branch).
+      const ownedByCard =
+        item && pullRequestNumber
+          ? await this.#ownPullRequest(
+              {
+                orgId: project.orgId,
+                factoryProjectId: project.factoryProjectId,
+                provenance,
+                ownHeadBranch:
+                  provenSameRepositoryHeadBranch(pullRequest, repositoryId) ??
+                  // A comment's payload names no head: the record the card's own pull request was filed
+                  // with does (filing it proved its head is in the repository itself).
+                  (object(pullRequest?.head)
+                    ? undefined
+                    : attachedHeadBranch(item, repositoryId, repositoryName, pullRequestNumber)),
+              },
+              item,
+            )
+          : false;
       const context: FactoryGithubRuleContext = {
         tenant: { orgId: project.orgId, projectId: project.factoryProjectId },
         actor,
@@ -1033,6 +1107,11 @@ export class GithubRules {
                   ? { headSha: string(object(pullRequest?.head)?.sha)!.toLowerCase() }
                   : {}),
                 baseBranch: string(object(pullRequest?.base)?.ref) ?? '',
+                // fork(claude-agent)
+                ...(ownedByCard ? { ownedByCard: true } : {}),
+                ...(number(object(object(pullRequest?.head)?.repo)?.id) !== undefined
+                  ? { headRepositoryId: number(object(object(pullRequest?.head)?.repo)?.id)! }
+                  : {}),
               },
             }
           : {}),
@@ -1060,6 +1139,9 @@ export class GithubRules {
               },
             }
           : {}),
+        // fork(claude-agent)
+        ...(checks ? { checks } : {}),
+        ...(ciFollow ? { ciFollow } : {}),
       };
       const boardEvent = boardEventFor(context);
       if (boardEvent) context.boardEvent = boardEvent;
@@ -1109,6 +1191,36 @@ export class GithubRules {
         if (routed) decisions = [{ ...routed }];
       }
 
+      // fork(claude-agent): an auto-fix takes one of the pull request's attempts first, atomically; with
+      // none left, a repeated failure, or no count to read, the move waits for a person instead.
+      let reserved = false;
+      // Only a move back to Build counts: a message to a run still building is upstream's notice.
+      const autoFix = decisions.find(
+        entry => entry.type === 'transition' && String(entry.idempotencyKey ?? '').endsWith(':auto-fix'),
+      );
+      if (autoFix && autoFix.consent !== 'required' && attemptKey && this.options.ciFollow) {
+        try {
+          reserved = (await this.options.ciFollow.reserveAttempt(attemptKey, checks?.signature)).reserved;
+        } catch (error) {
+          console.warn('[factory] reserving an auto-fix attempt failed; the fix waits for a person', error);
+        }
+        if (!reserved) holdAutoFix(autoFix);
+      }
+      // A failure told to a run still building is told once: push, fail the same way, and it isn't again.
+      let remembered = false;
+      const failureMessage = decisions.find(
+        entry => entry.type === 'sendMessage' && String(entry.idempotencyKey ?? '').endsWith(':auto-fix'),
+      );
+      if (failureMessage && checks?.signature && attemptKey && this.options.ciFollow) {
+        let fresh = false;
+        try {
+          fresh = (await this.options.ciFollow.rememberFailure(attemptKey, checks.signature)).fresh;
+        } catch (error) {
+          console.warn('[factory] noting a failure told to the run failed; not telling it', error);
+        }
+        if (fresh) remembered = true;
+        else decisions = decisions.filter(entry => entry !== failureMessage);
+      }
       const committed = await this.options.storage.commitRuleEvaluation({
         orgId: project.orgId,
         factoryProjectId: project.factoryProjectId,
@@ -1122,6 +1234,18 @@ export class GithubRules {
         causalChain: [],
         now: new Date(),
       });
+      // fork(claude-agent): an attempt reserved for a fix that wasn't committed is given back, before a
+      // stale evaluation runs again (which reserves anew), so a retry never counts its own attempt.
+      if (reserved && committed.status !== 'committed' && attemptKey && this.options.ciFollow) {
+        await this.options.ciFollow
+          .releaseAttempt(attemptKey, checks?.signature)
+          .catch(error => console.warn('[factory] giving back an auto-fix attempt failed', error));
+      }
+      if (remembered && committed.status !== 'committed' && attemptKey && checks && this.options.ciFollow) {
+        await this.options.ciFollow
+          .forgetFailure(attemptKey, checks.signature)
+          .catch(error => console.warn('[factory] forgetting a failure told to the run failed', error));
+      }
       if (committed.status === 'stale') {
         // The item was written concurrently. Re-read it and run the rule again
         // against the fresh revision; nothing was persisted for this attempt.
@@ -2514,6 +2638,8 @@ export function githubRulesOptions(
     configVersion: context.runtime.configVersion,
     boards: context.runtime.boards,
     ...(context.hooks?.onRepositoryPush ? { onRepositoryPush: context.hooks.onRepositoryPush } : {}),
+    // fork(claude-agent)
+    ...(github.ciFollow ? { ciFollow: github.ciFollow } : {}),
   };
 }
 
@@ -2535,4 +2661,53 @@ export function attachGithubReconciler(
   const options = githubRulesOptions(github, context);
   if (!options) return undefined;
   return createGithubPullRequestReconciler(options, fetchPullRequest);
+}
+
+/** fork(claude-agent): the failing checks a synthesized `check_suite` names, read as data. */
+function checksOf(value: unknown): FactoryGithubRuleContext['checks'] {
+  const checks = object(value);
+  const headSha = string(checks?.headSha);
+  const signature = string(checks?.signature);
+  if (!checks || !headSha || !/^[0-9a-f]{7,64}$/i.test(headSha) || !signature || !Array.isArray(checks.failing)) {
+    return undefined;
+  }
+  const failing = checks.failing.flatMap(entry => {
+    const check = object(entry);
+    const name = string(check?.name);
+    const conclusion = string(check?.conclusion);
+    if (!name || !conclusion) return [];
+    return [
+      {
+        name: name.slice(0, 200),
+        conclusion: conclusion.slice(0, 40),
+        ...(string(check?.url) ? { url: string(check?.url)! } : {}),
+        ...(string(check?.excerpt) ? { excerpt: string(check?.excerpt)!.slice(0, 2_000) } : {}),
+      },
+    ];
+  });
+  return failing.length ? { headSha: headSha.toLowerCase(), signature, failing: failing.slice(0, 10) } : undefined;
+}
+
+/** fork(claude-agent): a move back to Build that may not go on its own waits for a person (a proposal). */
+function holdAutoFix(decision: Record<string, unknown>): void {
+  decision.consent = 'required';
+  const message = decision.message as { text?: string } | undefined;
+  const note = 'A person released this attempt: the fix attempts on this pull request are spent, or could not be counted.';
+  if (message?.text && !message.text.includes('A person released this attempt')) message.text = `${message.text}\n\n${note}`;
+}
+
+/**
+ * fork(claude-agent): the head branch recorded on the card's attached record of this pull request, when
+ * that record says its head lives in this repository (a fork's same-named branch is not the card's).
+ */
+function attachedHeadBranch(
+  item: Card,
+  repositoryId: number,
+  repositoryName: string,
+  pullRequestNumber: number,
+): string | undefined {
+  const source = attachedPullRequestSource(item, repositoryId, repositoryName, pullRequestNumber);
+  if (source?.role !== 'attached' || source.metadata?.headRepositoryId !== repositoryId) return undefined;
+  const branch = source.metadata?.headBranch;
+  return typeof branch === 'string' && branch ? branch : undefined;
 }
