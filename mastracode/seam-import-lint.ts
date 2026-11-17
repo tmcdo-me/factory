@@ -59,18 +59,8 @@ export const factoryAllowList: string[] = [
 
 /** Files under `mastracode/factory-ui` that still import Mastra Code's SDK or controller types. */
 export const factoryUiAllowList: string[] = [
-  'src/ui/domains/chat/components/turn-gaps.ts',
-  'src/ui/domains/chat/context/ChatTranscriptProvider.tsx',
   'src/ui/domains/chat/context/useChatCommandRegistry.ts',
-  'src/ui/domains/chat/hooks/useCreateUserSessionFromDraft.ts',
-  'src/ui/domains/chat/hooks/useFactorySessionTranscript.ts',
-  'src/ui/domains/chat/services/contextUsage.ts',
-  'src/ui/domains/chat/services/factory-transcript-projection.ts',
-  'src/ui/domains/chat/services/message-author.ts',
-  'src/ui/domains/chat/services/run-activity.ts',
-  'src/ui/domains/chat/services/runtime.ts',
   'src/ui/domains/chat/services/thinkingLevels.ts',
-  'src/ui/domains/chat/services/transcript.ts',
 ];
 
 /** The overrides that enforce the ban outside `allowList`. */

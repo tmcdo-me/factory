@@ -1,4 +1,4 @@
-import type { MastraMessagePart } from '@mastra/core/agent-controller';
+import type { MastraMessagePart } from './message-types';
 import type { ActivityStatus } from '@mastra/playground-ui/components/ai/activity';
 import { isTaskTool } from '@mastra/playground-ui/components/ai/tool-call';
 

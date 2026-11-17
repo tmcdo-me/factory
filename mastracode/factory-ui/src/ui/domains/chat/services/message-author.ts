@@ -1,4 +1,4 @@
-import type { MastraDBMessage } from '@mastra/core/agent-controller';
+import type { MastraDBMessage } from './message-types';
 
 import { isRecord } from '../../../../lib/isRecord';
 

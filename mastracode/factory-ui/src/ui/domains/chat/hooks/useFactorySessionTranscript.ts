@@ -8,7 +8,7 @@
 import { applyEvent, emptyTranscript } from '@factory/agent-runtime/browser';
 import type { EventEnvelope, Transcript } from '@factory/agent-runtime/browser';
 import type { AgentControllerEvent, MastraDBMessage } from '@mastra/client-js';
-import type { MastraMessagePart } from '@mastra/core/agent-controller';
+import type { MastraMessagePart } from '../services/message-types';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 
 import { useApiConfig } from '../../../../api/config';

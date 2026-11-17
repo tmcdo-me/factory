@@ -1,6 +1,6 @@
 import type { AgentControllerEvent, AgentControllerSessionState } from '@mastra/client-js';
 import { isKnownAgentControllerEvent } from '@mastra/client-js';
-import type { TokenUsage } from '@mastra/core/agent-controller';
+import type { TokenUsage } from './message-types';
 import { replaceEqualDeep } from '@tanstack/react-query';
 
 import type { ContextUsage } from './contextUsage'; // fork(claude-agent)

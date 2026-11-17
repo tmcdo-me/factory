@@ -1,7 +1,7 @@
 import type { AgentControllerEvent } from '@mastra/client-js';
 import { isKnownAgentControllerEvent } from '@mastra/client-js';
 import { normalizeSessionTitle } from '@mastra/factory/session/session-title';
-import type { MastraDBMessage } from '@mastra/core/agent-controller';
+import type { MastraDBMessage } from '../services/message-types';
 import type { ReactNode } from 'react';
 import { useCallback, useContext, useEffect, useEffectEvent, useMemo, useReducer, useState } from 'react';
 
