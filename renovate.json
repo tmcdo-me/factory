@@ -36,7 +36,6 @@
   "ignorePaths": [
     "docs/**",
     "explorations/**",
-    ".github/scripts",
     "templates/**",
     "**/_examples/**",
     ".claude/skills/**/assets/**/package.json",
