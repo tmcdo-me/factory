@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import { Button } from '@mastra/playground-ui/components/Button';
 import { ButtonsGroup } from '@mastra/playground-ui/components/ButtonsGroup';
 import { Txt } from '@mastra/playground-ui/components/Txt';

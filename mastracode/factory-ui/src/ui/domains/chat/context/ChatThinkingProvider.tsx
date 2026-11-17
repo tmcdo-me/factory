@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import type { ReactNode } from 'react';
 import { useState } from 'react';
 import { useChatModelScope } from './useChatModelScope';

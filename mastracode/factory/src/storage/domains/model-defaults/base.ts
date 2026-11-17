@@ -1,5 +1,5 @@
-import { isThinkingLevelSetting } from '@mastra/code-sdk/thinking';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import { isThinkingLevelSetting } from '@factory/agent-runtime';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime';
 import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema, FactoryStorageOps } from '@mastra/core/storage';
 

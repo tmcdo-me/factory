@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import { queryOptions, skipToken, useQuery } from '@tanstack/react-query';
 
 import type { ApiClient } from '../api/client';

@@ -1,4 +1,4 @@
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import { DEFAULT_THINKING_LEVEL } from '@mastra/factory/default-thinking-level';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
