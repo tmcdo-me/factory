@@ -832,6 +832,7 @@ Each slice: implement → focused tests → manual check where noted → commit.
      (the dispatcher's own run watch, which answers paused calls). Tests: `session/observers-on-hub.test.ts`
      runs the real mirror, publisher and hub; `session/controller-event-hub.ts` feeds the older suites'
      fake sessions through the same mapper.
+<<<<<<< HEAD
    - **6k** ✅ Prepared starts (`#dispatchPendingStart`) on Mastra Code go through the same seam path as a
      skill kickoff (`#runOnSeam` with the Mastra Code adapter and the controller session), so the dispatcher no
      longer builds a run watch, sends the notification or records the run itself. `RuntimeKickoff.notification`
@@ -847,6 +848,17 @@ Each slice: implement → focused tests → manual check where noted → commit.
      end is never seen stays a plain retryable error for a prepared start and is `run_terminal_event_missing`
      for a decision); the dispatcher's pending-start
      suites run unchanged.
+||||||| parent of 9c7b86372d (feat(factory): first-message capture on the event hub (slice 6l))
+=======
+   - **6l** ✅ First-message capture on the event hub: `observeSessionFirstMessage(session, {events, sourceControl})`
+     stamps the time to first interaction on the first `message.started` that is not a signal. The event
+     got an optional `signal: true` (`@factory/agent-runtime`), set by the Mastra Code mapper on a typed
+     message the controller delivered as a signal (`data-user-message`), which the controller listener
+     ignored by role; so behaviour is unchanged: only a real user or assistant message stamps. Tests:
+     `first-message-capture.test.ts` (through `hubOf`), `observers-on-hub.test.ts` (real mirror: a typed
+     signal does not stamp, the first reply does), the mapper tests carry the marker. Still on controller
+     events: `filesystem-capture`, `rules/watch-run.ts`.
+>>>>>>> 9c7b86372d (feat(factory): first-message capture on the event hub (slice 6l))
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

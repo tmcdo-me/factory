@@ -51,7 +51,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `session/factory-session.ts`                           |  423 | 7     |                                                                                                                  |
 | [ ]  | `session/filesystem-capture.ts`                        |  329 | 7     |                                                                                                                  |
 | [ ]  | `session/first-exec-capture.ts`                        |  127 | 7     |                                                                                                                  |
-| [ ]  | `session/first-message-capture.ts`                     |   50 | 7     |                                                                                                                  |
+| [x]  | `session/first-message-capture.ts`                     |   50 | 7     | hears the session on the event hub; typed-as-signal messages carry `signal: true` (6l)                           |
 | [ ]  | `session/live-sessions.ts`                             |  154 | 7     |                                                                                                                  |
 | [ ]  | `session/memory-settings-hydration.ts`                 |   46 | 7     |                                                                                                                  |
 | [ ]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                                                  |

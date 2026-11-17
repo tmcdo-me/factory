@@ -2769,7 +2769,9 @@ export class MastraFactory {
         filesystem: filesystemStorage,
         sourceControl: { sessions: sourceControlSessions },
       });
-      observeSessionFirstMessage(session, {
+      const stopFirstMessage = observeSessionFirstMessage(session, {
+        // fork(claude-agent): slice 7. Heard on the event hub, as the first exec is.
+        events: agentEventHub,
         sourceControl: { sessions: sourceControlSessions },
       });
       const stopFirstExec = observeSessionFirstExec(session, {
@@ -2815,7 +2817,7 @@ export class MastraFactory {
           ),
         },
       );
-      hubObservers.replace(hubSessionId, [stopFirstExec, stopRunEnd, stopRunReports]);
+      hubObservers.replace(hubSessionId, [stopFirstMessage, stopFirstExec, stopRunEnd, stopRunReports]);
       observeSessionThreadStamp(session);
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {
