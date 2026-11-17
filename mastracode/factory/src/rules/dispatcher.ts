@@ -100,6 +100,15 @@ import {
   MAX_FACTORY_RULE_CAUSAL_DEPTH,
   validateFactoryRuleDecision,
 } from './validation.js';
+import {
+  FactoryDecisionSuperseded,
+  MAX_PLAN_APPROVALS,
+  RUN_REGISTRY_HEARTBEAT_MS,
+  RunEndedInError,
+  runErrorFailure,
+  watchRun,
+} from './watch-run.js'; // fork(claude-agent)
+import type { ApprovePausedCall } from './watch-run.js';
 
 const LEASE_MS = 30_000;
 /** How long the run waits on a status-comment write; well inside one lease so a slow provider never costs the claim. */
@@ -115,16 +124,10 @@ const IDLE_RECHECK_MS = 60 * 60_000;
 const BATCH_SIZE = 10;
 const MAX_ATTEMPTS = 5;
 
-// Enough for a run that re-plans after reading its own approval, few enough
-// that an agent looping on submit_plan reaches a person instead of a bill.
-const MAX_PLAN_APPROVALS = 3;
 // fork(claude-agent): how long a run waits for the broker to record the call it paused on (it takes
 // a moment after the controller reports it) before leaving it for a person.
 const HELD_RECORD_WAIT_MS = 10_000;
 const MAX_BACKOFF_MS = 60_000;
-// A run the registry no longer shows never started or ended unobserved:
-// checked at this cadence, and failed for retry.
-const RUN_REGISTRY_HEARTBEAT_MS = 10 * 60_000;
 // A run the registry still shows past this is a hang, not a slow run: failed
 // terminally so the lease and the in-flight slot come back.
 const SKILL_COMPLETION_OBSERVATION_TIMEOUT_MS = 6 * 60 * 60_000;
@@ -152,55 +155,11 @@ const STALE_BINDING_TTL_MS = 24 * 60 * 60_000;
 // the claim path rather than on every 1s tick.
 const RECONCILE_INTERVAL_MS = 30_000;
 
-/** The card moved on before this run could act; it settles as superseded, not succeeded. */
-class FactoryDecisionSuperseded extends Error {}
-
 /** The decision cannot act yet and did nothing: it goes back to the queue and is claimed again later. */
 class FactoryDecisionPostponed extends Error {}
 
 // How often a decision that cannot act yet (a route move waiting on the card's run) is tried again.
 const POSTPONE_MS = 10_000;
-
-/** A run that ran and ended in error; the session's own listener reports it to followers. */
-class RunEndedInError extends FactoryDispatchError {}
-
-// The Mastra Code credential resolver's own failure; free text that merely mentions credentials does not count.
-const CREDENTIAL_RESOLUTION_FAILURE = 'tenant model credential policy could not be resolved';
-// The resolver's reason when the request context has no user; it recurs on every retry of the same start.
-const NO_AUTHENTICATED_USER = 'the request has no authenticated user';
-
-function httpStatus(error: unknown): number | undefined {
-  if (!error || typeof error !== 'object') return undefined;
-  if ('statusCode' in error && typeof error.statusCode === 'number') return error.statusCode;
-  return 'status' in error && typeof error.status === 'number' ? error.status : undefined;
-}
-
-function causeOf(error: unknown): unknown {
-  return error && typeof error === 'object' && 'cause' in error ? error.cause : undefined;
-}
-
-function isProviderCallError(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false;
-  if ('name' in error && typeof error.name === 'string' && PROVIDER_CALL_ERROR_NAME.test(error.name)) return true;
-  return 'statusCode' in error || 'responseBody' in error;
-}
-
-function runErrorCode(error: unknown, message: string): FactoryDispatchFailureCode {
-  const lower = message.toLowerCase();
-  if (lower.includes(CREDENTIAL_RESOLUTION_FAILURE)) {
-    return lower.includes(NO_AUTHENTICATED_USER) ? 'run_user_unauthenticated' : 'run_credentials_unavailable';
-  }
-  const status = httpStatus(error) ?? httpStatus(causeOf(error));
-  if (status === 401 || status === 403) return 'run_credentials_unavailable';
-  const providerCall = isProviderCallError(error) || isProviderCallError(causeOf(error));
-  return providerCall && classifyProviderError(error) === 'auth' ? 'run_credentials_unavailable' : 'run_failed';
-}
-
-function runErrorFailure(label: string, error: unknown): RunEndedInError {
-  const cause = (error instanceof Error ? error.message : String(error ?? '')).trim();
-  if (!cause) return new RunEndedInError('run_failed', `${label} ended in error.`);
-  return new RunEndedInError(runErrorCode(error, cause), `${label} ended in error: ${cause}`);
-}
 
 /** A run in the review seat: a pull request review, unless it is the card's board's self-review. */
 function reviewSeatSkill(decision: unknown): { skillName?: unknown } | undefined {
@@ -218,37 +177,6 @@ function isTerminalFailure(attempts: number, failureCode: FactoryDispatchFailure
     failure.autoRetry === false
   );
 }
-
-/**
- * Conservative check for observational-memory failures that a retry cannot fix:
- * a provider rejecting the request outright (HTTP 400 / model unsupported /
- * authentication). Anything ambiguous (timeouts, 5xx, rate limits, network
- * blips) is intentionally left retryable to avoid dead-ending a card that would
- * have recovered on its own.
- */
-function isPermanentProviderRejection(error: string): boolean {
-  const normalized = error.toLowerCase();
-  return (
-    /\bhttp(?:\/\d(?:\.\d)?)?\s*400\b/.test(normalized) ||
-    /\bstatus(?:\s*code)?\s*[:=]?\s*400\b/.test(normalized) ||
-    /\b400\s*(?:bad request|status)\b/.test(normalized) ||
-    normalized.includes('model not supported') ||
-    normalized.includes('model is not supported') ||
-    normalized.includes('unsupported model') ||
-    normalized.includes('not supported with') ||
-    normalized.includes('unauthorized') ||
-    normalized.includes('authentication') ||
-    (normalized.includes('invalid') && normalized.includes('model'))
-  );
-}
-
-/**
- * fork(claude-agent): slice 5d. How a run approves the call it paused on: through the call's
- * interaction broker record. `undefined` when there is nothing it can approve (no record, or one a
- * yes doesn't answer), so the call waits for a person; else the approval, which resolves once the
- * session has it.
- */
-type ApprovePausedCall = (call: { toolCallId: string; toolName: string }) => Promise<(() => Promise<void>) | undefined>;
 
 /** fork(claude-agent): the interaction broker's records of what Mastra Code sessions wait on, and how they're answered. */
 export interface DispatcherInteractions {
@@ -269,187 +197,6 @@ function approvalOf(request: InteractionRecord['request']): InteractionResponse 
   // A tool that paused itself for a yes or no; a gate holds its run open and never parks it here.
   if (request.kind === 'tool_approval' && !request.gate) return { kind: 'tool_approval', approved: true };
   return undefined;
-}
-
-function watchRun(
-  session: Pick<DispatcherSession, 'subscribe'>,
-  {
-    timeoutMs,
-    autoApprovedTool,
-    autoApproving,
-    approve,
-    onAgentEnd,
-    label,
-    runStillActive,
-  }: {
-    timeoutMs: number;
-    /** The tool this run answers itself when it pauses on it; any other pause waits for a person. */
-    autoApprovedTool?: string;
-    /** Where the run says which paused calls it is about to answer. */
-    autoApproving?: Set<string>;
-    /** fork(claude-agent): how it approves one; without it every pause waits for a person. */
-    approve?: ApprovePausedCall;
-    onAgentEnd?: () => Promise<boolean>;
-    label: string;
-    /** Level-triggered check against the run registry, consulted at every heartbeat the edge-triggered wait misses. */
-    runStillActive: () => boolean;
-  },
-) {
-  let resolveAgentEnd!: () => void;
-  let agentEnd!: Promise<void>;
-  let endReason: 'complete' | 'aborted' | 'error' | 'suspended' | undefined;
-  let supersededAtEnd: Promise<boolean> | undefined;
-  let parked: { toolName: string; toolCallId: string } | undefined;
-  let approvals = 0;
-  const announced = new Set<string>();
-  // Latest observational-memory failure seen on this run. The stream aborts the
-  // run when observation/reflection fails, but the abort itself carries no
-  // reason — so without this the true cause (e.g. a provider rejecting the OM
-  // model) is lost and the abort is retried blindly.
-  let omFailure: string | undefined;
-  // The run's own error event precedes its `agent_end: 'error'` and is the only place the cause appears.
-  let runError: unknown;
-  // Re-armed before a redelivery so the second send waits on its own run's
-  // ending rather than seeing the one that already resolved.
-  const arm = () => {
-    endReason = undefined;
-    supersededAtEnd = undefined;
-    omFailure = undefined;
-    runError = undefined;
-    agentEnd = new Promise<void>(resolve => {
-      resolveAgentEnd = resolve;
-    });
-  };
-  arm();
-  const unsubscribe = session.subscribe(event => {
-    if (event.type === 'agent_end') {
-      endReason = event.reason;
-      supersededAtEnd = onAgentEnd?.();
-      resolveAgentEnd();
-      return;
-    }
-    if (event.type === 'error') {
-      runError = event.error;
-      return;
-    }
-    if (event.type === 'om_observation_failed' || event.type === 'om_buffering_failed') {
-      if (event.error) omFailure = event.error;
-      return;
-    }
-    if (event.type === 'tool_suspended') {
-      parked = { toolName: event.toolName, toolCallId: event.toolCallId };
-      // Said before the run ends on it, so nobody is asked to answer what this run answers itself.
-      if (approve && event.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
-        announced.add(event.toolCallId);
-        autoApproving?.add(event.toolCallId);
-      }
-      return;
-    }
-    if (event.type === 'tool_suspension_cancelled' && parked?.toolCallId === event.toolCallId) {
-      parked = undefined;
-    }
-  });
-  // Failing a run the registry still shows would kick off a duplicate into a busy session.
-  const wait = async () => {
-    const deadline = Date.now() + timeoutMs;
-    while (Date.now() < deadline) {
-      const heartbeatMs = Math.min(RUN_REGISTRY_HEARTBEAT_MS, deadline - Date.now());
-      if (await waitForAgentEndOrTimeout(agentEnd, heartbeatMs)) return true;
-      if (!runStillActive()) return false;
-    }
-    throw new FactoryDispatchError(
-      'run_overdue',
-      `${label} is still in flight after ${Math.round(timeoutMs / 3_600_000)} hours and needs a person.`,
-    );
-  };
-
-  return {
-    arm,
-    wait,
-    supersededAtEnd: () => supersededAtEnd,
-    endReason: () => endReason,
-    /** The tool the run is parked on, when it ended suspended. */
-    parked: () => parked,
-    close: () => {
-      // A watch that gives up answers nothing more, so its pauses wait for a person again.
-      for (const toolCallId of announced) autoApproving?.delete(toolCallId);
-      unsubscribe();
-    },
-    /** The run's own verdict, thrown as what the dispatcher should record. */
-    async settle(): Promise<void> {
-      let observed = await wait();
-      // Past the cap the plan stays parked: the person it waits for sees it in the inbox.
-      while (approve && autoApprovedTool && parked?.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
-        const { toolCallId, toolName } = parked;
-        // fork(claude-agent): answered through its broker record (slice 5d); one it can't answer waits for a person.
-        let approval: (() => Promise<void>) | undefined;
-        try {
-          approval = await approve({ toolCallId, toolName });
-        } finally {
-          if (!approval) autoApproving?.delete(toolCallId);
-        }
-        if (!approval) break;
-        parked = undefined;
-        // Counted before the resumed run can pause again, so its next pause is judged against the cap.
-        approvals += 1;
-        arm();
-        try {
-          await approval();
-        } finally {
-          autoApproving?.delete(toolCallId);
-        }
-        observed = await wait();
-      }
-      if (!observed) {
-        // A completed decision with no observed run end is exactly the
-        // silent-stall failure mode: the card advances while nobody works it.
-        // Delivery already began, so retrying with a fresh generation could
-        // duplicate work whose terminal event was lost.
-        throw new FactoryDispatchError(
-          'run_terminal_event_missing',
-          `${label} terminal event was not observed before timeout.`,
-        );
-      }
-      if (endReason === 'error') throw runErrorFailure(label, runError);
-      if (endReason === 'aborted') {
-        // An abort that follows an observational-memory failure is not the
-        // usual "process went away" case — the OM stream deliberately aborted
-        // the run because observation/reflection failed. Surface that real
-        // cause instead of the generic message, and when it is a permanent
-        // provider/config rejection (e.g. the OM model is not accepted by the
-        // account) fail terminally so retries stop hammering a run that can
-        // never succeed until the configuration changes.
-        if (omFailure) {
-          if (isPermanentProviderRejection(omFailure)) {
-            throw new FactoryDispatchError(
-              'run_configuration_invalid',
-              `${label} was aborted by an observational-memory failure that will not succeed on retry: ${omFailure}`,
-            );
-          }
-          throw new Error(`${label} was aborted after an observational-memory failure: ${omFailure}`);
-        }
-        // Retryable, though an abort reads as deliberate. The stream does not
-        // say who aborted, and in practice the dominant cause is the process
-        // going away underneath the run — an operator restarting the server —
-        // not anyone deciding this work should stop. Treating that as terminal
-        // dead-ends the card at attempt 1 with nothing on the board to press. A
-        // spurious retry is bounded by MAX_ATTEMPTS; a dead card costs a human
-        // a manual nudge.
-        throw new Error(`${label} was aborted before it finished.`);
-      }
-    },
-  };
-}
-
-function waitForAgentEndOrTimeout(agentEnd: Promise<void>, timeoutMs: number): Promise<boolean> {
-  return new Promise(resolve => {
-    const timeout = setTimeout(() => resolve(false), timeoutMs);
-    timeout.unref?.();
-    void agentEnd.then(() => {
-      clearTimeout(timeout);
-      resolve(true);
-    });
-  });
 }
 
 interface SessionOwner {
@@ -511,6 +258,10 @@ type SeamGoalStep =
   | { kind: 'waiting'; resumed: Promise<RuntimeRunEnd> };
 
 interface SeamRun {
+  /** The adapter that runs the kickoff (Claude Agent's, or Mastra Code's, which keeps its own goal loop). */
+  seam: Pick<FactoryRuntimeSessions, 'kickoff' | 'ownsGoal'>;
+  /** Mastra Code: the controller session the run lives in; its run record is the session's own. */
+  session?: BoundDispatcherSession;
   binding: FactoryRunBindingRecord;
   startedBy: string;
   orgId: string;
@@ -773,7 +524,6 @@ export class FactoryDecisionDispatcher {
   constructor(options: FactoryDecisionDispatcherOptions) {
     this.#audit = options.audit;
     this.#controller = options.controller;
-    this.#mastraCode = new MastraCodeRuntimeSessions(options.controller); // fork(claude-agent)
     this.#transitionService = options.transitionService;
     this.#boards = toBoardSource(options.boards);
     this.#intakeRoutes = options.intakeRoutes;
@@ -806,6 +556,12 @@ export class FactoryDecisionDispatcher {
       options.skillCompletionObservationTimeoutMs,
       SKILL_COMPLETION_OBSERVATION_TIMEOUT_MS,
     );
+    // fork(claude-agent)
+    this.#mastraCode = new MastraCodeRuntimeSessions(options.controller, {
+      timeoutMs: this.#skillCompletionObservationTimeoutMs,
+      autoApproving: this.#autoApproving,
+      approver: (sessionId, requestContext, label) => this.#approver(sessionId, requestContext, label),
+    });
   }
 
   start(): void {
@@ -1456,283 +1212,10 @@ export class FactoryDecisionDispatcher {
           throw new FactoryDecisionSuperseded();
         }
         const binding = await this.#requireOrPrepareBinding(record, decision.role);
-        // fork(claude-agent): a session on another runtime runs its kickoff through the seam.
-        if (await this.#onRuntimeSeam(binding)) {
-          await this.#withBindingSkillRun(binding.id, () => this.#invokeSkillOnSeam(record, decision, binding));
-          return;
-        }
-        await this.#withBindingSkillRun(binding.id, async () => {
-          const item = record.workItemId
-            ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
-            : null;
-          const startedBy = item?.sessions[binding.role]?.startedBy;
-          if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
-          await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
-          const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
-          const requestContext = factoryRequestContext({
-            session,
-            binding,
-            userId: startedBy,
-            orgId: record.orgId,
-          });
-          const resolved =
-            decision.skillName === undefined
-              ? await resolvePromptInvocation(this.#controller, {
-                  sessionId: binding.sessionId,
-                  prompt: decision.prompt,
-                })
-              : decision.resume === true
-                ? await resolveSkillResumeInvocation(this.#controller, {
-                    sessionId: binding.sessionId,
-                    name: decision.skillName,
-                    arguments: decision.arguments,
-                  })
-                : await resolveSkillInvocation(this.#controller, {
-                    sessionId: binding.sessionId,
-                    name: decision.skillName,
-                    arguments: decision.arguments,
-                  });
-          await this.#switchThread(session, binding, { userId: startedBy, orgId: record.orgId });
-          const deliveryId =
-            record.deliveryGeneration === 0 ? record.id : `${record.id}:retry:${record.deliveryGeneration}`;
-          const kickoffLanded = async () =>
-            (await session.thread.listActiveMessages()).some(message => message.id === deliveryId);
-          const kickoffStale = async () =>
-            (await this.#roleSuperseded(record, decision.role)) ||
-            (await this.#findBinding(record, decision.role))?.id !== binding.id ||
-            (await this.#decisionOvertaken(record, decision.role));
-          const runStillActive = () => this.#mastraCode.isThreadRunning(binding.threadId);
-          await this.#waitForOpenRun(session, binding, 'Factory skill run');
-          if (await this.#roleSuperseded(record, decision.role)) throw new FactoryDecisionSuperseded();
-          const activeBinding = await this.#requireBinding(record, decision.role);
-          if (activeBinding.id !== binding.id) {
-            throw new FactoryDispatchError(
-              'session_unavailable',
-              `Factory binding ${binding.id} changed while waiting for its open run to end.`,
-            );
-          }
-          if (await kickoffLanded()) {
-            if (decision.goal) await this.#startPhaseGoal(record, decision.goal, session, binding, requestContext);
-            return this.#replayLanded(record, decision, session, runStillActive);
-          }
-          if (await kickoffStale()) throw new FactoryDecisionSuperseded();
-          // Safe under the replay guard above: it matches deliveryId, never prompt content.
-          // Re-read: the description may have been edited while the open run drained.
-          const current = record.workItemId
-            ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
-            : null;
-          const kickoffContents = withWorkItemDescription(resolved.contents, current?.description);
-          // A skill kickoff is system-generated, not something the human typed: send it
-          // as a typed `skill` signal so the model sees `<skill name="…">` and traces
-          // record the skill name. Plain-prompt kickoffs stay user messages.
-          const kickoffSignal =
-            resolved.skillName !== undefined
-              ? {
-                  type: 'reactive' as const,
-                  tagName: 'skill',
-                  attributes: { name: resolved.skillName },
-                }
-              : { type: 'user' as const, tagName: 'user' };
-          // The description read is async storage I/O; the card can move while it runs.
-          if (await kickoffLanded()) {
-            if (decision.goal) await this.#startPhaseGoal(record, decision.goal, session, binding, requestContext);
-            return this.#replayLanded(record, decision, session, runStillActive);
-          }
-          if (await kickoffStale()) throw new FactoryDecisionSuperseded();
-          await this.#reviewQueuedOnce(record, decision);
-          if (decision.cancelInFlight) await this.#mastraCode.abort(binding.sessionId); // fork(claude-agent)
-          const precedingMessage = decision.precedingMessage;
-          if (precedingMessage) {
-            await awaitNotification(() =>
-              session.sendNotificationSignal(
-                {
-                  source: 'factory',
-                  kind: 'stage-transition',
-                  summary: precedingMessage,
-                  priority: 'medium',
-                  payload: { message: precedingMessage },
-                  sourceId: `${record.id}:stage-transition`,
-                  dedupeKey: `${record.idempotencyKey}:stage-transition`,
-                },
-                {
-                  ifActive: { behavior: 'deliver' },
-                  ifIdle: { behavior: 'persist' },
-                  requestContext,
-                },
-              ),
-            );
-            if (await kickoffStale()) throw new FactoryDecisionSuperseded();
-          }
-          // Held before the kickoff lands, so the goal judge sees the objective from the run's first turn.
-          const goal = decision.goal ? await this.#setPhaseGoal(record, decision.goal, session, binding) : undefined;
-          // The run's own verdict, not the delivery's. A signal can reach the
-          // agent perfectly and the run still die on a provider error or be
-          // cancelled mid-flight; without this the decision reports success and
-          // the break is invisible on the card.
-          const since = new Date();
-          const runItem = record.workItemId
-            ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
-            : null;
-          const boards = runItem ? await this.#boards.load(record) : null;
-          const stage = runItem?.stages.length === 1 ? runItem.stages[0] : undefined;
-          const phase = stage && runItem ? boards?.get(boardForWorkItem(runItem))?.phases[stage] : undefined;
-          const workingRevision =
-            phase?.kind === 'working' &&
-            (phase.runner.goal || phase.exitTool) &&
-            phase.runner.context === decision.role &&
-            phase.runner.skill === decision.skillName
-              ? runItem!.revision
-              : null;
-          const existingLinkedReviewIds = new Set(
-            workingRevision === null || !runItem
-              ? []
-              : (await this.#storage.listLinked({ item: runItem, limit: 100 })).map(card => card.id),
-          );
-          const run = watchRun(session, {
-            timeoutMs: this.#skillCompletionObservationTimeoutMs,
-            autoApprovedTool: await this.#autoApprovedExitTool(record),
-            autoApproving: this.#autoApproving,
-            approve: this.#approver(binding.sessionId, requestContext, 'Factory skill run'), // fork(claude-agent)
-            onAgentEnd: () => this.#roleSuperseded(record, decision.role),
-            label: 'Factory skill run',
-            runStillActive,
-          });
-
-          const sendKickoff = async () => {
-            const result = session.sendSignal(
-              {
-                id: deliveryId,
-                ...kickoffSignal,
-                contents: kickoffContents,
-              },
-              // Without `requireDelivery` the session resolves `accepted` on the
-              // next tick and swallows wake failures, so a kickoff that never
-              // reached the agent would be marked succeeded and the thread would
-              // stay empty forever.
-              { requestContext, requireDelivery: true },
-            );
-            const settled = await result.accepted;
-            if (settled.action !== 'wake' && settled.action !== 'deliver') {
-              // A named non-delivery action proves no run began and is safe to
-              // retry. An absent action did not confirm either outcome, so a new
-              // delivery generation could duplicate work.
-              throw new FactoryDispatchError(
-                settled.action ? 'notification_delivery_failed' : 'skill_delivery_ambiguous',
-                `Factory skill invocation signal did not reach the agent (${String(settled.action)}).`,
-              );
-            }
-            return settled;
-          };
-
-          try {
-            let settled = await sendKickoff();
-            while (settled.action === 'deliver') {
-              // `deliver` means the signal was queued onto a run that was already
-              // in flight. If that run ends before draining its queue the prompt
-              // is dropped silently: no turn starts, no error surfaces, and the
-              // decision reports success while the card sits in its new stage with
-              // nobody working. Signals persist under their generation-scoped id
-              // (the same identity the replay guard above reads), so confirm the
-              // message actually landed in the thread rather than trusting the ack.
-              if (await kickoffLanded()) break;
-
-              // Another run can start while the previous run is finishing, so one
-              // redelivery is not enough to prove the session is idle. Follow each
-              // run boundary until the kickoff either lands on an active run or
-              // wakes a new one.
-              if (!(await run.wait())) {
-                throw new FactoryDispatchError(
-                  'run_terminal_event_missing',
-                  'Factory skill invocation is waiting on a run whose terminal event was not observed.',
-                );
-              }
-              // The queued copy often surfaces only once the run it was queued
-              // onto ends. Resend only when it is still missing, and never once
-              // the card has moved on or the seat was handed over or revoked —
-              // a stale kickoff would restart a phase that already finished.
-              if (await kickoffLanded()) break;
-              if (await kickoffStale()) throw new FactoryDecisionSuperseded();
-              run.arm();
-              settled = await sendKickoff();
-            }
-            if (goal) await this.#remindPhaseGoal(record, goal, session, binding, requestContext);
-            await this.#recordRunStart(
-              session,
-              binding,
-              deliveryId,
-              record.approvedBy ?? undefined,
-              run.endReason,
-              item?.title,
-            );
-            this.#reviewWatched.add(record);
-            await this.#reviewStatus(record, decision, { phase: 'reviewing', startedAt: since });
-            // A landed `deliver` still runs on the in-flight session, so the run's
-            // terminal outcome matters as much as a fresh wake's: a run that ends
-            // in error after accepting the prompt has still failed this decision.
-            try {
-              await this.#reportingRunEnd(
-                {
-                  binding,
-                  startedBy,
-                  since,
-                  attempts: record.attempts,
-                  // A role that handed the card on mid-turn: the failure is its successor's, not ours.
-                  superseded: async () =>
-                    (await run.supersededAtEnd()) ?? (await this.#roleSuperseded(record, decision.role)),
-                },
-                async () => {
-                  await this.#withOpenRunHeartbeat(session, deliveryId, () => run.settle());
-                  if (run.endReason() !== 'complete' || workingRevision === null || (await run.supersededAtEnd()))
-                    return;
-                  // A final tool result can persist after agent_end. Read this binding's trailing
-                  // results before deciding the unchanged card means the run did no work.
-                  await this.#reconcileRunBinding?.(binding);
-                  // fork(claude-agent): a pull request the run opened on its branch that no tool result named.
-                  await this.#runTurnEnded(binding);
-                  const after = await this.#storage.get({ orgId: record.orgId, id: record.workItemId! });
-                  if (after?.revision === workingRevision && !(await kickoffStale())) {
-                    const linked = await this.#storage.listLinked({ item: after, limit: 100 });
-                    const ownCardHandOff = linked.some(card => {
-                      if (
-                        card.parentWorkItemId !== after.id ||
-                        existingLinkedReviewIds.has(card.id) ||
-                        card.externalSource?.integrationId !== 'github' ||
-                        card.externalSource.type !== 'pull-request' ||
-                        card.stages.length !== 1
-                      )
-                        return false;
-                      const review = boards?.get(boardForWorkItem(card))?.phases[card.stages[0]!];
-                      return review?.kind === 'working' && review.runner.context === 'review';
-                    });
-                    if (ownCardHandOff) return;
-                    throw new FactoryDispatchError(
-                      'run_incomplete',
-                      'Factory skill run ended before completing the working phase.',
-                    );
-                  }
-                },
-              );
-              // Handed on before the turn ended: the run's clean end is the successor's, not
-              // a finished review. A move after the turn ended (a merge) keeps the completion.
-              if (await run.supersededAtEnd()) {
-                this.#reviewWatched.delete(record);
-                await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
-              }
-            } catch (error) {
-              // Roles share one session. When this role handed the card on
-              // mid-turn, the next role's kickoff was delivered onto the same
-              // run and the turn never ended for us — its eventual verdict is
-              // the successor's to record, not ours. Capture that state when the
-              // terminal event arrives so a later hand-on cannot erase our failure.
-              const superseded = (await run.supersededAtEnd()) ?? (await this.#roleSuperseded(record, decision.role));
-              if (!superseded) throw error;
-              this.#reviewWatched.delete(record);
-              await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
-            }
-          } finally {
-            run.close();
-          }
-        });
+        // fork(claude-agent): every kickoff runs through the seam: on Claude Agent's adapter when the
+        // session runs there, else on Mastra Code's, which keeps its own objective loop (`ownsGoal`).
+        const seam = (await this.#onRuntimeSeam(binding)) ? this.#runtimeSessions! : this.#mastraCode;
+        await this.#withBindingSkillRun(binding.id, () => this.#invokeSkillOnSeam(record, decision, binding, seam));
         return;
       }
       case 'sendMessage': {
@@ -3005,13 +2488,17 @@ export class FactoryDecisionDispatcher {
     }
   }
 
-  /** `invokeSkill` for a session on another runtime. Mirrors the Mastra Code path above. */
+  /**
+   * `invokeSkill` through the seam. A session on Claude Agent has its goal judged here, between turns; one
+   * on Mastra Code (`ownsGoal`) keeps its objective loop, which re-kicks inside one run and judges it, so
+   * the goal is held and reminded in the session as before and the run is watched to its one end.
+   */
   async #invokeSkillOnSeam(
     record: FactoryDeferredDecisionRecord,
     decision: Extract<FactoryCommitDecision, { type: 'invokeSkill' }>,
     binding: FactoryRunBindingRecord,
+    seam: Pick<FactoryRuntimeSessions, 'hasRun' | 'kickoff' | 'ownsGoal'>,
   ): Promise<void> {
-    const seam = this.#runtimeSessions!;
     const item = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
     const startedBy = item?.sessions[binding.role]?.startedBy;
     if (!startedBy) throw new Error(`Factory binding ${binding.id} has no authenticated session owner.`);
@@ -3022,15 +2509,39 @@ export class FactoryDecisionDispatcher {
       (await this.#decisionOvertaken(record, decision.role));
     const requestContext = this.#seamRequestContext(startedBy, record.orgId);
     const label = 'Factory skill run';
-    // A kickoff that already landed is not sent again; a review waits for that run before it says it finished.
-    if (await seam.hasRun(binding.sessionId, deliveryId)) {
-      if (await this.#isReviewRun(record, decision)) {
-        await this.#seamIdle(binding, label);
-        this.#reviewReplayed.add(record);
-      }
-      return;
+    // Mastra Code: the controller's session, whose run registry, open-run ledger and goal this run lives in.
+    let mastra: { session: BoundDispatcherSession; requestContext: RequestContext } | undefined;
+    if (seam.ownsGoal) {
+      await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
+      const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
+      mastra = {
+        session,
+        requestContext: factoryRequestContext({ session, binding, userId: startedBy, orgId: record.orgId }),
+      };
     }
-    await this.#clearSeamSession(binding, requestContext, label, decision.cancelInFlight === true);
+    const replayLanded = async () => {
+      if (!mastra) return;
+      if (decision.goal) {
+        await this.#startPhaseGoal(record, decision.goal, mastra.session, binding, mastra.requestContext);
+      }
+      return this.#replayLanded(record, decision, mastra.session, () =>
+        this.#mastraCode.isThreadRunning(binding.threadId),
+      );
+    };
+    if (mastra) {
+      // The run in flight on the thread, live here or on another dispatcher, is waited for (or handed back).
+      await this.#waitForOpenRun(mastra.session, binding, label);
+    } else {
+      // A kickoff that already landed is not sent again; a review waits for that run before it says it finished.
+      if (await seam.hasRun(binding.sessionId, deliveryId)) {
+        if (await this.#isReviewRun(record, decision)) {
+          await this.#seamIdle(binding, label);
+          this.#reviewReplayed.add(record);
+        }
+        return;
+      }
+      await this.#clearSeamSession(binding, requestContext, label, decision.cancelInFlight === true);
+    }
     if (await this.#roleSuperseded(record, decision.role)) throw new FactoryDecisionSuperseded();
     const activeBinding = await this.#requireBinding(record, decision.role);
     if (activeBinding.id !== binding.id) {
@@ -3039,21 +2550,37 @@ export class FactoryDecisionDispatcher {
         `Factory binding ${binding.id} changed while waiting for its open run to end.`,
       );
     }
+    let current: Card | null | undefined;
+    if (mastra) {
+      if (await seam.hasRun(binding.sessionId, deliveryId)) return replayLanded();
+      if (await kickoffStale()) throw new FactoryDecisionSuperseded();
+      // Re-read: the description may have been edited while the open run drained.
+      current = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+      // The read is async storage I/O; the card can move, and the kickoff land, while it runs.
+      if (await seam.hasRun(binding.sessionId, deliveryId)) return replayLanded();
+    }
     if (await kickoffStale()) throw new FactoryDecisionSuperseded();
     await this.#reviewQueuedOnce(record, decision);
     // Held before the working-phase check reads the card's revision: holding it stamps the card.
-    const goal = decision.goal ? await this.#holdSeamGoal(record, decision.goal, binding) : undefined;
+    const seamGoal = !mastra && decision.goal ? await this.#holdSeamGoal(record, decision.goal, binding) : undefined;
+    const sessionGoal =
+      mastra && decision.goal ? await this.#setPhaseGoal(record, decision.goal, mastra.session, binding) : undefined;
     // Re-read: the description may have been edited while the open run drained.
-    const current = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+    if (!mastra) {
+      current = record.workItemId ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId }) : null;
+    }
     const since = new Date();
     const workingPhase = await this.#workingPhaseCheck(record, decision, kickoffStale);
-    if (goal && !workingPhase) {
+    if (seamGoal && !workingPhase) {
       // Factory judges a goal by the card leaving the phase the run works; this run works none.
       console.warn(
         `[factory] ${decision.skillName ?? 'prompt'} run on ${binding.sessionId} does not work its card's phase: its goal is not pursued.`,
       );
     }
+    const autoApprovedTool = await this.#autoApprovedExitTool(record);
     await this.#runOnSeam({
+      seam,
+      ...(mastra ? { session: mastra.session } : {}),
       binding,
       startedBy,
       orgId: record.orgId,
@@ -3072,13 +2599,32 @@ export class FactoryDecisionDispatcher {
           : { prompt: decision.prompt }),
         description: current?.description ?? null,
         ...(decision.precedingMessage ? { preface: decision.precedingMessage } : {}),
+        ...(mastra
+          ? {
+              thread: { id: binding.threadId, resourceId: binding.resourceId },
+              ...(decision.cancelInFlight ? { cancelInFlight: true } : {}),
+              ...(autoApprovedTool ? { autoApprovedTool } : {}),
+              prefaceKeys: {
+                sourceId: `${record.id}:stage-transition`,
+                dedupeKey: `${record.idempotencyKey}:stage-transition`,
+              },
+              stillWanted: async () => !(await kickoffStale()),
+              superseded: () => this.#roleSuperseded(record, decision.role),
+              ...(sessionGoal
+                ? {
+                    delivered: () =>
+                      this.#remindPhaseGoal(record, sessionGoal, mastra.session, binding, mastra.requestContext),
+                  }
+                : {}),
+            }
+          : {}),
       },
-      autoApprovedTool: await this.#autoApprovedExitTool(record),
+      ...(mastra ? {} : { autoApprovedTool }),
       superseded: () => this.#roleSuperseded(record, decision.role),
       ...(workingPhase ? { workingPhase } : {}),
-      ...(goal && workingPhase ? { goal } : {}),
+      ...(seamGoal && workingPhase ? { goal: seamGoal } : {}),
       approvedBy: record.approvedBy ?? undefined,
-      workItemName: current?.title,
+      workItemName: mastra ? item?.title : current?.title,
       onStarted: async () => {
         this.#reviewWatched.add(record);
         await this.#reviewStatus(record, decision, { phase: 'reviewing', startedAt: since });
@@ -3268,8 +2814,7 @@ export class FactoryDecisionDispatcher {
    * the background once they answer, so its goal goes on and its run record ends.
    */
   async #runOnSeam(run: SeamRun): Promise<void> {
-    const { binding, startedBy, label } = run;
-    const seam = this.#runtimeSessions!;
+    const { binding, startedBy, label, seam, session } = run;
     const requestContext = this.#seamRequestContext(startedBy, run.orgId);
     let approvals = 0;
     const autoApprovePlan = run.autoApprovedTool === 'submit_plan' ? () => approvals++ < MAX_PLAN_APPROVALS : undefined;
@@ -3281,7 +2826,8 @@ export class FactoryDecisionDispatcher {
           requestContext,
         );
       } catch (error) {
-        if (error instanceof FactoryDispatchError) throw error;
+        // Mastra Code's adapter classifies its own failures: they propagate raw, as before the seam carried it.
+        if (error instanceof FactoryDispatchError || session) throw error;
         // Nothing reached the runtime, so a retry with a fresh delivery is safe.
         throw new FactoryDispatchError(
           'notification_delivery_failed',
@@ -3298,7 +2844,20 @@ export class FactoryDecisionDispatcher {
       ...run.kickoff,
       ...(run.goal ? { goal: { objective: run.goal.objective, maxRuns: run.goal.maxRuns } } : {}),
     });
-    const record = await this.#openSeamRun(run, kickoffId);
+    // A Mastra Code run is on its session's open-run ledger, and its end recorded by the session's own listener.
+    let record: RuntimeRunLedger | undefined;
+    if (session) {
+      await this.#recordRunStart(
+        session,
+        binding,
+        kickoffId,
+        run.approvedBy,
+        started.observedEnd ?? (() => undefined),
+        run.workItemName,
+      );
+    } else {
+      record = await this.#openSeamRun(run, kickoffId);
+    }
     const steps: FactoryRunUsageCounts[] = [];
     // How the run ended, once it has; a parked or overdue run is followed instead.
     let ended: 'complete' | 'aborted' | 'error' | undefined;
@@ -3312,7 +2871,9 @@ export class FactoryDecisionDispatcher {
         { binding, startedBy, since, attempts: run.attempts, superseded: handedOn },
         async () => {
           let timer: ReturnType<typeof setTimeout> | undefined;
+          // A Mastra Code run's own watch times it (`run_overdue`).
           const overdue = new Promise<never>((_resolve, reject) => {
+            if (session) return;
             timer = setTimeout(
               () =>
                 reject(
@@ -3328,10 +2889,17 @@ export class FactoryDecisionDispatcher {
           try {
             while (true) {
               following = started.ended;
-              const end = await Promise.race([started.ended, overdue]);
+              const waiting = started.ended;
+              const end = await (session
+                ? this.#withOpenRunHeartbeat(session, kickoffId, () => waiting)
+                : Promise.race([waiting, overdue]));
               following = undefined;
               steps.push(...runtimeUsageSteps(end.usage));
-              supersededAtEnd = run.superseded?.() ?? Promise.resolve(false);
+              supersededAtEnd = end.supersededAtEnd ?? run.superseded?.() ?? Promise.resolve(false);
+              if (end.failure) {
+                ended = end.reason === 'aborted' ? 'aborted' : 'error';
+                throw end.failure;
+              }
               if (end.reason === 'error') {
                 ended = 'error';
                 throw runErrorFailure(label, new Error(end.error ?? 'The run failed.'));
@@ -3343,11 +2911,17 @@ export class FactoryDecisionDispatcher {
               // Parked on a person (a plan to approve, a question), like a suspended Mastra Code run: its
               // turn goes on once they answer, and the card moves then.
               if (end.reason === 'awaiting_interaction') {
-                following = end.resumed ?? Promise.resolve(end);
+                if (!session) following = end.resumed ?? Promise.resolve(end);
                 return;
               }
               ended = 'complete';
               if (await supersededAtEnd) return;
+              if (session) {
+                // A final tool result can persist after the run's end: read this binding's trailing results
+                // before deciding the unchanged card means the run did no work. Only a run working its phase.
+                if (!run.workingPhase) return;
+                await this.#reconcileRunBinding?.(binding);
+              }
               await this.#runTurnEnded(binding);
               if (!run.goal || !run.workingPhase) {
                 await run.workingPhase?.verify();
@@ -3392,7 +2966,9 @@ export class FactoryDecisionDispatcher {
       if (!(await handedOn())) throw error;
       await run.onSuperseded?.();
     } finally {
-      if (ended) await this.#closeSeamRun(record, binding, kickoffId, ended, steps);
+      if (session) {
+        // The session's own listener ends the run's record (with its usage) and renews nothing more here.
+      } else if (ended) await this.#closeSeamRun(record, binding, kickoffId, ended, steps);
       else if (following) void this.#followSeamRun(run, { record, kickoffId, steps, send }, following);
     }
   }
@@ -3650,6 +3226,7 @@ export class FactoryDecisionDispatcher {
             }
             await this.#clearSeamSession(binding, this.#seamRequestContext(startedBy, record.orgId), label, false);
             await this.#runOnSeam({
+              seam: this.#runtimeSessions!,
               binding,
               startedBy,
               orgId: record.orgId,
