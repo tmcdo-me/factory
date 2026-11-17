@@ -15,7 +15,10 @@ const WINDOWS_KEPT = 4;
  * has the call, so a call is matched to the window open when it started waiting.
  */
 export class SessionReportWindows {
-  readonly #sessions = new Map<string, { threadId: () => string | null | undefined; opened: Date[] }>();
+  readonly #sessions = new Map<
+    string,
+    { threadId: () => string | null | undefined; opened: Array<{ since: Date; threadId: string | null }> }
+  >();
 
   /**
    * Follow a session's windows; `threadId` reads the thread it runs on now, or `undefined` once the
@@ -24,10 +27,12 @@ export class SessionReportWindows {
   watch(sessionId: string, threadId: () => string | null | undefined): (since: Date) => void {
     for (const [id, gone] of this.#sessions)
       if (id !== sessionId && gone.threadId() === undefined) this.#sessions.delete(id);
-    const entry = { threadId, opened: [] as Date[] };
+    const entry = { threadId, opened: [] as Array<{ since: Date; threadId: string | null }> };
     this.#sessions.set(sessionId, entry);
     return since => {
-      entry.opened.push(since);
+      // The thread is read as the window opens: a call is named by the thread it started waiting on,
+      // not the one the session has moved to by the time it is announced.
+      entry.opened.push({ since, threadId: threadId() ?? null });
       if (entry.opened.length > WINDOWS_KEPT) entry.opened.shift();
     };
   }
@@ -35,11 +40,11 @@ export class SessionReportWindows {
   /** The thread and the run window `sessionId` was in at `moment`, if it is followed. */
   at(sessionId: string, moment: Date): { threadId: string | null; since: Date } | undefined {
     const entry = this.#sessions.get(sessionId);
-    const threadId = entry?.threadId();
-    if (!entry || threadId === undefined) return undefined;
+    const current = entry?.threadId();
+    if (!entry || current === undefined) return undefined;
     // Never a window opened after the moment: one older than any kept is judged from the moment itself.
-    const since = entry.opened.findLast(opened => opened.getTime() <= moment.getTime()) ?? moment;
-    return { threadId, since };
+    const window = entry.opened.findLast(opened => opened.since.getTime() <= moment.getTime());
+    return { threadId: window ? window.threadId : current, since: window?.since ?? moment };
   }
 }
 

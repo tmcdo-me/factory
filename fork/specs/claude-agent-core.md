@@ -562,8 +562,8 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Dedupe keys: a notification with one (a gate's `factory-approval:<call>` notice) is kept under the
      id its key gives it (`dedupedMessageId`) on Claude Agent, so a second is `skipped: duplicate`
      (before, the key was dropped on that runtime); Mastra Code coalesces by key while the first is
-     pending, as before. GitHub pull request events to subscribed sessions (`integrations/github/
-webhook.ts`, slice 7) are unchanged: one event is handled once by the event claims, whether
+     pending, as before. GitHub pull request events to subscribed sessions
+     (`integrations/github/webhook.ts`, slice 7) are unchanged: one event is handled once by the event claims, whether
      webhook or poll brought it, for both runtimes, and the per-session keys from #48 stay. Checked on
      aimock Mastra Code sessions (libSQL): a message wakes an idle session, which reads it as its
      owner; two answers at once let one through, and a later one is refused; an urgent message
