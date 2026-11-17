@@ -138,6 +138,22 @@ type ToolCategory = 'shell' | 'file.read' | 'file.write' | 'search' | 'factory' 
   call (a snapshot, not a sum); `contextWindow` is that model's window when the runtime reports it
   (Claude Code does, in `result.modelUsage`; Mastra's model catalog has none). The composer shows
   both, and hides Mastra's observational-memory budgets in Claude Agent sessions.
+  ✅ A custom (OpenAI-compatible) provider's model carries a window: set per model in Settings with
+  the provider's models (`source: 'set'`), or, left blank, read on every save from the provider's
+  `/v1/models` (`source: 'reported'`; its `context_length`, `context_window`, `max_model_len`,
+  `max_input_tokens`, `max_context_length`, `top_provider.context_length`, `limit.context` or
+  llama.cpp's `meta.n_ctx`, never `n_ctx_train`), asked with the provider's key, at most 5 s and
+  1 MB, no redirects; an unreachable list keeps the last reported value. It is kept on the
+  provider's row (`model_context_windows`), and the Mastra Code mirror stamps it on each step's
+  `usage` event as `contextWindow` for the model that produced the step (its reply's model, else the
+  session's), from the same per-org snapshot model calls read (`sessionModelContextWindow`), so the
+  meter has a limit. Custom providers ask for usage on streamed replies
+  (`stream_options.include_usage`), which servers only send when asked; one that refuses the option
+  by name is asked again without it (and from then on). Only org admins add, change or remove
+  custom providers (members read them; `canManage`). Saving without a key keeps the stored key only
+  for the same provider at the same URL origin (else "Re-enter the API key when changing the URL"),
+  never for a new provider whose name maps onto another's id; `clearApiKey` removes it. A session
+  whose history predates the event log (drawn from Mastra's transcript) still has no window.
 
 ### 3.3 Factory tools, defined once
 

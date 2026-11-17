@@ -36,6 +36,9 @@ interface OpenInteraction {
 export class MastraCodeEventMapper {
   readonly #newRunId: () => string;
   #runId: string | undefined;
+  readonly #contextWindow: ((modelId: string | undefined) => number | undefined) | undefined;
+  /** The model the run's latest assistant reply names, so a step's usage is metered against it. */
+  #replyModelId: string | undefined;
   readonly #messages = new Set<string>();
   /** The metadata last reported per open message, so `message.meta` is only sent on change. */
   readonly #messageMeta = new Map<string, string>();
@@ -45,16 +48,39 @@ export class MastraCodeEventMapper {
   readonly #sessionId: string;
   readonly #now: () => Date;
 
-  constructor(options: { sessionId: string; newRunId?: () => string; now?: () => Date }) {
+  constructor(options: {
+    sessionId: string;
+    newRunId?: () => string;
+    now?: () => Date;
+    /**
+     * The context window of the model the session runs now, when the host knows it (a custom
+     * provider's model carries one; Mastra's catalog doesn't). Read at each model step, given the
+     * model that produced it when its reply already said (else the host takes the session's model).
+     */
+    contextWindow?: (modelId: string | undefined) => number | undefined;
+  }) {
     this.#sessionId = options.sessionId;
     this.#newRunId = options.newRunId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
+    this.#contextWindow = options.contextWindow;
+  }
+
+  /** The model's context window for a usage event; a failing lookup leaves it out. */
+  #window(): { contextWindow?: number } {
+    try {
+      const window = this.#contextWindow?.(this.#replyModelId);
+      return window && Number.isFinite(window) && window > 0 ? { contextWindow: window } : {};
+    } catch {
+      return {};
+    }
   }
 
   map(event: AgentControllerEvent): FactoryEvent[] {
     switch (event.type) {
       case 'agent_start': {
         const out: FactoryEvent[] = [];
+        // A new run may be on another model: until its reply names one, the host's current model applies.
+        this.#replyModelId = undefined;
         if (this.#runId) out.push({ type: 'run.ended', runId: this.#runId, reason: 'complete' });
         this.#runId = this.#newRunId();
         out.push({ type: 'run.started', runId: this.#runId });
@@ -181,10 +207,11 @@ export class MastraCodeEventMapper {
             ...(event.usage.reasoningTokens !== undefined ? { reasoningTokens: event.usage.reasoningTokens } : {}),
             // `usage_update` reports one model step, so its prompt is what the model had in context
             // for that step: AI SDK's total input (cache reads and writes included; `prompt_tokens`
-            // for an OpenAI-compatible provider). No `contextWindow`: Mastra's model catalog doesn't
-            // carry one (the registry drops models.dev's `limit.context`; custom providers list
-            // model ids only).
+            // for an OpenAI-compatible provider). The window comes from the host: Mastra's model
+            // catalog carries none (the registry drops models.dev's `limit.context`), but a custom
+            // provider's model can.
             contextTokens: event.usage.promptTokens,
+            ...this.#window(),
           },
         ];
       case 'error': {
@@ -205,6 +232,7 @@ export class MastraCodeEventMapper {
         ];
       }
       case 'model_changed':
+        this.#replyModelId = undefined;
         return [{ type: 'model.changed', runtimeId: MASTRA_CODE_RUNTIME_ID, modelId: event.modelId }];
       default:
         return [];
@@ -264,6 +292,7 @@ export class MastraCodeEventMapper {
     this.#messages.add(message.id);
     const meta = messageMeta(message);
     if (meta.modelId || meta.credentialLabel) this.#messageMeta.set(message.id, JSON.stringify(terminalMeta(meta)));
+    if (message.role === 'assistant' && meta.modelId) this.#replyModelId = meta.modelId;
     const attachments = parts.flatMap(part => {
       const attachment = fileAttachment(part);
       return attachment ? [attachment] : [];
@@ -290,6 +319,7 @@ export class MastraCodeEventMapper {
     if (!this.#messages.has(message.id)) return [];
     const meta = terminalMeta(messageMeta(message));
     if (!Object.keys(meta).length) return [];
+    if (message.role === 'assistant' && meta.modelId) this.#replyModelId = meta.modelId;
     const key = JSON.stringify(meta);
     if (this.#messageMeta.get(message.id) === key) return [];
     this.#messageMeta.set(message.id, key);

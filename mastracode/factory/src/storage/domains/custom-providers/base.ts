@@ -19,6 +19,8 @@ export interface CustomProviderRecord {
   url: string;
   apiKey: string | null;
   models: string[];
+  /** fork(claude-agent): each model's context window in tokens, where known, and where it came from. */
+  modelContextWindows: Record<string, ModelContextWindow>;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +31,17 @@ export interface UpsertCustomProviderInput {
   url: string;
   apiKey?: string;
   models: string[];
+  /** fork(claude-agent): replaces the stored windows; absent clears them. */
+  modelContextWindows?: Record<string, ModelContextWindow>;
+}
+
+/**
+ * fork(claude-agent): a model's context window: `set` by a person in Settings, or `reported` by the
+ * provider's model list (read again on every save, so it follows the provider).
+ */
+export interface ModelContextWindow {
+  tokens: number;
+  source: 'set' | 'reported';
 }
 
 export const CUSTOM_PROVIDERS_SCHEMA: CollectionSchema = {
@@ -42,6 +55,8 @@ export const CUSTOM_PROVIDERS_SCHEMA: CollectionSchema = {
     url: { type: 'text' },
     api_key: { type: 'text', nullable: true },
     models: { type: 'json' },
+    // fork(claude-agent): additive, so rows from before it read as no windows.
+    model_context_windows: { type: 'json', nullable: true },
     created_at: { type: 'timestamp' },
     updated_at: { type: 'timestamp' },
   },
@@ -57,8 +72,22 @@ interface CustomProviderDbRow extends Record<string, unknown> {
   url: string;
   api_key: string | null;
   models: string[];
+  model_context_windows?: Record<string, ModelContextWindow> | null; // fork(claude-agent)
   created_at: Date;
   updated_at: Date;
+}
+
+/** fork(claude-agent): a stored windows column, keeping only positive whole token counts. */
+function contextWindowsOf(value: unknown): Record<string, ModelContextWindow> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  const windows: Record<string, ModelContextWindow> = {};
+  for (const [model, entry] of Object.entries(value)) {
+    const { tokens, source } = (entry ?? {}) as { tokens?: unknown; source?: unknown };
+    if (typeof tokens === 'number' && Number.isInteger(tokens) && tokens > 0) {
+      windows[model] = { tokens, source: source === 'reported' ? 'reported' : 'set' };
+    }
+  }
+  return windows;
 }
 
 export class CustomProvidersStorage extends FactoryStorageDomain {
@@ -91,6 +120,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
       url: row.url,
       apiKey,
       models: Array.isArray(row.models) ? row.models : [],
+      modelContextWindows: contextWindowsOf(row.model_context_windows), // fork(claude-agent)
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -122,8 +152,10 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
 
   /**
    * Create or wholesale-replace a provider by `(orgId, providerId)` — mirrors
-   * the settings.json upsert semantics (no key retention: an absent `apiKey`
-   * clears the stored key). `previousProviderId` renames the provider: the
+   * the settings.json upsert semantics: the row stores exactly `input`, so an
+   * absent `apiKey` stores no key. fork(claude-agent): keeping a stored key on
+   * an edit is the route's decision (`POST /web/config/custom-providers`: only
+   * for the same provider at the same origin), and it passes that key here. `previousProviderId` renames the provider: the
    * common path is a single atomic in-place update of the old row; renaming
    * onto an id that already exists overwrites the target first and removes the
    * old row last, so no interleaving or failure can lose the provider.
@@ -164,6 +196,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
             url: input.url,
             api_key: encryptedApiKey,
             models: input.models,
+            model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
             updated_at: now,
           }),
         );
@@ -210,6 +243,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
           url: input.url,
           api_key: encryptedApiKey,
           models: input.models,
+          model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
           updated_at: now,
         }),
       );
@@ -226,6 +260,7 @@ export class CustomProvidersStorage extends FactoryStorageDomain {
         url: input.url,
         api_key: encryptedApiKey,
         models: input.models,
+        model_context_windows: input.modelContextWindows ?? null, // fork(claude-agent)
         created_at: now,
         updated_at: now,
       });

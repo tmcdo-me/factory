@@ -80,6 +80,47 @@ export const MASTRACODE_GATEWAY_ID = 'mastracode';
 
 type ModelRequestHeaders = Record<string, string>;
 
+/**
+ * fork(claude-agent): custom-provider base URLs that refused `stream_options` (asked without it from
+ * then on, for this process).
+ */
+const refusesStreamOptions = new Set<string>();
+
+/** A request body with `stream_options` taken out, or undefined when it has none. */
+function withoutStreamOptions(body: unknown): string | undefined {
+  if (typeof body !== 'string' || !body.includes('"stream_options"')) return undefined;
+  try {
+    const parsed = JSON.parse(body) as Record<string, unknown>;
+    if (!('stream_options' in parsed)) return undefined;
+    delete parsed.stream_options;
+    return JSON.stringify(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * fork(claude-agent): a fetch for a custom OpenAI-compatible provider that asks once more without
+ * `stream_options` when the server answers 400 naming it (some older servers reject options they
+ * don't know); that provider is then asked without it. Its replies then carry no usage.
+ */
+export function retryWithoutStreamOptions(baseUrl: string, fetchImpl: typeof fetch = fetch): typeof fetch {
+  return async (input, init) => {
+    const stripped = withoutStreamOptions(init?.body);
+    if (stripped === undefined) return fetchImpl(input, init);
+    if (refusesStreamOptions.has(baseUrl)) return fetchImpl(input, { ...init, body: stripped });
+    const response = await fetchImpl(input, init);
+    if (response.status !== 400) return response;
+    const text = await response
+      .clone()
+      .text()
+      .catch(() => '');
+    if (!text.includes('stream_options')) return response;
+    refusesStreamOptions.add(baseUrl);
+    return fetchImpl(input, { ...init, body: stripped });
+  };
+}
+
 export type MastraCodeCustomProvider = { name: string; url: string; apiKey?: string; models?: string[] };
 
 export type MastraCodeGatewayOptions = {
@@ -517,6 +558,11 @@ export class MastraCodeGateway extends MastraModelGateway {
         baseURL: customProvider.url,
         apiKey: args.apiKey,
         headers: args.headers,
+        // fork(claude-agent): ask for usage on streamed replies (`stream_options.include_usage`), which
+        // OpenAI-compatible servers only send when asked; without it the context meter has no tokens.
+        // A server that refuses the option by name is asked again without it.
+        includeUsage: true,
+        fetch: retryWithoutStreamOptions(customProvider.url),
       });
       const reasoningEffort = this.#thinkingLevel ? THINKING_LEVEL_TO_REASONING_EFFORT[this.#thinkingLevel] : undefined;
       const middleware = createReasoningEffortMiddleware(args.providerId, reasoningEffort);

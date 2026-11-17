@@ -16,9 +16,16 @@ export interface MirrorableSession {
 export function mirrorSessionEvents(
   session: MirrorableSession,
   emit: (event: FactoryEvent) => void,
-  options: { onError?(error: unknown, event: AgentControllerEvent): void } = {},
+  options: {
+    onError?(error: unknown, event: AgentControllerEvent): void;
+    /** The context window of the model the session runs now, when known (see `MastraCodeEventMapper`). */
+    contextWindow?: (modelId: string | undefined) => number | undefined;
+  } = {},
 ): () => void {
-  const mapper = new MastraCodeEventMapper({ sessionId: session.identity.getId() });
+  const mapper = new MastraCodeEventMapper({
+    sessionId: session.identity.getId(),
+    ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
+  });
   return session.subscribe(event => {
     try {
       for (const mapped of mapper.map(event)) emit(mapped);

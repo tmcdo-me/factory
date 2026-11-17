@@ -409,3 +409,60 @@ describe('mirrorSessionEvents', () => {
     expect(listener).toBeUndefined();
   });
 });
+
+describe('MastraCodeEventMapper context window', () => {
+  const step: AgentControllerEvent = {
+    type: 'usage_update',
+    usage: { promptTokens: 4096, completionTokens: 8, totalTokens: 4104 },
+  };
+
+  it('meters each step against the model its reply names, and the host decides when none does yet', () => {
+    const asked: Array<string | undefined> = [];
+    const windows: Record<string, number> = { 'self-hosted/big': 262144, 'self-hosted/small': 32768 };
+    const mapper = new MastraCodeEventMapper({
+      sessionId: 's',
+      newRunId: () => 'r',
+      contextWindow: modelId => {
+        asked.push(modelId);
+        return modelId ? windows[modelId] : 131072;
+      },
+    });
+    mapper.map({ type: 'agent_start' });
+    expect(mapper.map(step).find(event => event.type === 'usage')).toMatchObject({ contextWindow: 131072 });
+    mapper.map({
+      type: 'message_start',
+      message: {
+        id: 'a1',
+        role: 'assistant',
+        createdAt: new Date(0),
+        content: { format: 2, parts: [{ type: 'text', text: 'Hi' }], metadata: { modelId: 'self-hosted/small' } },
+      } as unknown as MessageStart['message'],
+    });
+    expect(mapper.map(step).find(event => event.type === 'usage')).toMatchObject({ contextWindow: 32768 });
+    // A model switch: until the next reply names its model, the host's current one applies.
+    mapper.map({ type: 'model_changed', modelId: 'self-hosted/big' } as AgentControllerEvent);
+    expect(mapper.map(step).find(event => event.type === 'usage')).toMatchObject({ contextWindow: 131072 });
+    expect(asked).toEqual([undefined, 'self-hosted/small', undefined]);
+  });
+
+  it("reports the host's window at each step, and none when it knows none", () => {
+    let window: number | undefined = 131072;
+    const mapper = new MastraCodeEventMapper({ sessionId: 's', contextWindow: () => window });
+    expect(mapper.map(step)).toEqual([
+      { type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096, contextWindow: 131072 },
+    ]);
+    // A model switch to one with no known window.
+    window = undefined;
+    expect(mapper.map(step)[0]).not.toHaveProperty('contextWindow');
+  });
+
+  it('keeps the usage when the lookup fails', () => {
+    const mapper = new MastraCodeEventMapper({
+      sessionId: 's',
+      contextWindow: () => {
+        throw new Error('storage down');
+      },
+    });
+    expect(mapper.map(step)).toEqual([{ type: 'usage', inputTokens: 4096, outputTokens: 8, contextTokens: 4096 }]);
+  });
+});

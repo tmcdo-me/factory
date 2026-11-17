@@ -158,7 +158,7 @@ import { peekSessionSandbox } from './sandbox/session-sandbox.js';
 import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
-import { observeSessionAgentEvents } from './session/agent-event-mirror.js';
+import { observeSessionAgentEvents, sessionModelContextWindow } from './session/agent-event-mirror.js';
 import { ClaudeAgentConcurrency } from './session/claude-agent-concurrency.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
 import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-agent-host.js';
@@ -2734,7 +2734,10 @@ export class MastraFactory {
         },
       );
       observeSessionThreadStamp(session);
-      observeSessionAgentEvents(session, agentEventHub); // fork(claude-agent)
+      // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
+      observeSessionAgentEvents(session, agentEventHub, {
+        contextWindow: sessionModelContextWindow(session),
+      });
     });
 
     // Blocking: `createSession` awaits the organization seed so per-invocation

@@ -8,15 +8,26 @@ import type { CustomProviderInfo, CustomProvidersResponse, OkResponse, SaveCusto
  * Organization-scoped OpenAI-compatible providers. The API key is write-only;
  * the server only ever reports `hasApiKey`.
  */
-export function useCustomProvidersQuery() {
+function useCustomProvidersResponse<T>(select: (body: CustomProvidersResponse) => T) {
   const { client } = useApiConfig();
-  return useQuery<CustomProviderInfo[]>({
+  return useQuery<CustomProvidersResponse, Error, T>({
     queryKey: queryKeys.customProviders(),
-    queryFn: async () => {
-      const body = await client.get<CustomProvidersResponse>('/web/config/custom-providers');
-      return body.providers;
-    },
+    queryFn: () => client.get<CustomProvidersResponse>('/web/config/custom-providers'),
+    select,
   });
+}
+
+const providersOf = (body: CustomProvidersResponse): CustomProviderInfo[] => body.providers;
+// fork(claude-agent): an older server doesn't say, and let anyone change them.
+const canManageOf = (body: CustomProvidersResponse): boolean => body.canManage !== false;
+
+export function useCustomProvidersQuery() {
+  return useCustomProvidersResponse(providersOf);
+}
+
+/** fork(claude-agent): whether the viewer may add, change or remove the org's providers (an org admin). */
+export function useCanManageCustomProviders() {
+  return useCustomProvidersResponse(canManageOf);
 }
 
 export function useSaveCustomProvider() {

@@ -26,7 +26,11 @@ import type {
   LoginSessionKind,
   ModelCredentialsStorage,
 } from '../storage/domains/credentials/base.js';
-import type { CustomProviderRecord, CustomProvidersStorage } from '../storage/domains/custom-providers/base.js';
+import type {
+  CustomProviderRecord,
+  CustomProvidersStorage,
+  ModelContextWindow,
+} from '../storage/domains/custom-providers/base.js';
 import type {
   MemorySettingsPatch,
   MemorySettingsRecord,
@@ -38,6 +42,7 @@ import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { THINKING_LEVELS } from './contracts.js';
+import { contextWindowValue, readProviderContextWindows } from './custom-provider-models.js'; // fork(claude-agent)
 import { createGatewayKey, getGatewayCredits, MASTRA_SIGN_IN_REQUIRED, MastraGatewayError } from './mastra-gateway.js';
 import {
   credentialLabel,
@@ -320,6 +325,8 @@ export interface CustomProviderInfo {
   url: string;
   hasApiKey: boolean;
   models: string[];
+  /** fork(claude-agent): each model's context window in tokens, where known: set in Settings, or reported by the provider. */
+  contextWindows: Record<string, ModelContextWindow>;
 }
 
 /** Redact a stored custom-provider row for the client (key presence only). */
@@ -330,6 +337,7 @@ function toCustomProviderInfo(record: CustomProviderRecord): CustomProviderInfo 
     url: record.url,
     hasApiKey: Boolean(record.apiKey),
     models: record.models,
+    contextWindows: record.modelContextWindows, // fork(claude-agent)
   };
 }
 
@@ -379,7 +387,9 @@ async function resolveCustomProvidersContext({
 }
 
 /** Validate + coerce a request body into a CustomProviderSetting. */
-function parseCustomProviderBody(body: unknown): CustomProviderSetting | { error: string } {
+function parseCustomProviderBody(
+  body: unknown,
+): (CustomProviderSetting & { contextWindows: Record<string, number>; clearApiKey: boolean }) | { error: string } {
   if (!body || typeof body !== 'object') return { error: 'Invalid JSON body' };
   const b = body as Record<string, unknown>;
   const name = typeof b.name === 'string' ? b.name.trim() : '';
@@ -398,7 +408,40 @@ function parseCustomProviderBody(body: unknown): CustomProviderSetting | { error
   const models = Array.isArray(b.models)
     ? b.models.filter((m): m is string => typeof m === 'string' && m.trim().length > 0).map(m => m.trim())
     : [];
-  return { name, url, apiKey, models };
+  // fork(claude-agent): a context window per model, in tokens, for the composer's context meter.
+  const contextWindows: Record<string, number> = {};
+  if (b.contextWindows !== undefined) {
+    if (!b.contextWindows || typeof b.contextWindows !== 'object' || Array.isArray(b.contextWindows)) {
+      return { error: 'contextWindows must map model names to token counts' };
+    }
+    for (const [model, tokens] of Object.entries(b.contextWindows as Record<string, unknown>)) {
+      if (tokens === null || tokens === undefined || tokens === '') continue;
+      const value = contextWindowValue(tokens);
+      if (value === undefined) {
+        return { error: `The context window for ${model} must be a whole number of tokens up to 10,000,000` };
+      }
+      if (models.includes(model.trim())) contextWindows[model.trim()] = value;
+    }
+  }
+  // fork(claude-agent): an explicit way to remove a stored key (a blank key keeps it).
+  const clearApiKey = b.clearApiKey === true;
+  if (clearApiKey && apiKey) return { error: 'Send an API key or clearApiKey, not both' };
+  return { name, url, apiKey, models, contextWindows, clearApiKey };
+}
+
+/** fork(claude-agent): who may add, change or remove the org's custom providers: an org admin (anyone without auth). */
+async function canManageCustomProviders(c: Context, auth: RouteAuth, orgId: string): Promise<boolean> {
+  if (!auth.enabled()) return true;
+  return auth.isOrganizationAdmin(c, orgId);
+}
+
+/** fork(claude-agent): a URL's origin, for telling whether a stored key would reach another host. */
+function urlOrigin(url: string): string | undefined {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return undefined;
+  }
 }
 
 /**
@@ -1272,7 +1315,11 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
           if ('response' in ctx) return ctx.response;
           try {
             const records = await ctx.storage.list({ orgId: ctx.orgId });
-            return c.json({ providers: records.map(toCustomProviderInfo) });
+            // fork(claude-agent): members read the org's providers; only admins change them.
+            return c.json({
+              providers: records.map(toCustomProviderInfo),
+              canManage: await canManageCustomProviders(loose(c), auth, ctx.orgId),
+            });
           } catch (error) {
             return c.json({ error: error instanceof Error ? error.message : String(error) }, 500);
           }
@@ -1295,6 +1342,10 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
           } catch {
             return c.json({ error: 'Invalid JSON body' }, 400);
           }
+          // fork(claude-agent): only an org admin adds or changes the org's providers (and their keys).
+          if (!(await canManageCustomProviders(loose(c), auth, ctx.orgId))) {
+            return c.json({ error: 'organization_admin_required' }, 403);
+          }
           const parsed = parseCustomProviderBody(body);
           if ('error' in parsed) return c.json({ error: parsed.error }, 400);
           // `previousId` lets a rename remove the old entry as well as any name clash.
@@ -1303,15 +1354,56 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
               ? ((body as Record<string, unknown>).previousId as string)
               : undefined;
           try {
+            // fork(claude-agent): an edit that sends no key keeps the stored one (the form says
+            // "leave blank to keep"), only for the same provider (`previousId`) at the same origin:
+            // a key never goes to a host it wasn't given for, and a new provider whose name maps
+            // onto another's id never inherits its key. `clearApiKey` removes it.
+            const providerId = getCustomProviderId(parsed.name);
+            const editing = previousId
+              ? (await ctx.storage.list({ orgId: ctx.orgId })).find(record => record.providerId === previousId)
+              : undefined;
+            let apiKey = parsed.apiKey;
+            if (apiKey === undefined && !parsed.clearApiKey && editing?.apiKey) {
+              if (urlOrigin(editing.url) !== urlOrigin(parsed.url)) {
+                return c.json({ error: 'Re-enter the API key when changing the URL.' }, 400);
+              }
+              apiKey = editing.apiKey;
+            }
+            // fork(claude-agent): a model with no window set takes the one the provider reports, read
+            // again on every save; when the list can't be read, the window it last reported stays.
+            const unset = parsed.models.filter(model => parsed.contextWindows[model] === undefined);
+            const reported =
+              (await readProviderContextWindows({
+                url: parsed.url,
+                ...(apiKey ? { apiKey } : {}),
+                models: unset,
+              })) ??
+              Object.fromEntries(
+                Object.entries(editing?.modelContextWindows ?? {}).flatMap(([model, window]) =>
+                  window.source === 'reported' && unset.includes(model) ? [[model, window.tokens]] : [],
+                ),
+              );
+            const modelContextWindows: Record<string, ModelContextWindow> = {
+              ...Object.fromEntries(
+                Object.entries(reported).map(([model, tokens]) => [model, { tokens, source: 'reported' as const }]),
+              ),
+              ...Object.fromEntries(
+                Object.entries(parsed.contextWindows).map(([model, tokens]) => [
+                  model,
+                  { tokens, source: 'set' as const },
+                ]),
+              ),
+            };
             const record = await ctx.storage.upsert({
               orgId: ctx.orgId,
               userId: ctx.userId,
               input: {
-                providerId: getCustomProviderId(parsed.name),
+                providerId,
                 name: parsed.name,
                 url: parsed.url,
-                apiKey: parsed.apiKey,
+                apiKey,
                 models: parsed.models,
+                modelContextWindows,
               },
               previousProviderId: previousId,
             });
@@ -1333,6 +1425,10 @@ export class ConfigRoutes extends Route<ConfigRoutesDeps> {
             customProviders: options.customProviders,
           });
           if ('response' in ctx) return ctx.response;
+          // fork(claude-agent)
+          if (!(await canManageCustomProviders(loose(c), auth, ctx.orgId))) {
+            return c.json({ error: 'organization_admin_required' }, 403);
+          }
           const id = c.req.param('id');
           try {
             await ctx.storage.delete({ orgId: ctx.orgId, providerId: id });

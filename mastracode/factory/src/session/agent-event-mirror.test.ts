@@ -3,7 +3,7 @@ import { InMemoryEventLog, SessionEventHub } from '@factory/agent-runtime';
 import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { describe, expect, it, vi } from 'vitest';
 
-import { observeSessionAgentEvents } from './agent-event-mirror.js';
+import { observeSessionAgentEvents, stepModelId } from './agent-event-mirror.js';
 
 function fakeSession(id = 's1') {
   const listeners = new Set<(event: AgentControllerEvent) => void>();
@@ -64,5 +64,16 @@ describe('observeSessionAgentEvents', () => {
     await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
     expect(warn.mock.calls[0]![0]).toContain('session s2');
     warn.mockRestore();
+  });
+});
+
+// fork(claude-agent): which model a step's usage is metered against.
+describe('stepModelId', () => {
+  it("takes the reply's model, matching the provider's bare id to the session's model", () => {
+    expect(stepModelId(undefined, 'self-hosted/qwen3.8-27b')).toBe('self-hosted/qwen3.8-27b');
+    expect(stepModelId('qwen3.8-27b', 'self-hosted/qwen3.8-27b')).toBe('self-hosted/qwen3.8-27b');
+    expect(stepModelId('self-hosted/small', 'self-hosted/big')).toBe('self-hosted/small');
+    // A reply from before a switch to another model: its window isn't the new model's.
+    expect(stepModelId('qwen3.8-27b', 'openai/gpt-5.4-mini')).toBeUndefined();
   });
 });
