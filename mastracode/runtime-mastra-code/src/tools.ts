@@ -40,15 +40,6 @@ export function mastraTool(def: FactoryToolDef, contextOf: MastraToolContextOf):
   }) as MastraTool;
 }
 
-/** Every definition as a Mastra tool, keyed by its name. */
-export function mastraTools(
-  defs: Iterable<FactoryToolDef> | Record<string, FactoryToolDef>,
-  contextOf: MastraToolContextOf,
-): Record<string, MastraTool> {
-  const list = Symbol.iterator in defs ? [...(defs as Iterable<FactoryToolDef>)] : Object.values(defs);
-  return Object.fromEntries(list.map(def => [def.name, mastraTool(def, contextOf)]));
-}
-
 function mastraToolCall(toolName: string, execution: ToolExecutionContext | undefined): MastraToolCall {
   const callId = execution?.agent?.toolCallId;
   return {

@@ -371,11 +371,14 @@ Each slice: implement → focused tests → manual check where noted → commit.
      group is ported, Mastra tools; one per-turn builder makes them for both runtimes. Mastra Code's
      `extraTools` gets each definition as a Mastra tool (`mastraTool`, `@factory/runtime-mastra-code`:
      same name, description and Zod schema, Mastra's validation, `approval: 'required'` as
-     `requireApproval`), its context built from the call (Mastra's tool call id and abort signal) and
-     the turn's request context (the session, and the caller as `toolIdentity` reads them, as for
-     Claude Agent). Claude Agent's in-process MCP server lists a definition as it is and runs its
-     `execute` with the context it already bound (the MCP server validates the input); a Mastra tool
-     still goes through `runMastraTool`. Factory's MCP endpoint adapts the same definitions, with the
+     `requireApproval`), its context built from the call (Mastra's tool call id, empty for a call
+     without one, and its abort signal) and the turn the tools were built for (the session, and the
+     caller as `toolIdentity` reads them, as for Claude Agent); a call that brings another session's
+     or thread's request context is refused. Claude Agent's in-process MCP server lists a definition
+     as it is and runs the turn's own copy of it, its input checked against that copy's schema (a
+     rejected input is observed as an error); a Mastra tool still goes through `runMastraTool`. A
+     definition is told from a Mastra tool by the mark `defineFactoryTool` puts on it
+     (`isFactoryToolDef`). Factory's MCP endpoint adapts the same definitions, with the
      connector session's scope as their context. `FactoryToolContext.workspace` is optional (Factory's
      MCP endpoint has none). Ported: `factory_list_work_items`, `factory_inspect_work_item`,
      `factory_list_attention`, `factory_list_audit_events`; the tools themselves are unchanged. No

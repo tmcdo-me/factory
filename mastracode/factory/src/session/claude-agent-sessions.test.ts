@@ -516,6 +516,33 @@ describe('ClaudeAgentSessions with Factory tools', () => {
     });
   });
 
+  // fork(claude-agent): slice 4.
+  it("checks a definition's input against the turn's own copy, and observes a rejected one as an error", async () => {
+    const execute = vi.fn(async () => 'moved');
+    const lenient = defineFactoryTool({
+      name: 'factory_move',
+      description: 'Move',
+      input: z.object({ stage: z.string() }),
+      execute,
+    });
+    const strict = defineFactoryTool({ ...lenient, input: z.object({ stage: z.enum(['review']) }), execute });
+    const replies: { isError?: boolean; content: { text: string }[] }[] = [];
+    const fake = toolCallingQuery(async client => {
+      replies.push(await client.call('factory_move', { stage: 'done' }, 'toolu_move'));
+    });
+    const onToolResult = vi.fn(async () => {});
+    // Listed from the opening build; the turn's own build has the stricter schema.
+    const tools = vi.fn().mockResolvedValueOnce({ factory_move: lenient }).mockResolvedValue({ factory_move: strict });
+    const { sessions, log } = toolSetup(fake.fn, { onToolResult, tools });
+    await sessions.commands().send('s1', { text: 'move' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    expect(execute).not.toHaveBeenCalled();
+    expect(replies[0]!.isError).toBe(true);
+    expect(onToolResult).toHaveBeenCalledTimes(1);
+    expect(onToolResult.mock.calls[0]![0]).toMatchObject({ callId: 'toolu_move', status: 'error' });
+  });
+
   it("asks ask_user's question through Factory and answers it from the session's interactions route", async () => {
     const replies: { isError?: boolean; content: { text: string }[] }[] = [];
     const fake = toolCallingQuery(async client => {

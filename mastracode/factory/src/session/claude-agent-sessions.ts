@@ -468,9 +468,10 @@ export class ClaudeAgentSessions {
       const observed = { sessionId, callId: ctx.callId, toolName: name, input, requestContext: current.requestContext };
       let output: unknown;
       try {
-        // A definition runs as it is; a Mastra tool (not ported yet, or configured) as Mastra Code runs it.
+        // A definition runs as it is, its input checked against the schema of the turn's own copy
+        // (the one listed may be an earlier turn's); a Mastra tool as Mastra Code runs it.
         output = isFactoryToolDef(tool)
-          ? await tool.execute(input, ctx)
+          ? await tool.execute(await tool.input.parseAsync(input), ctx)
           : await runMastraTool(name, tool as MastraTool, input, ctx, {
               requestContext: current.requestContext,
               cwd: workspace.cwd,

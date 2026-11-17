@@ -14,7 +14,7 @@ import { Workspace } from '@mastra/core/workspace';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
-import { mastraTool, mastraTools } from './tools';
+import { mastraTool } from './tools';
 import type { MastraToolCall } from './tools';
 
 const usage = { inputTokens: 10, outputTokens: 5, totalTokens: 15 };
@@ -89,7 +89,7 @@ describe('mastraTool on a real AgentController session', () => {
       name: 'code',
       instructions: 'test',
       model: model('factory_transition_work_item', { stage: '  review ' }),
-      tools: mastraTools([move], contextOf),
+      tools: { [move.name]: mastraTool(move, contextOf) },
     });
     const controller = new AgentController({
       id: 'code',

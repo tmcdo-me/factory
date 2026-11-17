@@ -1,6 +1,7 @@
 // fork(claude-agent): a session's Factory tools, defined once for every runtime (spec §3.3, slice 4).
 import { randomUUID } from 'node:crypto';
 
+import { isFactoryToolDef as isDefinition } from '@factory/agent-runtime';
 import type { FactoryToolContext, FactoryToolDef } from '@factory/agent-runtime';
 import { mastraTool } from '@factory/runtime-mastra-code';
 import type { MastraToolCall, MastraToolContextOf } from '@factory/runtime-mastra-code';
@@ -21,9 +22,9 @@ export type MastraSessionTool = NonNullable<IntegrationTools[string]>;
 export type FactorySessionTool = FactoryToolDef | MastraSessionTool;
 export type FactorySessionTools = Record<string, FactorySessionTool | undefined>;
 
-/** A definition, as opposed to a Mastra tool (which has an `id` and `inputSchema` instead). */
+/** A definition (made with `defineFactoryTool`), as opposed to a Mastra tool. */
 export function isFactoryToolDef(tool: FactorySessionTool): tool is FactoryToolDef {
-  return typeof (tool as Partial<FactoryToolDef>).name === 'string' && 'input' in tool;
+  return isDefinition(tool);
 }
 
 /** Every tool as a Mastra tool: definitions adapted with `contextOf`, Mastra tools as they are. */
@@ -41,12 +42,15 @@ export function toolIdentity(requestContext: RequestContext): { orgId: string; u
   return { orgId: factoryUserOrgId(user) ?? 'local', userId: getFactoryAuthUserId(user) ?? 'local' };
 }
 
-/** The session id a turn's request context carries (`controller`, set by both runtimes). */
-function turnSessionId(requestContext: RequestContext | undefined): string | undefined {
+/** The session and thread a turn's request context carries (`controller`, set by both runtimes). */
+function turnIds(requestContext: RequestContext | undefined): { sessionId: string; threadId: string } {
   const controller = (typeof requestContext?.get === 'function' ? requestContext.get('controller') : undefined) as
-    | { sessionId?: unknown }
+    | { sessionId?: unknown; threadId?: unknown }
     | undefined;
-  return typeof controller?.sessionId === 'string' ? controller.sessionId : undefined;
+  return {
+    sessionId: typeof controller?.sessionId === 'string' ? controller.sessionId : '',
+    threadId: typeof controller?.threadId === 'string' ? controller.threadId : '',
+  };
 }
 
 /** Asking a person from a tool waits on the interaction broker, which Mastra Code sessions reach in slice 5. */
@@ -57,16 +61,28 @@ function cannotAsk(toolName: string): FactoryToolContext['interact'] {
 }
 
 /**
- * The context of a Factory tool call in a Mastra Code turn: the turn's session and caller, from the
- * request context Mastra passes the call (else the one the turn's tools were built with).
+ * The context of a Factory tool call in a Mastra Code turn: the session and caller of the turn the
+ * tools were built for. A call that brings the request context of another session or thread is
+ * refused: a definition acts only for its own turn (a context that names none acts for it). The call id is Mastra's; a call without one
+ * (a tool run outside a model's turn) gets an empty id, which the tools that key on it refuse.
  */
 export function mastraCodeToolContext(turn: RequestContext): MastraToolContextOf {
+  const own = turnIds(turn);
   return (call: MastraToolCall) => {
-    const requestContext = call.requestContext ?? turn;
+    if (call.requestContext && call.requestContext !== turn) {
+      const called = turnIds(call.requestContext);
+      // A call whose context names no session (a direct execution) still acts for the tools' turn.
+      const names = called.sessionId !== '' || called.threadId !== '';
+      if (names && (called.sessionId !== own.sessionId || called.threadId !== own.threadId)) {
+        throw new Error(
+          `Factory tool ${call.toolName} was built for another session or thread than this call's; nothing was done.`,
+        );
+      }
+    }
     return {
-      sessionId: turnSessionId(requestContext) ?? turnSessionId(turn) ?? '',
-      callId: call.callId ?? randomUUID(),
-      ...toolIdentity(requestContext),
+      sessionId: own.sessionId,
+      callId: call.callId ?? '',
+      ...toolIdentity(turn),
       signal: call.signal ?? new AbortController().signal,
       interact: cannotAsk(call.toolName),
     };
@@ -84,7 +100,10 @@ export function mastraCodeExtraTools(
     mastraSessionTools(await build({ requestContext }), mastraCodeToolContext(requestContext));
 }
 
-/** The context of a Factory tool call that comes from outside any turn (Factory's MCP endpoint): the scope's. */
+/**
+ * The context of a Factory tool call that comes from outside any turn (Factory's MCP endpoint): the
+ * scope's, with an id of its own for each call (an MCP client names none).
+ */
 export function scopeToolContext(scope: Pick<FactoryToolScope, 'sessionId' | 'orgId' | 'userId'>): MastraToolContextOf {
   return (call: MastraToolCall) => ({
     sessionId: scope.sessionId,

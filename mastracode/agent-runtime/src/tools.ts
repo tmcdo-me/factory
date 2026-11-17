@@ -20,7 +20,11 @@ export interface FactoryToolDef<I = any, O = any> {
 
 export interface FactoryToolContext {
   sessionId: string;
-  /** The runtime's id for this call; ties `tool.*` events and interactions together. */
+  /**
+   * The runtime's id for this call; ties `tool.*` events and interactions together. Empty when the
+   * runtime gave the call none (a tool run outside a model's turn); a tool that keys anything on the
+   * call (an idempotent ingress, a streamed post) refuses such a call.
+   */
   callId: string;
   orgId: string;
   userId: string;
@@ -37,7 +41,20 @@ export interface FactoryToolContext {
   interact<K extends InteractionKind>(request: Extract<InteractionRequest, { kind: K }>): Promise<ResponseFor<K>>;
 }
 
-/** Identity helper that keeps `I`/`O` inferred from the schemas. */
+/**
+ * Marks a value made by {@link defineFactoryTool}. A `Symbol.for` key, so separate copies of this
+ * package in one process agree on it; enumerable, so a spread copy of a definition keeps it.
+ */
+export const FACTORY_TOOL_DEF: unique symbol = Symbol.for('factory.tool.def');
+
+/** Define a Factory tool: keeps `I`/`O` inferred from the schemas and marks it as a definition. */
 export function defineFactoryTool<I, O>(def: FactoryToolDef<I, O>): FactoryToolDef<I, O> {
-  return def;
+  return Object.assign(def, { [FACTORY_TOOL_DEF]: true });
+}
+
+/** Whether a tool is a Factory tool definition (made with {@link defineFactoryTool}), not some other tool. */
+export function isFactoryToolDef(tool: unknown): tool is FactoryToolDef {
+  return (
+    typeof tool === 'object' && tool !== null && (tool as { [FACTORY_TOOL_DEF]?: unknown })[FACTORY_TOOL_DEF] === true
+  );
 }
