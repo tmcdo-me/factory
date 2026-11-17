@@ -686,7 +686,7 @@ export async function dispatchGithubWebhook(
         delivered += 1;
         continue;
       }
-      const session = await dependencies.sessions.open( subscription, {
+      const session = await dependencies.sessions.open(subscription, {
         label: 'GitHub',
         sourceControl: dependencies.github?.sourceControlStorage,
       });

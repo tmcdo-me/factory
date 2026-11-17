@@ -12,7 +12,7 @@
     },
     "lint": {
       "dependsOn": [],
-      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/oxlint.config.ts"]
+      "inputs": ["$TURBO_DEFAULT$", "$TURBO_ROOT$/oxlint.config.ts", "$TURBO_ROOT$/mastracode/seam-import-lint.ts"]
     },
     "lint:fix": {
       "dependsOn": [],
