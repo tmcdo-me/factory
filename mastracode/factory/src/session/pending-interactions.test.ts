@@ -143,33 +143,51 @@ describe('PendingInteractions', () => {
     expect(registry.parkedIn('project-1')[0]).toMatchObject({ sessionId: 's-plan' });
   });
 
-  it("never lists a session twice when the controller holds it too, preferring the controller's park", async () => {
-    const { pending, broker } = setup();
-    let created: ((session: LiveSession) => void) | undefined;
-    const registry = alsoParked(
-      new LiveSessions({
-        onSessionCreated: listener => {
-          created = listener;
-          return () => {};
-        },
-        onSessionDeleted: () => () => {},
-      }),
-      pending,
-    );
-    const pendingSuspensions = new Map([['call-1', { toolName: 'ask_user' }]]);
-    created!({
-      identity: { getId: () => 's-plan' },
-      run: { isRunning: () => false },
-      state: { get: () => ({ factoryOrgId: 'org-1', factoryProjectId: 'project-1' }) },
-      displayState: { get: () => ({ pendingSuspensions }) },
-      subscribe: () => () => {},
+  // Slice 5b: a Mastra Code session's waiting calls are broker records its controller holds.
+  it("reports a Mastra Code session's paused call as parked, but not a call waiting at its approval gate", async () => {
+    const { pending, broker, requested } = setup();
+    const held = (id: string, sessionId: string, request: InteractionRecord['request']) =>
+      broker.track({
+        id,
+        sessionId,
+        callId: id.split(':')[1],
+        heldBy: 'mastra-code',
+        request,
+        requestedAt: new Date().toISOString(),
+      });
+    await held('question:call-ask', 's-ask', question);
+    await held('tool_approval:call-gate', 's-plan', {
+      kind: 'tool_approval',
+      toolName: 'ship_release',
+      input: {},
+      gate: true,
     });
-    void broker.request('s-plan', plan, { callId: 'toolu_plan' });
-    await vi.waitFor(() => expect(pending.parkedIn('project-1')).toHaveLength(1));
 
-    expect(registry.parkedIn('project-1')).toEqual([
-      { sessionId: 's-plan', run: { toolName: 'ask_user', suspendedAt: expect.any(Number) } },
-    ]);
+    await vi.waitFor(() => expect(pending.parkedIn('project-1')).toHaveLength(1));
+    // Named by its tool call, as the controller takes the answer.
+    expect(pending.parked('s-ask')).toEqual({
+      toolName: 'ask_user',
+      suspendedAt: expect.any(Number),
+      interaction: { toolCallId: 'call-ask', request: question },
+    });
+    expect(pending.parked('s-plan')).toBeUndefined();
+    expect(pending.waitingOn('s-plan', 'call-gate')).toHaveLength(1);
+    // The controller's own reports tell followers, until slice 5d.
+    expect(requested).toEqual([]);
+  });
+
+  it('lists a tool that resumes on input of its own as parked, with nothing to answer from outside', async () => {
+    const { pending, broker } = setup();
+    await broker.track({
+      id: 'tool_input:call-access',
+      sessionId: 's-ask',
+      callId: 'call-access',
+      heldBy: 'mastra-code',
+      request: { kind: 'tool_input', toolName: 'request_access', input: { path: '/etc' } },
+      requestedAt: new Date().toISOString(),
+    });
+
+    expect(pending.parked('s-ask')).toEqual({ toolName: 'request_access', suspendedAt: expect.any(Number) });
   });
 
   it('names each request by the tool that asks it, and says which a yes or no answers', () => {

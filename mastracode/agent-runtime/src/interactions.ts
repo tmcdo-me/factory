@@ -15,7 +15,17 @@ export type InteractionRequest =
       selection?: 'single' | 'multiple';
     }
   | { kind: 'plan_approval'; planPath: string; plan?: string }
-  | { kind: 'tool_approval'; toolName: string; input: unknown; reason?: string }
+  | {
+      kind: 'tool_approval';
+      toolName: string;
+      input: unknown;
+      reason?: string;
+      /**
+       * The call has not run yet: its runtime holds the run open until someone allows it (an approval
+       * gate), rather than the tool having paused itself to ask.
+       */
+      gate?: boolean;
+    }
   /**
    * A tool that paused for input only its own session can give (its runtime resumes it on a shape of
    * its own, such as Mastra Code's `request_access`). Nothing answers it from outside the session; it

@@ -1,4 +1,4 @@
-// fork(claude-agent): what sessions wait on a person for, kept in the interaction broker for both runtimes.
+// fork(claude-agent): what sessions wait on a person for, read as parked runs, for both runtimes.
 import type { InteractionRecord, InteractionRequest, InteractionStore } from '@factory/agent-runtime';
 
 import type { FactoryRunOutcome } from '../tools/reports.js';
@@ -29,12 +29,15 @@ export function interactionToolName(request: InteractionRequest): string {
   return request.toolName;
 }
 
-/**
- * Whether the interaction is one a runtime holds itself (Mastra Code's controller). Slice 5a keeps
- * those in the index, so an answer and the runtime's own word settle the same record, but readers
- * still read such sessions from the runtime until slice 5b moves them here.
- */
+/** Whether the interaction is one a runtime holds itself (Mastra Code's controller). */
 const heldByRuntime = (record: InteractionRecord) => record.heldBy !== undefined;
+
+/**
+ * Whether a session waiting on this counts as a parked run. A gated call holds its run open until
+ * someone allows it: its followers are told at once (an `approval` notice) and it is answered with
+ * `factory_answer_approval`, but as before the session is not parked on it.
+ */
+const parksTheRun = (record: InteractionRecord) => !(record.request.kind === 'tool_approval' && record.request.gate);
 
 /** Whether a yes or no is all the request needs (`factory_answer_approval` can give it). */
 export function answersWithDecision(request: InteractionRequest): boolean {
@@ -77,13 +80,13 @@ interface Waiting {
 
 /**
  * The broker's store, plus an index of what each session waits on, so the inbox, boards and
- * session lists read Claude Agent sessions parked on a person the way they read a suspended Mastra
- * Code run: synchronously, from memory. Every record passes through here, so the index follows
- * every request and every answer or cancellation; `load` picks up the ones still pending from
- * before a restart (an answer to those reaches the conversation as a message).
+ * session lists read every session parked on a person, whatever its runtime, synchronously, from
+ * memory. Every record passes through here, so the index follows every request and every answer or
+ * cancellation; `load` picks up the ones still pending from before a restart (an answer to a Claude
+ * Agent one reaches the conversation as a message; Mastra Code's controller resumes its own).
  *
- * Mastra Code's waiting calls are recorded here too, held by its controller (`heldBy`), which takes
- * their answers; `waitingOn` finds them by call as the controller reports them settled.
+ * Mastra Code's waiting calls are held by its controller (`heldBy`), which takes their answers;
+ * `waitingOn` finds them by call as the controller reports them settled.
  */
 export class PendingInteractions implements InteractionStore, ParkedRunSource {
   readonly #options: PendingInteractionsOptions;
@@ -188,7 +191,7 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     let oldest: Waiting | undefined;
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
       if (waiting.hidden) continue;
-      if (heldByRuntime(waiting.record)) continue; // read from the runtime until slice 5b
+      if (!parksTheRun(waiting.record)) continue;
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }
     if (!oldest) return undefined;

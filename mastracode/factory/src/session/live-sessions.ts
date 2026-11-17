@@ -3,18 +3,13 @@ import type { PubSub } from '@mastra/core/events';
 
 import { touchFeed } from '../feed-events.js';
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
-import { pausedToolInteraction } from './parked-interaction.js'; // fork(claude-agent)
-import type { ParkedInteraction, PausedToolCall } from './parked-interaction.js'; // fork(claude-agent)
+import type { ParkedInteraction } from './parked-interaction.js'; // fork(claude-agent)
 
-/** The slice of a live session this registry needs: its id, its run, its parked tools, and who it works for. */
+/** The slice of a live session this registry needs: its id, its run, and who it works for. */
 export interface LiveSession {
   readonly identity: { getId(): string };
   readonly run: { isRunning(): boolean };
   readonly state: { get(): Readonly<{ factoryOrgId?: string; factoryProjectId?: string }> };
-  // fork(claude-agent): the whole paused call, so what it asks can be answered from outside the session.
-  readonly displayState: {
-    get(): { pendingSuspensions: ReadonlyMap<string, Omit<PausedToolCall, 'toolCallId'> & { toolCallId?: string }> };
-  };
   subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
@@ -36,7 +31,10 @@ export interface ParkedRun {
   interaction?: ParkedInteraction;
 }
 
-/** fork(claude-agent): sessions parked outside the agent controller (Claude Agent's questions and plans). */
+/**
+ * fork(claude-agent): where parked sessions are read: the interaction broker's index, which holds
+ * what every session waits on a person for, whatever its runtime (`PendingInteractions`).
+ */
 export interface ParkedRunSource {
   parked(sessionId: string): ParkedRun | undefined;
   parkedIn(factoryProjectId: string): Array<{ sessionId: string; run: ParkedRun }>;
@@ -44,8 +42,6 @@ export interface ParkedRunSource {
 
 interface TrackedSession {
   session: LiveSession;
-  seenAt: number;
-  suspendedAt: Map<string, number>;
   unsubscribe: () => void;
 }
 
@@ -69,17 +65,19 @@ const RUN_MAY_HAVE_CHANGED = new Set<AgentControllerEvent['type']>([
  * sandbox, minutes on a cold clone. Notifications only fire once a session
  * exists, so a read never waits.
  *
- * Whether a session is *running* or *parked* is read from the session itself,
- * never tracked here: no missed run event can leave the answer stuck. Only the
- * moment each suspension arrived is kept, since the session does not date them.
+ * Whether a session is *running* is read from the session itself, never
+ * tracked here: no missed run event can leave the answer stuck.
+ *
+ * fork(claude-agent): whether it is *parked* (waits on a person) is read from the
+ * interaction broker's index (`addParkedSource`), which records what each
+ * session waits on, whatever its runtime: a Mastra Code session's paused calls
+ * as its controller reports them. Upstream read the controller's display state.
  */
 export class LiveSessions {
   readonly #byId = new Map<string, TrackedSession>();
   readonly #runListeners = new Set<(session: LiveSession) => void>();
-  /** fork(claude-agent): parked sessions this registry reads from elsewhere. */
+  /** fork(claude-agent): where parked sessions are read. */
   readonly #parkedSources: ParkedRunSource[] = [];
-  /** A park stamp doubles as the receipt key, so two suspensions in one millisecond must not share one. */
-  #lastParkStamp = 0;
 
   constructor(controller: SessionNotifier) {
     controller.onSessionCreated(session => this.#track(session));
@@ -92,21 +90,16 @@ export class LiveSessions {
     });
   }
 
-  #nextParkStamp(): number {
-    this.#lastParkStamp = Math.max(Date.now(), this.#lastParkStamp + 1);
-    return this.#lastParkStamp;
-  }
-
   #track(session: LiveSession): void {
-    const suspendedAt = new Map<string, number>();
     const unsubscribe = session.subscribe(event => {
-      if (event.type === 'tool_suspended') suspendedAt.set(event.toolCallId, this.#nextParkStamp());
-      else if (event.type === 'tool_suspension_cancelled') suspendedAt.delete(event.toolCallId);
-      else if (event.type === 'agent_end' && event.reason !== 'suspended') suspendedAt.clear();
-      else if (!RUN_MAY_HAVE_CHANGED.has(event.type)) return;
+      const parkMayHaveChanged =
+        event.type === 'tool_suspended' ||
+        event.type === 'tool_suspension_cancelled' ||
+        (event.type === 'agent_end' && event.reason !== 'suspended');
+      if (!parkMayHaveChanged && !RUN_MAY_HAVE_CHANGED.has(event.type)) return;
       for (const listener of this.#runListeners) listener(session);
     });
-    this.#byId.set(session.identity.getId(), { session, seenAt: Date.now(), suspendedAt, unsubscribe });
+    this.#byId.set(session.identity.getId(), { session, unsubscribe });
   }
 
   /** Whether the session has an agent run in flight right now. */
@@ -114,36 +107,14 @@ export class LiveSessions {
     return this.#byId.get(sessionId)?.session.run.isRunning() ?? false;
   }
 
-  /** fork(claude-agent): also report the sessions `source` says are parked. */
+  /** fork(claude-agent): report the sessions `source` says are parked. */
   addParkedSource(source: ParkedRunSource): void {
     this.#parkedSources.push(source);
   }
 
   /** The tool the session is parked on, oldest first, or nothing when no answer is owed. */
   parked(sessionId: string): ParkedRun | undefined {
-    // fork(claude-agent): a session the controller doesn't hold may be parked elsewhere.
-    return this.#parkedOnController(sessionId) ?? this.#parkedElsewhere(sessionId);
-  }
-
-  #parkedOnController(sessionId: string): ParkedRun | undefined {
-    const tracked = this.#byId.get(sessionId);
-    if (!tracked) return undefined;
-    let oldest: ParkedRun | undefined;
-    for (const [toolCallId, suspension] of tracked.session.displayState.get().pendingSuspensions) {
-      const { toolName } = suspension;
-      const suspendedAt = tracked.suspendedAt.get(toolCallId) ?? tracked.seenAt;
-      if (!oldest || suspendedAt < oldest.suspendedAt) {
-        // fork(claude-agent): entries are keyed by run address; the call's own id is on the entry
-        // (else the key, as `pausedCalls` names it for the answer).
-        const interaction = pausedToolInteraction({ ...suspension, toolCallId: suspension.toolCallId ?? toolCallId });
-        oldest = { toolName, suspendedAt, ...(interaction ? { interaction } : {}) };
-      }
-    }
-    return oldest;
-  }
-
-  /** fork(claude-agent) */
-  #parkedElsewhere(sessionId: string): ParkedRun | undefined {
+    // fork(claude-agent): read from the interaction broker's index, for every runtime.
     for (const source of this.#parkedSources) {
       const run = source.parked(sessionId);
       if (run) return run;
@@ -154,12 +125,7 @@ export class LiveSessions {
   /** Every parked session of a project, so the inbox reads no card when nothing waits. */
   parkedIn(factoryProjectId: string): Array<{ sessionId: string; run: ParkedRun }> {
     const parked: Array<{ sessionId: string; run: ParkedRun }> = [];
-    for (const [sessionId, tracked] of this.#byId) {
-      if (tracked.session.state.get().factoryProjectId !== factoryProjectId) continue;
-      const run = this.parked(sessionId);
-      if (run) parked.push({ sessionId, run });
-    }
-    // fork(claude-agent)
+    // fork(claude-agent): read from the interaction broker's index, for every runtime.
     for (const source of this.#parkedSources) {
       for (const entry of source.parkedIn(factoryProjectId)) {
         if (!parked.some(known => known.sessionId === entry.sessionId)) parked.push(entry);

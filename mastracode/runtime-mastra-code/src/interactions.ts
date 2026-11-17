@@ -66,7 +66,7 @@ function questionOptions(value: unknown): { label: string; description?: string 
  * own (`tool_input`), which only its session can give.
  */
 export function mastraCodeInteractionRequest(call: MastraCodeWaitingCall): InteractionRequest {
-  if (call.gate) return { kind: 'tool_approval', toolName: call.toolName, input: call.args ?? null };
+  if (call.gate) return { kind: 'tool_approval', toolName: call.toolName, input: call.args ?? null, gate: true };
   const payload = isRecord(call.suspendPayload) ? call.suspendPayload : {};
   const decision = resumesOnDecision(call.resumeSchema);
   if (typeof payload.question === 'string' && payload.question && !decision) {

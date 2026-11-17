@@ -1,10 +1,8 @@
 import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 import { describe, expect, it, vi } from 'vitest';
 import { createTriageWorkRegistry } from '../boards/test-utils.js';
 
 import { LiveSessions } from '../session/live-sessions.js';
-import type { LiveSession } from '../session/live-sessions.js';
 import { PendingInteractions, alsoParked } from '../session/pending-interactions.js';
 import type { AuditEventRow } from '../storage/domains/audit/base.js';
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
@@ -508,27 +506,18 @@ describe('factory_list_attention', () => {
     expect(result.linkedRepositories).toEqual(['mastra-ai/mastra', 'mastra-ai/platform']);
   });
 
+  // fork(claude-agent): a Mastra Code session's paused call is read from the interaction broker's
+  // record of it, held by its controller (slice 5b), rather than from the controller's display state.
   it('lists a run parked on a tool prompt while it is still in flight', async () => {
-    let created: (session: LiveSession) => void = () => {};
-    const liveSessions = new LiveSessions({
-      onSessionCreated: listener => {
-        created = listener;
-        return () => {};
-      },
-      onSessionDeleted: () => () => {},
+    const pending = new PendingInteractions({
+      store: new InMemoryInteractionStore(),
+      projectOf: async () => ({ orgId: 'org-1', factoryProjectId: 'project-1' }),
     });
-    let emit: (event: AgentControllerEvent) => void = () => {};
-    const pendingSuspensions = new Map<string, { toolName: string }>();
-    created({
-      identity: { getId: () => 'session-builder' },
-      run: { isRunning: () => true },
-      state: { get: () => ({ factoryOrgId: 'org-1', factoryProjectId: 'project-1' }) },
-      displayState: { get: () => ({ pendingSuspensions }) },
-      subscribe: listener => {
-        emit = listener;
-        return () => {};
-      },
-    });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    const liveSessions = alsoParked(
+      new LiveSessions({ onSessionCreated: () => () => {}, onSessionDeleted: () => () => {} }),
+      pending,
+    );
     const { deps, run } = setup({ items: [item({ id: 'x' })] });
     deps.liveSessions = () => liveSessions;
     deps.sessions = sessionRows();
@@ -537,8 +526,15 @@ describe('factory_list_attention', () => {
     await expect(run<Waiting>('factory_list_attention', {})).resolves.toMatchObject({ waiting: [] });
 
     // The run never ends: submit_plan parks it mid-stream, and it must show without waiting for agent_end.
-    pendingSuspensions.set('call-1', { toolName: 'submit_plan' });
-    emit({ type: 'tool_suspended', toolCallId: 'call-1', toolName: 'submit_plan', args: {}, suspendPayload: {} });
+    await broker.track({
+      id: 'plan_approval:call-1',
+      sessionId: 'session-builder',
+      callId: 'call-1',
+      heldBy: 'mastra-code',
+      request: { kind: 'plan_approval', planPath: 'plan.md' },
+      requestedAt: new Date().toISOString(),
+    });
+    await vi.waitFor(() => expect(liveSessions.parkedIn('project-1')).toHaveLength(1));
 
     const result = await run<Waiting>('factory_list_attention', {});
     expect(result.waiting).toEqual([
@@ -547,6 +543,10 @@ describe('factory_list_attention', () => {
         toolName: 'submit_plan',
         label: 'Plan waiting for review',
         waitingSince: expect.any(String),
+        toolCallId: 'call-1',
+        kind: 'plan_approval',
+        answerWith: 'factory_answer_approval',
+        planPath: 'plan.md',
       },
     ]);
   });
