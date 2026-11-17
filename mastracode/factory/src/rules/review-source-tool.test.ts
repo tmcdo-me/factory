@@ -3,7 +3,15 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { createReviewSourceTool, resolveReviewSourceUiOrigin } from './review-source-tool.js';
+import { mastraCodeToolContext, mastraSessionTools } from '../tools/toolset.js'; // fork(claude-agent)
+import {
+  createReviewSourceTool as createReviewSourceToolDefs,
+  resolveReviewSourceUiOrigin,
+} from './review-source-tool.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createReviewSourceTool = async (...args: Parameters<typeof createReviewSourceToolDefs>) =>
+  mastraSessionTools(await createReviewSourceToolDefs(...args), mastraCodeToolContext(args[0].requestContext));
 
 const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 const PUBLIC_ORIGIN = 'https://factory.example.com';

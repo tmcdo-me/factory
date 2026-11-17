@@ -4,16 +4,16 @@
  * directions are `factory-session` notifications on the receiver's stored thread.
  */
 
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import type {
   NotificationPriority,
   NotificationRecord,
   NotificationsStorage,
   SendNotificationSignalInput,
 } from '@mastra/core/notifications';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
-import type { IntegrationTools } from '../integrations/base.js';
 import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js'; // fork(claude-agent)
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import type { LiveSessions } from '../session/live-sessions.js';
@@ -133,7 +133,7 @@ function unavailable(result: Extract<FactoryDeliveryResult, { delivered: 'skippe
 export function createFactoryMessagingTools(
   scope: FactoryToolScope,
   deps: FactoryMessagingToolDependencies,
-): IntegrationTools {
+): Record<string, FactoryToolDef> {
   const requireMessaging = async () => {
     const messaging = await deps.messaging();
     if (!messaging) throw new Error('Session messaging is not available on this server.');
@@ -364,8 +364,8 @@ export function createFactoryMessagingTools(
     return { 'work-item': number === null ? item.id : `#${number}` };
   };
 
-  const signal = createTool({
-    id: 'factory_signal_session',
+  const signal = defineFactoryTool({
+    name: 'factory_signal_session',
     description: [
       'Send a message to another session in this Factory: a work item role session, or a teammate session you can see.',
       'Replies come back to this session as `factory-session` notifications with kind `reply` and an `in-reply-to` attribute naming your message.',
@@ -377,7 +377,7 @@ export function createFactoryMessagingTools(
         ? []
         : ['On this turn you can only message your side sessions and sessions working on items this session follows.']),
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         sessionId: z.string().trim().min(1).max(200).describe('The session to message.'),
         message: message.describe('What to say. It arrives as-is, so make it self-contained.'),
@@ -423,15 +423,15 @@ export function createFactoryMessagingTools(
     },
   });
 
-  const reply = createTool({
-    id: 'factory_message_origin',
+  const reply = defineFactoryTool({
+    name: 'factory_message_origin',
     description: [
       'Answer a message another Factory session sent you, or report on your work.',
       'With `inReplyTo` (the id of a `factory-session` notification of kind `message`) the answer goes back to the session and thread that sent it; each message can be answered once.',
       'Without it, the report goes to whoever follows your work: the session that started you, or everyone following your work item.',
       "Set `status`: `progress` for an update, `blocked` when you need an answer to go on, `done` when finished, `failed` when you can't finish. Send one `done` or `failed` when you finish.",
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         message: message.describe('Your answer.'),
         inReplyTo: z
@@ -628,13 +628,13 @@ export function createFactoryMessagingTools(
     };
   }
 
-  const listSide = createTool({
-    id: 'factory_list_side_sessions',
+  const listSide = defineFactoryTool({
+    name: 'factory_list_side_sessions',
     description: [
       'List the side sessions this session started with factory_start_session: state (running, parked waiting on an answer, idle), last report, whether you muted it, its model, and the work item it works on.',
       'Use the session ids with factory_signal_session and factory_switch_session_model. On a turn a person started, also with factory_answer_approval, factory_unsubscribe_session and factory_subscribe_session.',
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         state: z.enum(['running', 'parked', 'idle']).optional().describe('Only sessions in this state.'),
         muted: z.boolean().optional().describe('true for only muted sessions, false for only unmuted ones.'),
@@ -683,11 +683,11 @@ export function createFactoryMessagingTools(
     .max(200)
     .describe('The side session, from factory_list_side_sessions.');
 
-  const unsubscribe = createTool({
-    id: 'factory_unsubscribe_session',
+  const unsubscribe = defineFactoryTool({
+    name: 'factory_unsubscribe_session',
     description:
       "Mute a side session you started: its reports and run-end notices stop reaching you, but it keeps working. Approval requests and blocked reports still arrive, since the session can't go on without an answer. Undo with factory_subscribe_session. Only on a turn a person started.",
-    inputSchema: z.object({ sessionId: sideSessionId }).strict(),
+    input: z.object({ sessionId: sideSessionId }).strict(),
     execute: async ({ sessionId }) => {
       requirePerson(scope, 'mute a side session');
       const row = await ownSideSession(sessionId);
@@ -698,11 +698,11 @@ export function createFactoryMessagingTools(
     },
   });
 
-  const subscribe = createTool({
-    id: 'factory_subscribe_session',
+  const subscribe = defineFactoryTool({
+    name: 'factory_subscribe_session',
     description:
       'Unmute a side session you muted with factory_unsubscribe_session, so its reports reach you again. Reports it sent while muted are not replayed. Only on a turn a person started.',
-    inputSchema: z.object({ sessionId: sideSessionId }).strict(),
+    input: z.object({ sessionId: sideSessionId }).strict(),
     execute: async ({ sessionId }) => {
       requirePerson(scope, 'unmute a side session');
       const row = await ownSideSession(sessionId);

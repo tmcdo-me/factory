@@ -5,7 +5,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { createTool } from '@mastra/core/tools';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import { z } from 'zod';
 
 import { boardForWorkItem } from '../boards/index.js';
@@ -13,7 +14,6 @@ import type { BoardRegistry } from '../boards/index.js';
 import type { IntakeRoutesReader } from '../boards/intake-routing.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
-import type { IntegrationTools } from '../integrations/base.js';
 import { factoryWorkItemUrl } from '../links.js';
 import { transitionBodySchema } from '../routes/contracts.js';
 import type { FactoryTransitionService } from '../rules/transition-service.js';
@@ -84,7 +84,7 @@ function settled(result: FactoryDecisionActionResult) {
 export function createFactoryWorkItemTools(
   scope: FactoryToolScope,
   deps: FactoryWorkItemToolDependencies,
-): IntegrationTools {
+): Record<string, FactoryToolDef> {
   const project = { orgId: scope.orgId, factoryProjectId: scope.factoryProjectId };
   const audit: FactoryAuditEmit = async input => {
     await deps.auditRecorder.record({
@@ -144,11 +144,11 @@ export function createFactoryWorkItemTools(
     });
 
   return {
-    factory_create_work_item: createTool({
-      id: 'factory_create_work_item',
+    factory_create_work_item: defineFactoryTool({
+      name: 'factory_create_work_item',
       description:
         "File a new work item on this Factory's Work board (or wherever the project's intake routes send it) for the person you are working with. It enters its board's first phase, or the phase an intake route names, and this session follows it. Check factory_list_work_items for an existing item first. Name the repository when the Factory links more than one; runs refuse to start on a card that doesn't say which.",
-      inputSchema: z
+      input: z
         .object({
           title: z.string().trim().min(1).max(512).describe('Short title, as it should read on the card.'),
           description: z
@@ -190,11 +190,11 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_transition_work_item: createTool({
-      id: 'factory_transition_work_item',
+    factory_transition_work_item: defineFactoryTool({
+      name: 'factory_transition_work_item',
       description:
         "Move a work item to another stage of its board, as the person you are working with. The board's rules decide whether the move is allowed and what it starts.",
-      inputSchema: z
+      input: z
         .object({
           workItem: workItemRefSchema,
           stage: z.string().trim().min(1).max(64).describe('Destination stage, e.g. "planning" or "done".'),
@@ -250,11 +250,11 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_update_work_item: createTool({
-      id: 'factory_update_work_item',
+    factory_update_work_item: defineFactoryTool({
+      name: 'factory_update_work_item',
       description:
         "Edit a work item's fields as the person you are working with: its title, description, the repository its runs use, or its parent item. Move stages with factory_transition_work_item and start roles with factory_start_session.",
-      inputSchema: z
+      input: z
         .object({
           workItem: workItemRefSchema,
           title: z.string().trim().min(1).max(500).optional().describe('New card title.'),
@@ -314,11 +314,11 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_retry_decision: createTool({
-      id: 'factory_retry_decision',
+    factory_retry_decision: defineFactoryTool({
+      name: 'factory_retry_decision',
       description:
         'Retry one failed Factory run once its cause is fixed. Refused when the failure cannot be fixed by retrying or the item has moved on.',
-      inputSchema: z.object({ decisionId }).strict(),
+      input: z.object({ decisionId }).strict(),
       execute: async ({ decisionId }) =>
         settled(
           await retryFactoryDecision({
@@ -330,10 +330,10 @@ export function createFactoryWorkItemTools(
         ),
     }),
 
-    factory_dismiss_decision: createTool({
-      id: 'factory_dismiss_decision',
+    factory_dismiss_decision: defineFactoryTool({
+      name: 'factory_dismiss_decision',
       description: 'Dismiss one proposed Factory run that is no longer wanted.',
-      inputSchema: z.object({ decisionId }).strict(),
+      input: z.object({ decisionId }).strict(),
       execute: async ({ decisionId }) => {
         requirePerson(scope, 'dismiss a proposed run');
         return settled(
@@ -348,11 +348,11 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_resolve_proposal: createTool({
-      id: 'factory_resolve_proposal',
+    factory_resolve_proposal: defineFactoryTool({
+      name: 'factory_resolve_proposal',
       description:
         "Approve or dismiss one proposed Factory run. Approving starts the run and lets the item's later runs start without asking.",
-      inputSchema: z.object({ decisionId, action: z.enum(['approve', 'dismiss']) }).strict(),
+      input: z.object({ decisionId, action: z.enum(['approve', 'dismiss']) }).strict(),
       execute: async ({ decisionId, action }) => {
         requirePerson(scope, 'approve or dismiss a proposed run');
         return settled(
@@ -368,11 +368,11 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_subscribe_work_item: createTool({
-      id: 'factory_subscribe_work_item',
+    factory_subscribe_work_item: defineFactoryTool({
+      name: 'factory_subscribe_work_item',
       description:
         'Follow a work item from this session, so you hear about its progress and its sessions report to you. Items you file or start are followed already.',
-      inputSchema: z.object({ workItem: workItemRefSchema }).strict(),
+      input: z.object({ workItem: workItemRefSchema }).strict(),
       execute: async ({ workItem }) => {
         const item = await requireItem(workItem);
         const subscription = await follow(item, 'subscribed');
@@ -380,10 +380,10 @@ export function createFactoryWorkItemTools(
       },
     }),
 
-    factory_unsubscribe_work_item: createTool({
-      id: 'factory_unsubscribe_work_item',
+    factory_unsubscribe_work_item: defineFactoryTool({
+      name: 'factory_unsubscribe_work_item',
       description: 'Stop following a work item from this session.',
-      inputSchema: z.object({ workItem: workItemRefSchema }).strict(),
+      input: z.object({ workItem: workItemRefSchema }).strict(),
       execute: async ({ workItem }) => {
         const item = await requireItem(workItem);
         const removed = await deps.workItems.unsubscribeFromWorkItem({

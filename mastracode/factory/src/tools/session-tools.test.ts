@@ -25,9 +25,16 @@ import { createSessionRunEndReporter } from './reports.js';
 import { observeSessionRunReports } from './run-watch.js';
 import { FACTORY_INTERACTIVE_KEY, resolveFactoryToolScope } from './scope.js';
 import type { FactoryToolScope } from './scope.js';
-import { FACTORY_TOOLS_OWNER_ID, createFactorySessionTools } from './session-tools.js';
-import { createFactoryTools } from './index.js';
+import { FACTORY_TOOLS_OWNER_ID, createFactorySessionTools as createFactorySessionToolsDefs } from './session-tools.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
+import { createFactoryTools as createFactoryToolsDefs } from './index.js';
 import type { FactoryToolDependencies } from './index.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactorySessionTools = (...args: Parameters<typeof createFactorySessionToolsDefs>) =>
+  mastraSessionTools(createFactorySessionToolsDefs(...args), scopeToolContext(args[0]));
+const createFactoryTools = (...args: Parameters<typeof createFactoryToolsDefs>) =>
+  mastraSessionTools(createFactoryToolsDefs(...args), scopeToolContext(args[0].scope));
 
 vi.mock('../routes/tenant-credentials.js', async importOriginal => ({
   ...(await importOriginal<typeof import('../routes/tenant-credentials.js')>()),

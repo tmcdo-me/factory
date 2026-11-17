@@ -1,8 +1,17 @@
 // fork(claude-agent): also factory_answer_question's checks.
 import { describe, expect, it, vi } from 'vitest';
 
-import { QUESTION_ANSWERERS, answerParkedCall, createFactoryApprovalTools } from './approval-tools.js';
+import {
+  QUESTION_ANSWERERS,
+  answerParkedCall,
+  createFactoryApprovalTools as createFactoryApprovalToolsDefs,
+} from './approval-tools.js';
 import type { FactoryToolScope } from './scope.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactoryApprovalTools = (...args: Parameters<typeof createFactoryApprovalToolsDefs>) =>
+  mastraSessionTools(createFactoryApprovalToolsDefs(...args), scopeToolContext(args[0]));
 
 const WORKER = '00000000-0000-4000-8000-000000000001';
 const ITEM = 'item-1';

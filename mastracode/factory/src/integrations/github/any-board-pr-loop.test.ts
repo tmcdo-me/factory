@@ -8,12 +8,17 @@ import { ProjectBoardCache } from '../../boards/project-boards.js';
 import { createTriageWorkRegistry } from '../../boards/test-utils.js';
 import { workSeedWithSelfReview } from '../../boards/work-migrations.js';
 import { FactoryDecisionDispatcher } from '../../rules/dispatcher.js';
-import { createFactoryTransitionTools } from '../../rules/tools.js';
+import { createFactoryTransitionTools as createFactoryTransitionToolsDefs } from '../../rules/tools.js';
 import { FactoryTransitionService } from '../../rules/transition-service.js';
 import type { StoredBoardInput } from '../../storage/domains/boards/base.js';
 import { createFactoryStorageForTests, createIsolatedFactoryPostgresForTests } from '../../storage/test-utils.js';
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import { resolveGithubRules } from './default-rules.js';
 import { GithubRules } from './rules.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactoryTransitionTools = async (...args: Parameters<typeof createFactoryTransitionToolsDefs>) =>
+  mastraSessionTools(await createFactoryTransitionToolsDefs(...args), mastraCodeToolContext(args[0].requestContext));
 
 /**
  * The whole pull request loop, driven through the GitHub rules and the real dispatcher, on a
@@ -338,8 +343,7 @@ async function harness(
       execute: (input: unknown, context: unknown) => Promise<unknown>;
     };
     const verdict = tools.factory_record_review_verdict as
-      | { execute: (input: unknown, context: unknown) => Promise<unknown> }
-      | undefined;
+      { execute: (input: unknown, context: unknown) => Promise<unknown> } | undefined;
     return {
       tools,
       /** The agent's own move, through the tool it is given. */
@@ -437,7 +441,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('the pull reques
       expect(await h.card(id)).toMatchObject({ board: loop.board, stages: [loop.completed] });
     });
 
-    it("sends the card back to rest when its pull request closes unmerged", async () => {
+    it('sends the card back to rest when its pull request closes unmerged', async () => {
       const h = await harness(backend, loop);
       const id = await cardInBuild(h);
       await h.authored(id);

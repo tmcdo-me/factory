@@ -385,6 +385,18 @@ Each slice: implement → focused tests → manual check where noted → commit.
      inventory row: these files never imported Mastra Code. Checked with a real Mastra Code session
      on aimock (`tools/toolset.integration.test.ts`), a real `AgentController` (`tools.integration.test.ts`)
      and the fake SDK's real MCP server (`claude-agent-sessions.test.ts`).
+   - **4b** ✅ The work-item group as definitions: the user session's work-item, messaging, session
+     and approval tools (`factory_create_work_item` … `factory_unsubscribe_work_item`,
+     `factory_signal_session`, `factory_message_origin`, the side-session tools,
+     `factory_start_session`, `factory_switch_session_model`, `factory_answer_approval`,
+     `factory_answer_question`), and a bound run's `factory_transition_work_item`
+     (`approval: 'required'`, so Mastra Code still asks unless the session allows it; Claude Agent, as before, runs
+     it unasked), `factory_record_review_verdict` and `factory_review_source`. A bound run's tools use
+     the call's id (`ctx.callId`, the transition's idempotent ingress; a call without one is refused,
+     as before) and re-read the binding of the turn they were built for at each call. Upstream
+     re-resolved the session from Mastra's execution context; a call whose context names another
+     session or thread is now refused before the tool runs (`mastraCodeToolContext`).
+     What the approval tools resume (Mastra Code's suspensions) is unchanged until slice 5.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
    `factory_answer_approval`, follower notifications.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
