@@ -21,6 +21,7 @@ import { z } from 'zod';
 
 import { dispatchGithubWebhook, processGithubEvent } from '../integrations/github/webhook.js';
 import type { GithubSignalSubscriptionRow, ParsedGithubWebhook } from '../integrations/github/webhook.js';
+import { mastraCodeSubscriptionSessions } from '../integrations/mastra-code-subscription-sessions.js';
 import { prepareSessionRunContext } from '../integrations/subscription-session.js';
 import { resetTenantCredentialResolverForTests } from '../routes/tenant-credentials.js';
 import { AgentMessagesStorage } from '../storage/domains/agent-messages/base.js';
@@ -417,7 +418,7 @@ describe('Factory messages to Mastra Code sessions', () => {
         claims: env.githubEvents,
         dispatch: async parsed => {
           const result = await dispatchGithubWebhook(parsed, {
-            controller: env.controller(),
+            sessions: mastraCodeSubscriptionSessions(env.controller()),
             github: { sourceControlStorage: env.sourceControl } as never,
             listSubscriptions: async () => [subscription],
             retireSubscription: async () => {},
