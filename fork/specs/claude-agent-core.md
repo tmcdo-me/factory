@@ -881,7 +881,15 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      the cursor is unchanged and keeps its message time, so results before it are not read again; events
      from runs that did not name a thread (before this) are skipped; a binding with no cursor reads its
      session's whole log (as it read the whole thread). Cost: the log is read from its start per
-     reconcile (no time index), paged. Left: processInputStep's tool-result ingest and the processor's
+     reconcile (no time index): the fold is made once for the pages of a pass and dropped when the last is
+     served or the log has grown. A call is bound to the assistant message streaming when it started (else
+     the first that began while it was open, else the next, else its call id), and to the thread of the run
+     it started in, so one resumed in a later run keeps both. The thread is read once, at `agent_start` (a
+     switch mid-run is not seen). The cursor holds the last result's time and the start filter is
+     inclusive, so the last result is read again each pass: harmless because the ingress ids match
+     (real-session tests, with and without a reply after the call). Runs from before `run.started` named a
+     thread are skipped by the reconcile, including for a binding that has no cursor (it never evaluates
+     them); the step's live ingest is unchanged. Left: processInputStep's tool-result ingest and the processor's
      state-signal and `controller` request-context reads (next).
    - **Owner decisions (slice 7 planning):** (1) board rules read the Factory transcript: Mastra Code's
      tool results are ingested from the event log (reconcile reads it instead of Mastra memory), with a

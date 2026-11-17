@@ -1,6 +1,6 @@
 import { InMemoryEventLog } from '@factory/agent-runtime';
 import type { FactoryEvent } from '@factory/agent-runtime';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { eventTranscriptReader, listFinishedToolCalls } from './event-transcript-reader.js';
 
@@ -82,5 +82,43 @@ describe('listFinishedToolCalls', () => {
       messages: [],
       hasMore: false,
     });
+  });
+
+  it('keeps the message and thread of a call that finishes in a later run (a resumed approval)', async () => {
+    const log = await logOf(
+      { type: 'run.started', runId: 'r1', threadId: 't1' },
+      { type: 'message.started', messageId: 'm1', role: 'assistant' },
+      ...call('c1'),
+      { type: 'run.ended', runId: 'r1', reason: 'awaiting_interaction' },
+      { type: 'run.started', runId: 'r2', threadId: 't2' },
+      { type: 'tool.ended', callId: 'c1', result: 'Plan approved.' },
+      { type: 'run.ended', runId: 'r2', reason: 'complete' },
+    );
+    expect((await listFinishedToolCalls(log, { sessionId: 's1', threadId: 't1' })).map(m => m.id)).toEqual(['m1']);
+    expect(await listFinishedToolCalls(log, { sessionId: 's1', threadId: 't2' })).toEqual([]);
+  });
+
+  it('folds the log once for the pages of a pass, and again when it has grown', async () => {
+    const log = await logOf(
+      { type: 'run.started', runId: 'r1', threadId: 't1' },
+      ...call('a'),
+      { type: 'tool.ended', callId: 'a', result: 1 },
+      ...call('b'),
+      { type: 'tool.ended', callId: 'b', result: 1 },
+      ...call('c'),
+      { type: 'tool.ended', callId: 'c', result: 1 },
+    );
+    const list = vi.spyOn(log, 'list');
+    const reader = eventTranscriptReader(log);
+    const base = { threadId: 't1', sessionId: 's1', perPage: 1 };
+    await reader.listMessages({ ...base, page: 0 });
+    const afterFirst = list.mock.calls.length;
+    await reader.listMessages({ ...base, page: 1 });
+    // One freshness check, not another fold of the whole log.
+    expect(list.mock.calls.length).toBe(afterFirst + 1);
+    await log.append('s1', [...call('d'), { type: 'tool.ended', callId: 'd', result: 1 }]);
+    const last = await reader.listMessages({ ...base, page: 2 });
+    expect(last.messages.map(message => message.id)).toEqual(['c']);
+    expect(last.hasMore).toBe(true);
   });
 });

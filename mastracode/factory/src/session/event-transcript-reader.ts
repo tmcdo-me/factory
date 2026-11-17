@@ -13,6 +13,10 @@ const PAGE = 1000;
 interface OpenCall {
   name: string;
   input: unknown;
+  /** The assistant message streaming when the call started or the first one that began while it was open. */
+  messageId?: string;
+  /** The thread of the run the call started in (a call resumed in a later run keeps it). */
+  threadId?: string;
 }
 
 /**
@@ -24,6 +28,13 @@ export async function listFinishedToolCalls(
   log: EventLogReader,
   input: { sessionId: string; threadId: string; start?: Date },
 ): Promise<MastraDBMessage[]> {
+  return (await foldFinishedToolCalls(log, input)).messages;
+}
+
+async function foldFinishedToolCalls(
+  log: EventLogReader,
+  input: { sessionId: string; threadId: string; start?: Date },
+): Promise<{ messages: MastraDBMessage[]; lastSeq: number }> {
   const open = new Map<string, OpenCall>();
   const out: MastraDBMessage[] = [];
   // Finished calls that no assistant message has been seen for yet: Mastra announces the message
@@ -80,13 +91,20 @@ export async function listFinishedToolCalls(
             for (const held of unassigned) emit(held, event.messageId);
             unassigned = [];
             openAssistant = event.messageId;
+            // A call already open belongs to the message that began while it was.
+            for (const call of open.values()) call.messageId ??= event.messageId;
           }
           break;
         case 'message.ended':
           if (event.messageId === openAssistant) openAssistant = undefined;
           break;
         case 'tool.started':
-          open.set(event.callId, { name: event.name, input: event.input });
+          open.set(event.callId, {
+            name: event.name,
+            input: event.input,
+            ...(openAssistant ? { messageId: openAssistant } : {}),
+            ...(threadId ? { threadId } : {}),
+          });
           break;
         case 'tool.input': {
           const call = open.get(event.callId);
@@ -96,14 +114,15 @@ export async function listFinishedToolCalls(
         case 'tool.ended': {
           const call = open.get(event.callId);
           open.delete(event.callId);
-          if (!call || threadId !== input.threadId || event.denied || event.stopped) break;
+          if (!call || call.threadId !== input.threadId || event.denied || event.stopped) break;
           const held = {
             call,
             callId: event.callId,
             at,
             ...(event.error !== undefined ? { error: event.error } : { result: event.result }),
           };
-          if (openAssistant) emit(held, openAssistant);
+          const holder = call.messageId ?? openAssistant;
+          if (holder) emit(held, holder);
           else unassigned.push(held);
           break;
         }
@@ -114,11 +133,16 @@ export async function listFinishedToolCalls(
     if (page.length < PAGE) break;
   }
   flush();
-  return out;
+  return { messages: out, lastSeq: afterSeq };
 }
 
-/** A message reader (the processor's) over the event log, for the bound thread of one session. */
+/**
+ * A message reader (the processor's) over the event log, for the bound thread of one session. The
+ * processor pages through a reconcile, so the fold is kept for the pages of one pass (dropped when the
+ * last is served, or when the log has grown since it was made).
+ */
 export function eventTranscriptReader(log: EventLogReader) {
+  const folds = new Map<string, Promise<{ messages: MastraDBMessage[]; lastSeq: number }>>();
   return {
     async listMessages(input: {
       threadId: string;
@@ -128,13 +152,27 @@ export function eventTranscriptReader(log: EventLogReader) {
       filter?: { dateRange?: { start?: Date } };
     }): Promise<{ messages: MastraDBMessage[]; hasMore: boolean }> {
       if (!input.sessionId) return { messages: [], hasMore: false };
-      const finished = await listFinishedToolCalls(log, {
-        sessionId: input.sessionId,
-        threadId: input.threadId,
-        ...(input.filter?.dateRange?.start ? { start: input.filter.dateRange.start } : {}),
-      });
+      const sessionId = input.sessionId;
+      const key = JSON.stringify([sessionId, input.threadId, input.filter?.dateRange?.start?.getTime() ?? null]);
+      let fold = input.page > 0 ? folds.get(key) : undefined;
+      if (fold) {
+        // Still this pass's fold only while nothing was appended since it was read.
+        const { lastSeq } = await fold;
+        if ((await log.list(sessionId, { afterSeq: lastSeq, limit: 1 })).length > 0) fold = undefined;
+      }
+      if (!fold) {
+        fold = foldFinishedToolCalls(log, {
+          sessionId,
+          threadId: input.threadId,
+          ...(input.filter?.dateRange?.start ? { start: input.filter.dateRange.start } : {}),
+        });
+        folds.set(key, fold);
+      }
+      const { messages: finished } = await fold;
       const from = input.page * input.perPage;
-      return { messages: finished.slice(from, from + input.perPage), hasMore: from + input.perPage < finished.length };
+      const hasMore = from + input.perPage < finished.length;
+      if (!hasMore) folds.delete(key);
+      return { messages: finished.slice(from, from + input.perPage), hasMore };
     },
   };
 }

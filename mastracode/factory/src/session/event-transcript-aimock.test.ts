@@ -53,7 +53,10 @@ afterEach(async () => {
 });
 
 describe('the transcript of a Mastra Code session', () => {
-  it('names a finished tool call in the assistant message and thread Mastra keeps it in', async () => {
+  it.each([
+    ['a reply follows the call', 'Done.'],
+    ['the run ends with no reply after the call', ''],
+  ])('names a finished tool call in the assistant message and thread Mastra keeps it in (%s)', async (_name, reply) => {
     const settingsPath = path.join(directory, 'settings.json');
     writeFileSync(
       settingsPath,
@@ -98,7 +101,7 @@ describe('the transcript of a Mastra Code session', () => {
       },
       { toolCalls: [{ id: 'call_note_1', name: 'note_it', arguments: JSON.stringify({ text: 'hi' }) }] },
     );
-    mock.on({ predicate: () => true }, { content: 'Done.' });
+    mock.on({ predicate: () => true }, { content: reply });
 
     const log = new InMemoryEventLog();
     const hub = new SessionEventHub(log);
