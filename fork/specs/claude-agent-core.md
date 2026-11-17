@@ -740,6 +740,14 @@ webhook.ts`, slice 7) are unchanged: one event is handled once by the event clai
      can't loop. A comment's payload names no head, so the card's attached record of the pull request
      must say its head lives in the repository itself (`headRepositoryId`, now kept with the pull
      request's facts). Build runs respect the Claude Agent cap.
+   - **6h** (in progress, a stack of PRs: Mastra Code's half of the dispatcher on the seam) ✅
+     _6h-1:_ `MastraCodeRuntimeSessions` (`rules/mastra-code-sessions.ts`) answers the dispatcher's
+     questions about Mastra Code sessions in the seam's vocabulary over the agent controller
+     (`runs`, `hasRun`, `awaitsPerson`, `abort`, plus the thread-keyed `isThreadRunning`,
+     `anyRunning` and `holdsThread`, as Mastra Code's run registry is per thread). The dispatcher
+     no longer calls `listActiveThreadRuns` or reads a session's run, suspension and stream state
+     itself; kickoff, messages and run watching still go through the controller (next PRs).
+     Behaviour is unchanged.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
