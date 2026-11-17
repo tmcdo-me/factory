@@ -775,6 +775,30 @@ describe('createMastraCode', () => {
     }
   });
 
+  // fork(claude-agent): the goal judge reads the host's workspace (Factory's, which may be a Sprite),
+  // never the default local one rooted on the server's filesystem.
+  it("builds the goal judge's tools from the host's workspace when one is configured", async () => {
+    const { getGoalJudgeTools } = await import('../agents/workspace.js');
+    const { createMastraCodeAgentController } = await import('../index.js');
+    const hostWorkspace = { id: 'host-workspace' };
+    const workspace = vi.fn(async () => hostWorkspace);
+    vi.mocked(getGoalJudgeTools).mockClear();
+    await createMastraCodeAgentController({ workspace: workspace as any });
+    const agentConfig = agentConstructorMock.mock.calls.at(-1)![0];
+
+    const requestContext = new RequestContext();
+    await agentConfig.goal.tools({ requestContext });
+    const call = vi.mocked(getGoalJudgeTools).mock.calls.at(-1)![0];
+    expect(call.requestContext).toBe(requestContext);
+    expect(call.resolveWorkspace).toBeTypeOf('function');
+    await expect(call.resolveWorkspace!({ requestContext })).resolves.toBe(hostWorkspace);
+    expect(workspace).toHaveBeenCalledWith(expect.objectContaining({ requestContext }));
+
+    await createMastraCodeAgentController();
+    await agentConstructorMock.mock.calls.at(-1)![0].goal.tools({ requestContext });
+    expect(vi.mocked(getGoalJudgeTools).mock.calls.at(-1)![0].resolveWorkspace).toBeUndefined();
+  });
+
   it('skips the host thinking default when the session picked its own level', async () => {
     const { getDynamicModel } = await import('../agents/model.js');
     const { createMastraCodeAgentController } = await import('../index.js');

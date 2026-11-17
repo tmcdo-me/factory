@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type * as factoryModule from '@mastra/factory';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -61,6 +64,9 @@ describe('production boot guards (src/mastra/index.ts)', () => {
       'FACTORY_CREDENTIAL_ENCRYPTION_KEY_ID',
       'FACTORY_CREDENTIAL_ENCRYPTION_PREVIOUS_KEYS',
       'FACTORY_DATABASE',
+      'FACTORY_DEPLOYMENT',
+      'SPRITES_TOKEN',
+      'FACTORY_BROWSER',
     ]) {
       vi.stubEnv(name, '');
     }
@@ -138,6 +144,73 @@ describe('production boot guards (src/mastra/index.ts)', () => {
       expect(config.vector).toBeUndefined();
     },
   );
+
+  // A container or remote deployment (fork/deploy/) runs every session on a Sprite: the server host
+  // holds the database and nothing an agent runs.
+  describe('a container deployment (FACTORY_DEPLOYMENT=container)', () => {
+    let dataDir: string;
+    beforeEach(() => {
+      // The libSQL file goes in a throwaway app data directory, never the machine's own.
+      dataDir = mkdtempSync(join(tmpdir(), 'factory-container-boot-'));
+      vi.stubEnv('MASTRA_APP_DATA_DIR', dataDir);
+      vi.stubEnv('MASTRA_DB_PATH', join(dataDir, 'mastra.db'));
+      vi.stubEnv('FACTORY_DEPLOYMENT', 'container');
+      vi.stubEnv('FACTORY_CREDENTIAL_ENCRYPTION_KEY', ENCRYPTION_KEY);
+      vi.stubEnv('DATABASE_URL', '');
+      vi.stubEnv('FACTORY_DATABASE', 'libsql');
+    });
+    afterEach(() => {
+      rmSync(dataDir, { recursive: true, force: true });
+    });
+
+    it('refuses to boot on the local sandbox provider', { timeout: 60_000 }, async () => {
+      vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'local');
+
+      await expect(import('./index.js')).rejects.toThrow(
+        /FACTORY_DEPLOYMENT=container runs every session on Fly\.io Sprites.*FACTORY_SANDBOX_PROVIDER is "local"/,
+      );
+      expect(factoryConfigs).toHaveLength(0);
+    });
+
+    it('refuses to boot on another provider, or none, even in development', { timeout: 60_000 }, async () => {
+      vi.stubEnv('E2B_API_KEY', 'e2b-key');
+      await expect(import('./index.js')).rejects.toThrow(/FACTORY_SANDBOX_PROVIDER is unset/);
+
+      vi.resetModules();
+      vi.stubEnv('E2B_API_KEY', '');
+      vi.stubEnv('NODE_ENV', 'development');
+      await expect(import('./index.js')).rejects.toThrow(/FACTORY_SANDBOX_PROVIDER=sprites with SPRITES_TOKEN/);
+      expect(factoryConfigs).toHaveLength(0);
+    });
+
+    it('refuses the local browser, which runs on the server host', { timeout: 60_000 }, async () => {
+      vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+      vi.stubEnv('SPRITES_TOKEN', 'fly-sprites-token');
+      vi.stubEnv('FACTORY_BROWSER', 'local');
+
+      await expect(import('./index.js')).rejects.toThrow(/refuses FACTORY_BROWSER=local/);
+      expect(factoryConfigs).toHaveLength(0);
+    });
+
+    it('refuses a deployment it does not know', { timeout: 60_000 }, async () => {
+      vi.stubEnv('FACTORY_DEPLOYMENT', 'kubernetes');
+      vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+      vi.stubEnv('SPRITES_TOKEN', 'fly-sprites-token');
+
+      await expect(import('./index.js')).rejects.toThrow(/FACTORY_DEPLOYMENT must be container or unset/);
+      expect(factoryConfigs).toHaveLength(0);
+    });
+
+    it('boots on Sprites with the local libSQL file', { timeout: 60_000 }, async () => {
+      vi.stubEnv('FACTORY_SANDBOX_PROVIDER', 'sprites');
+      vi.stubEnv('SPRITES_TOKEN', 'fly-sprites-token');
+
+      const config = await bootedConfig();
+
+      expect(config.sandbox).toMatchObject({ provider: 'sprites' });
+      expect(config.storage?.constructor.name).toBe('LibSQLFactoryStorage');
+    });
+  });
 
   it('keeps the development fallbacks', { timeout: 60_000 }, async () => {
     vi.stubEnv('NODE_ENV', 'development');

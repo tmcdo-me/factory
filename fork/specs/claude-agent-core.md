@@ -721,6 +721,26 @@ Each slice: implement → focused tests → manual check where noted → commit.
     cloned again; not `.env`, which belongs in the owner's vault) with a restore script.
     Checked by running the build on another port with a throwaway database and env. The
     LaunchAgent itself is the homelab repository's to install.
+15. **Container deployment** ✅ (`fork/deploy/`, `.github/workflows/fork-image.yml`): the server off
+    mac-mini as a Compose stack on the homelab, every session on a Sprite (Fly.io Machine: an
+    untested option). A multi-stage image: the build stage installs only the ~70 workspace projects
+    `prebuild` builds, runs the same `pnpm --dir mastracode/web build`, and `stage-runtime.mjs`
+    hard-links what the bundle loads (dependencies, optional and peer dependencies from its imports,
+    never dev dependencies; a missing one fails the build) into `/app`. The runtime stage is pinned
+    Node 24 slim with tini, sqlite3 and tzdata; an entrypoint gives a fresh volume to `node` and
+    drops to it (setpriv) before tini takes PID 1, and tini, varlock and node pass SIGTERM on to Factory's
+    shutdown. One volume, `/data` (database and snapshots; no Claude Agent home, which a Sprite keeps
+    on its own disk), and configuration from the environment only. `FACTORY_DEPLOYMENT=container`
+    (set by the image) refuses to start unless sessions run on Sprites, and refuses the local
+    browser; the goal judge, which built the SDK's default local workspace from `projectPath` on the
+    server's filesystem even for a host with its own workspace, now uses the host's (every other
+    non-session path, Slack threads and wakes included, already got Factory's workspace, which never
+    hands out the host's filesystem). `factory-snapshot` makes the online, integrity-checked copy
+    (`mastra.db-YYYY-MM-DD`, backup-verify's dated-copy pattern; libSQL checks a vector index), as
+    `node`, by hand or from the stack's sidecar; the only public route is GitHub's
+    `POST /web/github/webhook`, through the Cloudflare tunnel. The `Fork image` workflow builds it on
+    Blacksmith, runs `smoke.sh` (boot, UI, guard, ownership, snapshot, shutdown) and pushes
+    `ghcr.io/tmcdo-me/factory:<sha>` from main.
 
 Inventory to migrate (non-test): **67** files in `mastracode/factory/src` import
 `@mastra/core/agent-controller` or `@mastra/code-sdk` (heaviest: `factory.ts`, `rules/dispatcher.ts`,
@@ -753,6 +773,7 @@ the full list as `fork/specs/inventory.md` and each slice ticks its rows.
 | `FACTORY_CLAUDE_AGENT_BASH_SANDBOX`      | on             | `0`: trusted sessions' Bash outside Claude Code's sandbox (9c)               |
 | `FACTORY_CLAUDE_AGENT_BASH_DENY_READ`    | unset          | More host files Claude's file tools and commands may not read (comma list)   |
 | `FACTORY_DATABASE`                       | unset          | `libsql`: keep the local libSQL file outside development (one process) (14)  |
+| `FACTORY_DEPLOYMENT`                     | unset          | `container`: sessions only on Sprites, no local browser (15)                 |
 
 ## 9. Upstream
 
