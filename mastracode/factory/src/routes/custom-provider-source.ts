@@ -17,9 +17,8 @@
  * `invalidateCustomProvidersSnapshots` so changes are visible immediately.
  */
 
-import { resolveTenantFromRequestContext } from '@mastra/code-sdk/agents/credential-resolver';
-import { setCustomProvidersSource } from '@mastra/code-sdk/agents/custom-provider-source';
-import type { MastraCodeCustomProvider } from '@mastra/code-sdk/agents/mastracode-gateway';
+import type { MastraCodeCustomProvider } from '@factory/runtime-mastra-code/sdk';
+import { resolveTenantFromRequestContext, setCustomProvidersSource } from '@factory/runtime-mastra-code/sdk';
 import type { RequestContext } from '@mastra/core/request-context';
 import type { MiddlewareHandler } from 'hono';
 

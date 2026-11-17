@@ -13,6 +13,12 @@
         "default": "./dist/index.js"
       }
     },
+    "./sdk": {
+      "import": {
+        "types": "./dist/sdk.d.ts",
+        "default": "./dist/sdk.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
@@ -26,7 +32,8 @@
   "license": "Apache-2.0",
   "dependencies": {
     "@factory/agent-runtime": "workspace:*",
-    "@mastra/server": "workspace:*"
+    "@mastra/server": "workspace:*",
+    "@mastra/code-sdk": "workspace:*"
   },
   "devDependencies": {
     "@internal/ai-sdk-v5": "workspace:*",

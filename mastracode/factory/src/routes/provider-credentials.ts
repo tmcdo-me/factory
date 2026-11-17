@@ -14,8 +14,7 @@
  * is rejected when auth is enabled and falls back to local otherwise.
  */
 
-import { MASTRA_GATEWAY_PROVIDER } from '@mastra/code-sdk/onboarding/settings';
-import { getCredentialProviderId } from '@mastra/code-sdk/providers/model-ids';
+import { MASTRA_GATEWAY_PROVIDER, getCredentialProviderId } from '@factory/runtime-mastra-code/sdk';
 import type { Context } from 'hono';
 
 import { factoryUserOrgId } from '../auth.js';
