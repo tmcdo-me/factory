@@ -1,8 +1,12 @@
-import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
-import { getCredentialProviderId } from '@mastra/code-sdk/providers/model-ids';
-import { findSTTModel, resolveSTTModel, sttProviders } from '@mastra/code-sdk/voice/stt-registry';
-import type { STTModel } from '@mastra/code-sdk/voice/stt-registry';
-import { createSTTTranscriber, resolveSTTApiKey } from '@mastra/code-sdk/voice/transcribe';
+import {
+  getCredentialProviderId,
+  findSTTModel,
+  resolveSTTModel,
+  sttProviders,
+  createSTTTranscriber,
+  resolveSTTApiKey,
+} from '@factory/runtime-mastra-code/sdk';
+import type { AuthStorage, STTModel } from '@factory/runtime-mastra-code/sdk';
 import { classifyProviderError } from '@mastra/core/error';
 import type { ProviderFailureKind } from '@mastra/core/error';
 

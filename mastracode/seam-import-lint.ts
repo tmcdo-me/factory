@@ -16,18 +16,12 @@ export const restrictedMastraCodeImports = {
 
 /** Files under `mastracode/factory` that still import Mastra Code's controller or SDK. */
 export const factoryAllowList: string[] = [
-  'src/auth.ts',
   'src/boards/define-board.ts',
   'src/factory.ts',
   'src/integrations/base.ts',
   'src/integrations/github/routes.ts',
   'src/integrations/mastra-code-subscription-sessions.ts',
   'src/integrations/slack/slack.ts',
-  'src/routes/oauth.ts',
-  'src/routes/skills.ts',
-  'src/routes/surface.ts',
-  'src/routes/tenant-credentials.ts',
-  'src/routes/voice.ts',
   'src/rules/binding-context.ts',
   'src/rules/dispatcher.ts',
   'src/rules/mastra-code-sessions.ts',
@@ -46,9 +40,6 @@ export const factoryAllowList: string[] = [
   'src/session/session-threads.ts',
   'src/session/thread-session-stamp.ts',
   'src/session/thread-title-mirror.ts',
-  'src/skills/service.ts',
-  'src/storage/domains/credentials/base.ts',
-  'src/voice/transcription.ts',
   'src/workspace.ts',
 ];
 

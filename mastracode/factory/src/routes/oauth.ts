@@ -17,19 +17,23 @@
  * Claude Code only, which Factory runs as Claude Agent (spec §2.6).
  */
 
-import { nextPollDelayMs } from '@mastra/code-sdk/auth/device-code';
 import {
+  nextPollDelayMs,
   copilotNextPollDelayMs,
   pollGitHubCopilotDeviceLogin,
   startGitHubCopilotDeviceLogin,
-} from '@mastra/code-sdk/auth/providers/github-copilot';
-import type { CopilotDeviceLoginPending } from '@mastra/code-sdk/auth/providers/github-copilot';
-import { pollCodexDeviceLogin, startCodexDeviceLogin } from '@mastra/code-sdk/auth/providers/openai-codex';
-import type { CodexDeviceLoginPending } from '@mastra/code-sdk/auth/providers/openai-codex';
-import { pollXAIDeviceLogin, startXAIDeviceLogin } from '@mastra/code-sdk/auth/providers/xai';
-import type { XAIDeviceLoginPending } from '@mastra/code-sdk/auth/providers/xai';
-import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
-import type { OAuthCredentials } from '@mastra/code-sdk/auth/types';
+  pollCodexDeviceLogin,
+  startCodexDeviceLogin,
+  pollXAIDeviceLogin,
+  startXAIDeviceLogin,
+} from '@factory/runtime-mastra-code/sdk';
+import type {
+  CopilotDeviceLoginPending,
+  CodexDeviceLoginPending,
+  XAIDeviceLoginPending,
+  AuthStorage,
+  OAuthCredentials,
+} from '@factory/runtime-mastra-code/sdk';
 import type { ApiRoute } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';

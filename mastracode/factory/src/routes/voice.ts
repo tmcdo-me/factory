@@ -1,7 +1,5 @@
-import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
-import { findSTTModel, STT_MODELS, sttProviders } from '@mastra/code-sdk/voice/stt-registry';
-import type { STTModel } from '@mastra/code-sdk/voice/stt-registry';
-import { sttApiKeyEnvVar } from '@mastra/code-sdk/voice/transcribe';
+import { findSTTModel, STT_MODELS, sttProviders, sttApiKeyEnvVar } from '@factory/runtime-mastra-code/sdk';
+import type { AuthStorage, STTModel } from '@factory/runtime-mastra-code/sdk';
 import { registerApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';
 import { bodyLimit } from 'hono/body-limit';

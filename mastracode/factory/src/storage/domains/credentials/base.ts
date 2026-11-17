@@ -23,7 +23,7 @@
  * flow started on another.
  */
 
-import type { AuthCredential, OAuthCredential } from '@mastra/code-sdk/auth/types';
+import type { AuthCredential, OAuthCredential } from '@factory/runtime-mastra-code/sdk';
 import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema, CollectionWhere, FactoryStorageOps } from '@mastra/core/storage';
 import { createPlaintextFactorySecretEncryption } from '../../../secret-encryption.js';
