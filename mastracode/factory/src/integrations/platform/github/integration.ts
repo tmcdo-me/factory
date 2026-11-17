@@ -79,6 +79,7 @@ import {
 import { settleOrAbort } from '../../github/settle-or-abort.js';
 import type { GithubSubscriptionStorage } from '../../github/subscriptions.js';
 import { parseAuthorizedBotsEnv } from '../../github/webhook.js';
+import { mastraCodeSubscriptionSessions } from '../../mastra-code-subscription-sessions.js';
 import {
   logPlatformBootInfo,
   logPlatformInfo,
@@ -948,7 +949,7 @@ export class PlatformGithubIntegration implements FactoryIntegration {
     return [
       new PlatformGithubEventWorker({
         client: this.#client,
-        controller: ctx.controller,
+        sessions: mastraCodeSubscriptionSessions(ctx.controller),
         github: this,
         storage: ctx.storage.generic as unknown as PlatformGithubEventStorage,
         ingestFactoryEvent: attachGithubRules(this, ctx),

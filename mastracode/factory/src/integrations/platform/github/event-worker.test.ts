@@ -113,7 +113,7 @@ function createWorker(input: {
   };
   return new PlatformGithubEventWorker({
     client: new PlatformApiClient({ baseUrl, accessToken, fetchImpl: input.fetchImpl }),
-    controller: {} as never,
+    sessions: {} as never,
     github: input.github ?? createGithub(),
     storage: input.storage,
     sourceControl: sourceControl as never,
@@ -250,7 +250,7 @@ describe('PlatformGithubEventWorker', () => {
       payload: { ref: 'refs/heads/main' },
     };
     const dispatchDependencies = expect.objectContaining({
-      controller: expect.anything(),
+      sessions: expect.anything(),
       listSubscriptions: expect.any(Function),
       retireSubscription: expect.any(Function),
       isAuthorizedSender: expect.any(Function),
@@ -688,7 +688,7 @@ describe('PlatformGithubEventWorker', () => {
       );
       const worker = new PlatformGithubEventWorker({
         client: new PlatformApiClient({ baseUrl, accessToken, fetchImpl }),
-        controller: {} as never,
+        sessions: {} as never,
         github: createGithub(),
         storage: settings.storage,
         intervalMs: 1_000,

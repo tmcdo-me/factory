@@ -15,7 +15,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `integrations/base.ts`                                 |  322 | 7     |                                                                                                                  |
 | [ ]  | `integrations/github/routes.ts`                        | 1771 | 7     |                                                                                                                  |
 | [x]  | `integrations/github/session-subscriptions.ts`         |  375 | 7     |                                                                                                                  |
-| [ ]  | `integrations/github/webhook.ts`                       |  649 | 7     |                                                                                                                  |
+| [x]  | `integrations/github/webhook.ts`                       |  649 | 7     | delivers through `SubscriptionSessions` (7b)                                                                     |
 | [x]  | `integrations/gitlab/agent-tools.ts`                   |   56 | drop  | removed, not migrated (integration dropped)                                                                      |
 | [x]  | `integrations/gitlab/session-subscriptions.ts`         |  254 | drop  | removed, not migrated (integration dropped)                                                                      |
 | [x]  | `integrations/gitlab/webhook-dispatch.ts`              |  363 | drop  | removed, not migrated (integration dropped)                                                                      |
@@ -29,7 +29,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `integrations/slack/run-error-card.ts`                 |   64 | 7     |                                                                                                                  |
 | [x]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                                                  |
-| [ ]  | `integrations/subscription-session.ts`                 |  197 | 7     |                                                                                                                  |
+| [x]  | `integrations/subscription-session.ts`                 |  197 | 7     | run-context helpers only; the Mastra session bits moved to `mastra-code-subscription-sessions.ts` (7b)           |
 | [ ]  | `routes/config.ts`                                     | 1800 | 7     |                                                                                                                  |
 | [ ]  | `routes/contracts.ts`                                  | 1478 | 3     | session API                                                                                                      |
 | [ ]  | `routes/custom-provider-source.ts`                     |  186 | 7     |                                                                                                                  |

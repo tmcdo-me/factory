@@ -1,6 +1,7 @@
 import { copyRuleExclusions, copyRules } from '@mastra/playground-ui/oxlint';
 import { defineConfig } from 'oxlint';
 import rootConfig from '../../oxlint.config.ts';
+import { factoryUiAllowList, seamImportOverrides } from '../seam-import-lint.ts';
 
 export default defineConfig({
   extends: [rootConfig],
@@ -19,6 +20,7 @@ export default defineConfig({
     'mastra/sentence-case-labels': 'error',
   },
   overrides: [
+    ...(seamImportOverrides(factoryUiAllowList) ?? []),
     {
       files: ['src/**/*.{ts,tsx}'],
       rules: copyRules,

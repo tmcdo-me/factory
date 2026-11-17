@@ -42,6 +42,7 @@ import type {
   SourceControlInstallation,
   SourceControlRepository,
 } from '../../storage/domains/source-control/base.js';
+import { mastraCodeSubscriptionSessions } from '../mastra-code-subscription-sessions.js';
 import { listRepositoryCommits } from './commits.js';
 import { getGithubFeatureDiagnostics, isGithubFeatureEnabled } from './config.js';
 import type { GithubIntegration } from './integration.js';
@@ -535,7 +536,7 @@ export function buildGithubRoutes(options: MountGithubRoutesOptions): ApiRoute[]
           onChecksChanged: () => github.nudgeActivePoll?.(), // fork(claude-agent)
           ...(options.controller
             ? {
-                controller: options.controller,
+                sessions: mastraCodeSubscriptionSessions(options.controller),
                 ...(options.runtimeSessions ? { runtimeSessions: options.runtimeSessions } : {}), // fork(claude-agent)
                 onTargetError: (subscription, error) => {
                   console.warn(

@@ -1,4 +1,3 @@
-import type { MountedMastraCode } from '@mastra/code-sdk';
 import { isLeaseProvider, NoopLeaseProvider } from '@mastra/core/events';
 import type { LeaseProvider, PubSub } from '@mastra/core/events';
 import { MastraWorker } from '@mastra/core/worker';
@@ -22,6 +21,7 @@ import type {
   GithubWebhookNotification,
   ParsedGithubWebhook,
 } from '../../github/webhook.js';
+import type { SubscriptionSessions } from '../../mastra-code-subscription-sessions.js';
 import type { PlatformApiClient } from '../api-client.js';
 import { PlatformApiError } from '../api-client.js';
 
@@ -87,7 +87,7 @@ export type PlatformGithubEventDispatchIntegration = GithubWebhookDispatchIntegr
 
 export interface PlatformGithubEventWorkerConfig {
   client: PlatformApiClient;
-  controller: MountedMastraCode['controller'];
+  sessions: SubscriptionSessions;
   github: PlatformGithubEventDispatchIntegration;
   storage: PlatformGithubEventStorage;
   /**
@@ -131,7 +131,7 @@ export class PlatformGithubEventWorker extends MastraWorker {
   readonly name = 'platform-github-events';
 
   readonly #client: PlatformApiClient;
-  readonly #controller: MountedMastraCode['controller'];
+  readonly #sessions: SubscriptionSessions;
   readonly #github: PlatformGithubEventDispatchIntegration;
   readonly #storage: PlatformGithubEventStorage;
   readonly #ingestFactoryEvent: ((event: ParsedGithubWebhook) => Promise<unknown>) | undefined;
@@ -170,7 +170,7 @@ export class PlatformGithubEventWorker extends MastraWorker {
   constructor(config: PlatformGithubEventWorkerConfig) {
     super();
     this.#client = config.client;
-    this.#controller = config.controller;
+    this.#sessions = config.sessions;
     this.#github = config.github;
     this.#storage = config.storage;
     this.#ingestFactoryEvent = config.ingestFactoryEvent;
@@ -593,7 +593,7 @@ export class PlatformGithubEventWorker extends MastraWorker {
           });
         }
         const result = await this.#dispatch(parsed, {
-          controller: this.#controller,
+          sessions: this.#sessions,
           listSubscriptions: (target, options) =>
             listPullRequestSubscriptionsForWebhook(target, options, this.#github.integrationStorage),
           retireSubscription: (id, status) =>
