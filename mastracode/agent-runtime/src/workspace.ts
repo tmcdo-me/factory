@@ -21,7 +21,11 @@ export function sandboxProcessesOf(sandbox: unknown): SandboxProcesses | undefin
  * through `sandbox` (command/file API) or launch processes inside it with `spawn`.
  */
 export interface SessionWorkspace {
-  kind: SandboxKind;
+  /**
+   * Where the checkout lives. `remote` is a provider whose sandbox runs commands but launches no
+   * long-lived processes (Platform, E2B): `spawn` fails there.
+   */
+  kind: SandboxKind | 'remote';
   /** Repository checkout path inside the sandbox. */
   checkoutDir: string;
   /** Command and file API for runtimes that drive the sandbox directly (Mastra Code). */

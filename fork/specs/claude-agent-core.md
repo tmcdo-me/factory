@@ -397,6 +397,17 @@ Each slice: implement → focused tests → manual check where noted → commit.
      re-resolved the session from Mastra's execution context; a call whose context names another
      session or thread is now refused before the tool runs (`mastraCodeToolContext`).
      What the approval tools resume (Mastra Code's suspensions) is unchanged until slice 5.
+   - **4c** ✅ The source-control tools as definitions (`source_control_*`, `session/source-control-tools.ts`).
+     `source_control_push_branch` runs git in the call's session workspace (`ctx.workspace.sandbox`):
+     Claude Agent's, or for Mastra Code the agent's workspace as the seam describes it
+     (`mastraSessionWorkspace`: its sandbox, the session's checkout, the sandbox's processes where it
+     has them). The session a turn runs in is read in one place, `turnSession`
+     (`session/turn-session.ts`): the `controller` entry of the turn's request context, which Mastra
+     Code's controller sets and Claude Agent's turns mirror; the tool scope and the source-control
+     tools read it there instead of through Mastra Code's types. Allowing Factory's no-approval tools
+     on a new Mastra Code session is the adapter's (`allowToolsWithoutAsking`); Factory keeps the list
+     and the check that the session is a Factory's. Inventory: `session/source-control-tools.ts`,
+     `tools/scope.ts`, `tools/permissions.ts`.
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
    `factory_answer_approval`, follower notifications.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the

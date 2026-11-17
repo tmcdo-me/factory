@@ -57,7 +57,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                                                  |
 | [ ]  | `session/run-audit.ts`                                 |  302 | 7     |                                                                                                                  |
 | [ ]  | `session/session-threads.ts`                           |  179 | 7     |                                                                                                                  |
-| [ ]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                                           |
+| [x]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `session/thinking-default.ts`                          |   60 | 7     |                                                                                                                  |
 | [ ]  | `session/thread-session-stamp.ts`                      |   21 | 7     |                                                                                                                  |
 | [ ]  | `session/thread-title-mirror.ts`                       |   75 | 7     |                                                                                                                  |
@@ -69,9 +69,9 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `storage/domains/projects/base.ts`                     |  592 | 7     |                                                                                                                  |
 | [ ]  | `tools/approval-tools.ts`                              |  220 | 5     | interactions                                                                                                     |
 | [ ]  | `tools/deliver.ts`                                     |  204 | 4     | tools → FactoryToolDef                                                                                           |
-| [ ]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                                           |
+| [x]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `tools/run-watch.ts`                                   |  183 | 5     | interactions                                                                                                     |
-| [ ]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                                           |
+| [x]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `voice/transcription.ts`                               |  133 | drop  | voice dropped                                                                                                    |
 | [ ]  | `workspace.ts`                                         | 1967 | 2→7   | composition root; shrinks every slice                                                                            |
 
