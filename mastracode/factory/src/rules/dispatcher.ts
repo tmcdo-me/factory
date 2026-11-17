@@ -2994,7 +2994,9 @@ export class FactoryDecisionDispatcher {
     try {
       await seam.message(binding.sessionId, message, this.#seamRequestContext(startedBy, orgId));
     } catch (error) {
-      if (error instanceof FactoryDispatchError) throw error;
+      // Mastra Code's adapter classifies its own failures: a session or thread-switch failure
+      // (memory/model credentials) propagates raw, as it did before the seam carried the message.
+      if (error instanceof FactoryDispatchError || seam === this.#mastraCode) throw error;
       throw new FactoryDispatchError(
         'notification_delivery_failed',
         `Factory message delivery failed: ${sanitizeDispatchError(error)}`,

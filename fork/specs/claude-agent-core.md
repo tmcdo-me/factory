@@ -752,7 +752,9 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Claude Agent's (`FactoryRuntimeSessions.message`, now with optional `priority`, `sourceId`,
      `idempotencyKey` and `thread`, which Claude Agent ignores): `MastraCodeRuntimeSessions.message`
      moves the session to the binding's thread as its owner and sends the same inbox notification.
-     Errors keep their codes (`session_unavailable`, `notification_delivery_failed`).
+     Errors keep their codes (`session_unavailable`, `notification_delivery_failed`); a session lookup or
+     thread-switch failure (memory/model credentials) propagates unwrapped, as it did before, and the
+     dispatcher wraps only a Claude Agent failure (`unknown`-classified for Mastra Code, pinned by test).
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

@@ -1,6 +1,7 @@
 // fork(claude-agent)
 import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it, vi } from 'vitest';
+import { FactoryDispatchError } from './dispatch-errors.js';
 
 import { MastraCodeRuntimeSessions } from './mastra-code-sessions.js';
 
@@ -152,5 +153,16 @@ describe('MastraCodeRuntimeSessions.message', () => {
         code: 'notification_delivery_failed',
       },
     );
+  });
+
+  it('lets a thread-switch or session-lookup failure through unwrapped (it classifies as unknown, as before the seam)', async () => {
+    const { session, sessions } = messaging({ threadId: 't0' });
+    session.thread.switch.mockRejectedValueOnce(new Error('model credentials could not be resolved'));
+    const failure = await sessions
+      .message('s', { text: 'x', source: 'rule-message', wake: true, thread: { id: 't1', resourceId: 'r1' } }, ctx())
+      .catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(FactoryDispatchError);
+    expect(failure.message).toBe('model credentials could not be resolved');
   });
 });

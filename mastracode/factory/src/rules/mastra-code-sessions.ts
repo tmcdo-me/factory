@@ -150,6 +150,7 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
       resourceId: session.identity.getResourceId(),
     };
     const owner = requestContext.get('user') as { workosId: string; organizationId: string } | undefined;
+    // Built after the switch for the send: the session's state is read as the thread it moved to.
     const contextFor = () =>
       factoryRequestContext({
         session,
