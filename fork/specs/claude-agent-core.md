@@ -781,6 +781,25 @@ Each slice: implement → focused tests → manual check where noted → commit.
      at once and answers nothing more); a kickoff found stale after its preface ends the goal the dispatcher
      had already held; the replay guards run on the binding's thread (`#requireSession` moves the session
      there first, pinned by a test).
+   - **6i** ✅ Context providers (`session/context-providers.ts`): what a session is told each turn
+     (`factory-environment`, `factory-phase`, `factory-work-item`) is computed by runtime-independent
+     providers (`FactoryEnvironmentContext`, `FactoryPhaseContext` in `rules/processor.ts`,
+     `FactoryWorkItemContext`): `provide({requestContext, previous})` returns a `ContextBlock` (id,
+     cacheKey, snapshot or delta, tag, text, attributes, the value read back next turn) or nothing when
+     unchanged, never a Mastra type. Each adapter delivers it its own way: Mastra Code's processors
+     (`FactoryPhaseStateProcessor`, `FactoryWorkItemStateProcessor`, `FactoryEnvironmentStateProcessor`)
+     are thin shells whose `computeStateSignal` is `computeMastraStateSignal(provider, args)`
+     (`session/mastra-context.ts`: the thread's snapshot becomes `previous`, the block becomes the
+     stored signal); Claude Agent's `providerContext` calls the providers directly with the block it
+     last told, no longer building Mastra `ComputeStateSignalArgs`. Behaviour preserving: an aimock
+     Mastra Code session (`session/context-aimock.test.ts`) is told the same bytes before and after
+     (first turn: three blocks; a changed card adds a phase update and a card snapshot; an unchanged turn
+     adds nothing), and the processors' own suites pass unchanged. Kept in Mastra's mechanism, on purpose:
+     the state signals themselves (Mastra's thread stores and shows them, so what the model reads must
+     not change), the `FactorySessionsStateProcessor` (Mastra-only: Claude Agent has no side sessions to
+     report), and the phase context's `controller` request-context reads (the session address; the review
+     runtime's model and thinking level), which go with the processor's tool-result ingestion (slice 5
+     transcript work) and the request-context `controller` entry (slice 7).
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

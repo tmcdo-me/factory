@@ -171,7 +171,7 @@ import {
 } from './session/agent-event-mirror.js';
 import type { SessionInteractionRecords } from './session/agent-event-mirror.js'; // fork(claude-agent)
 import { ClaudeAgentConcurrency } from './session/claude-agent-concurrency.js';
-import { stateSignalContext } from './session/claude-agent-context.js';
+import { providerContext } from './session/claude-agent-context.js';
 import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-agent-host.js';
 import type { ClaudeAgentHost } from './session/claude-agent-host.js';
 import { claudeAgentCheckoutPosture } from './session/claude-agent-posture.js';
@@ -1974,8 +1974,10 @@ export class MastraFactory {
       ...(workItemsReady
         ? { checkout: claudeAgentCheckoutPosture({ sessions: sourceControlSessions, workItems: workItemsStorage }) }
         : {}),
-      // The card and phase each turn, as Mastra Code's state signals tell its sessions.
-      context: stateSignalContext([factoryProcessor, workItemProcessor].filter(processor => processor !== undefined)),
+      // The card and phase each turn, the same context Mastra Code's sessions read as state signals.
+      context: providerContext(
+        [factoryProcessor?.context, workItemProcessor?.context].filter(provider => provider !== undefined),
+      ),
       // A finished Factory tool call counts as it does for Mastra Code: an approved plan lets the card
       // leave Planning, and the board's tool-result rules run.
       onToolResult: async result => {
