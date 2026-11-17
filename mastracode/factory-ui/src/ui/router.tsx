@@ -120,7 +120,7 @@ function RootLanding() {
   if (!firstFactory) return null;
 
   // Onboarding does the same once its pending factory exists: the
-  // GitHub/Linear round-trips must resume onboarding, not land on the factory.
+  // GitHub round-trips must resume onboarding, not land on the factory.
   if (hasResumableFactoryOnboarding(factories)) return <Navigate to={`/onboarding${search}`} replace />;
 
   return <Navigate to={`/factories/${firstFactory.id}`} replace state={state} />;

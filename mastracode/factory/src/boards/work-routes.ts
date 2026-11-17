@@ -4,7 +4,7 @@ import type { StoredIntakeRouteInput } from '../storage/domains/boards/base.js';
 // they are stored routes like any other, which admins edit, retarget or delete.
 
 /**
- * The route every project starts with: a GitHub or GitLab card whose author is outside the
+ * The route every project starts with: a GitHub card whose author is outside the
  * write-access circle lands in Work › Intake, where nothing starts until a person moves it.
  * It is a stored route like any other, so admins can see, edit, disable or delete it.
  */
@@ -13,7 +13,7 @@ export const DEFAULT_INTAKE_ROUTE: StoredIntakeRouteInput = {
   when: {
     operator: 'AND',
     conditions: [
-      { field: 'source.integration', operator: 'in', value: ['github', 'gitlab'] },
+      { field: 'source.integration', operator: 'in', value: ['github'] },
       { field: 'author.trusted', operator: 'equals', value: false },
     ],
   },

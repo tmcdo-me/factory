@@ -13,12 +13,11 @@ import {
   openSourcePicker,
   closeSourcePicker,
   holdFirstPut,
-  baseConfig,
 } from './fixtures';
 
 describe('IntakeSection github', () => {
   describe('when the GitHub source is toggled off', () => {
-    it('toggles only GitHub from its header label and keeps the other sources editable while it saves', async () => {
+    it('toggles GitHub from its header label and keeps it editable while it saves', async () => {
       seedGithubProject();
       const saved = useIntakeHandlers();
       const release = holdFirstPut(CONFIG_URL);
@@ -34,22 +33,11 @@ describe('IntakeSection github', () => {
 
       expect(toggle).not.toBeChecked();
       expect(toggle).toBeEnabled();
-      const linearToggle = within(screen.getByRole('region', { name: 'Linear' })).getByRole('switch', {
-        name: 'Sync Linear issues',
-      });
-      await userEvent.click(linearToggle);
-      expect(linearToggle).not.toBeChecked();
 
       release();
 
-      await waitFor(() =>
-        expect(saved).toEqual([
-          { github: { enabled: false, sourceIds: null } },
-          { linear: { enabled: false, sourceIds: null } },
-        ]),
-      );
+      await waitFor(() => expect(saved).toEqual([{ github: { enabled: false, sourceIds: null } }]));
       expect(toggle).not.toBeChecked();
-      expect(linearToggle).not.toBeChecked();
     });
 
     it('persists the config with github disabled', async () => {
@@ -130,36 +118,6 @@ describe('IntakeSection github', () => {
       await userEvent.click(await screen.findByRole('button', { name: 'Add mastra' }));
 
       await waitFor(() => expect(saved).toEqual([{ github: { enabled: true, sourceIds: ['mastra'] } }]));
-    });
-  });
-
-  describe('given the server registers Dependabot intake', () => {
-    it('turns Dependabot alert sync on and opts a repository in', async () => {
-      seedGithubProject();
-      const saved = useIntakeHandlers({
-        config: { ...baseConfig(), dependabot: { enabled: false, sourceIds: null } },
-      });
-      renderIntakeSection();
-      const github = within(await screen.findByRole('region', { name: 'GitHub' }));
-      expect(github.queryByRole('button', { name: / to Dependabot repositories$/ })).not.toBeInTheDocument();
-
-      await userEvent.click(github.getByRole('switch', { name: 'Sync Dependabot alerts' }));
-      await waitFor(() => expect(saved).toEqual([{ dependabot: { enabled: true, sourceIds: null } }]));
-
-      await openSourcePicker('Dependabot repositories');
-      await userEvent.click(await screen.findByRole('button', { name: 'Add mastra' }));
-
-      await waitFor(() => expect(saved.at(-1)).toEqual({ dependabot: { enabled: true, sourceIds: ['mastra'] } }));
-      await closeSourcePicker();
-      expect(github.getByRole('switch', { name: 'Sync GitHub issues' })).toBeChecked();
-    });
-
-    it('hides Dependabot controls when the server does not register it', async () => {
-      seedGithubProject();
-      useIntakeHandlers();
-      renderIntakeSection();
-      await screen.findByRole('switch', { name: 'Sync GitHub issues' });
-      expect(screen.queryByRole('switch', { name: 'Sync Dependabot alerts' })).not.toBeInTheDocument();
     });
   });
 });

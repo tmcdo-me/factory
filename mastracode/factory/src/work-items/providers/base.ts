@@ -23,7 +23,7 @@ export function issueKeyPrefix(key: string | null): string | null {
 /**
  * The id unique per project and provider. It is the legacy source key without
  * the integration id (which is the provider): source types and workspaces
- * scope it, because ids such as a GitLab iid or a Slack `ts` repeat across them.
+ * scope it, because ids such as a Slack `ts` repeat across them.
  */
 export function providerExternalId(source: ExternalWorkItemSource): string {
   const workspace = source.workspaceId ? `${source.workspaceId}:` : '';

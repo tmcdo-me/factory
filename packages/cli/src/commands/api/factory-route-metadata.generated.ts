@@ -208,7 +208,6 @@ export const FACTORY_API_ROUTE_METADATA = {
       "item",
       "label",
       "limit",
-      "linearProject",
       "q",
       "reviewer",
       "sort",
@@ -2352,9 +2351,6 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
         "source": {
           "$ref": "#/$defs/__schema0"
         },
-        "linearProject": {
-          "$ref": "#/$defs/__schema0"
-        },
         "label": {
           "$ref": "#/$defs/__schema0"
         },
@@ -3978,6 +3974,72 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
               "position"
             ]
           }
+        },
+        "claudeAgent": {
+          "anyOf": [
+            {
+              "type": "object",
+              "properties": {
+                "cap": {
+                  "anyOf": [
+                    {
+                      "type": "integer",
+                      "minimum": -9007199254740991,
+                      "maximum": 9007199254740991
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "running": {
+                  "type": "integer",
+                  "minimum": -9007199254740991,
+                  "maximum": 9007199254740991
+                },
+                "waiting": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "sessionId": {
+                        "type": "string"
+                      },
+                      "position": {
+                        "type": "integer",
+                        "exclusiveMinimum": 0,
+                        "maximum": 9007199254740991
+                      },
+                      "priority": {
+                        "type": "string",
+                        "enum": [
+                          "person",
+                          "factory"
+                        ]
+                      },
+                      "since": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "sessionId",
+                      "position",
+                      "priority",
+                      "since"
+                    ]
+                  }
+                }
+              },
+              "required": [
+                "cap",
+                "running",
+                "waiting"
+              ]
+            },
+            {
+              "type": "null"
+            }
+          ]
         }
       },
       "required": [
@@ -4424,11 +4486,7 @@ export const FACTORY_API_ROUTE_SCHEMAS = {
               "source": {
                 "type": "string",
                 "enum": [
-                  "github",
-                  "gitlab",
-                  "linear",
-                  "jira",
-                  "incidentio"
+                  "github"
                 ]
               }
             },

@@ -49,9 +49,6 @@ import type {
   SourceControlStorageHandle,
 } from '../../../storage/domains/source-control/base.js';
 import type { FactoryIntegration, IntegrationContext, IntegrationTools } from '../../base.js';
-import { attachDependabotRules } from '../../dependabot/rules.js';
-import { createDependabotSync } from '../../dependabot/sync.js';
-import type { DependabotSync, GithubDependabotAlert } from '../../dependabot/sync.js';
 import { GithubAppIdentity } from '../../github/app-identity.js';
 import type { GithubEventRules, GithubRuleOverrides } from '../../github/default-rules.js';
 import { resolveGithubRules } from '../../github/default-rules.js';
@@ -188,8 +185,6 @@ const PAGE_SIZE = 30;
 // keeps each sweep's API cost flat on repositories with a large backlog.
 const OPEN_ISSUE_DISCOVERY_MAX_PAGES = 5;
 const API_PREFIX = '/v1/server';
-/** Intake config id that opts repositories into Dependabot alert sync. */
-const DEPENDABOT_INTAKE_ID = 'dependabot';
 const CHECK_TITLE_LIMIT = 255;
 const CHECK_TEXT_LIMIT = 65_535;
 /**
@@ -315,17 +310,6 @@ export class PlatformGithubIntegration implements FactoryIntegration {
   >();
   /** Same key → lookup already in flight, so overlapping callers share one request. */
   readonly #collaboratorPermissionInFlight = new Map<string, Promise<GithubRepositoryPermission | undefined>>();
-
-  /** Dependabot opt-in: its sources are the same repositories; cards arrive through the alert sync, not intake items. */
-  readonly additionalIntakes = [
-    {
-      id: DEPENDABOT_INTAKE_ID,
-      intake: {
-        listSources: (input: ListIntakeSourcesInput) => this.intake.listSources(input),
-        listItems: async () => ({ items: [], nextCursor: null }),
-      },
-    },
-  ] as const;
 
   readonly intake: Intake = {
     resolveIntakeDispatch: input => this.#resolveIntakeDispatch(input),
@@ -973,7 +957,6 @@ export class PlatformGithubIntegration implements FactoryIntegration {
         discoverPullRequests: this.#pullRequestReconcileEnabled
           ? attachGithubPullRequestDiscovery(this, ctx, openPullRequestLister(this.versionControl))
           : undefined,
-        syncDependabotAlerts: this.#issueReconcileEnabled ? this.#dependabotSync(ctx) : undefined,
         reconcileIssuesFactoryState: this.#issueReconcileEnabled
           ? attachGithubIssueReconciler(
               this,
@@ -1003,42 +986,6 @@ export class PlatformGithubIntegration implements FactoryIntegration {
         repositoryChangesShared: () => this.storage.linkedRepositoryChangesShared(),
       }),
     ];
-  }
-
-  #dependabotSync(ctx: IntegrationContext): DependabotSync | undefined {
-    const ingest = attachDependabotRules(ctx);
-    if (!ingest) return undefined;
-    return createDependabotSync({
-      listAlerts: input => this.listDependabotAlerts(input),
-      listProjects: args => this.storage.projectRepositories.listByExternalRepository(args),
-      // Opt-in per repo: the org's `dependabot` intake config must be enabled and list the repo.
-      repositoryEnabled: async ({ orgId, repository }) => {
-        const config = (await ctx.storage.intake.getConfig({ orgId, integrationIds: [DEPENDABOT_INTAKE_ID] }))[
-          DEPENDABOT_INTAKE_ID
-        ];
-        return Boolean(config?.enabled && config.sourceIds?.includes(repository));
-      },
-      ingest,
-      userId: 'factory-rule-dispatcher',
-    });
-  }
-
-  /** Lists a repository's Dependabot alerts in one state through the Platform GitHub proxy. */
-  async listDependabotAlerts(input: {
-    installationId: number;
-    repository: string;
-    state: 'open' | 'closed';
-  }): Promise<GithubDependabotAlert[]> {
-    const { owner, repo } = splitRepository(input.repository);
-    // GitHub has no "closed" alert state; closed covers the three terminal states. The 100 most
-    // recently updated are enough to close cards for recently fixed or dismissed alerts.
-    const state = input.state === 'open' ? 'open' : 'fixed,dismissed,auto_dismissed';
-    const query = new URLSearchParams({ state, per_page: '100', sort: 'updated', direction: 'desc' });
-    const result = await this.#client.request<{ alerts: GithubDependabotAlert[] }>(
-      'GET',
-      `${API_PREFIX}/github/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/dependabot/alerts?${query}`,
-    );
-    return result.alerts;
   }
 
   /**

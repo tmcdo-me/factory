@@ -41,6 +41,9 @@ We are replacing Factory's hard-wired Mastra Code agent with a Factory-owned age
   re-implemented, when we want them. Cheapest to take: non-chat UI, integrations, board
   definitions, storage domains. Expect conflicts in Factory's server core (`factory.ts`,
   dispatcher, workspace, session/tool wiring).
+- **Integrations: GitHub and Slack only.** Linear, GitLab, Jira, incident.io, Vanta, Dependabot
+  and the WorkOS audit mirror were removed from Factory (server, settings UI, web entry). An
+  upstream sync that touches them resolves by keeping them deleted.
 - Fork-only code lives in new paths (`fork/`, `mastracode/agent-runtime`,
   `mastracode/runtime-*`, `mastracode/sandbox-*`) so upstream never touches it.
 - Specs and decisions: [`fork/specs/`](fork/specs/).

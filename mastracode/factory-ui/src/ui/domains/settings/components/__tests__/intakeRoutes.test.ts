@@ -69,7 +69,7 @@ describe('describeRule on routes', () => {
       seededRoutes().map(candidate => [candidate.id, describeRule(candidate.when, phaseOptions(workBoardInfo))]),
     );
 
-    expect(lines['outside-authors']).toBe('Integration is GitHub or GitLab and author is not trusted');
+    expect(lines['outside-authors']).toBe('Integration is GitHub and author is not trusted');
     expect(lines['pull-requests']).toBe('Source kind is pull request');
     expect(lines['closed-canceled']).toBe('Close reason is not planned');
     expect(lines['closes-issue']).toBe(
@@ -88,7 +88,7 @@ describe('describeRule on routes', () => {
           { field: 'item.labels', operator: 'contains', value: 'bug' },
         ],
       }),
-    ).toBe('Repository, team or project is acme/app or labels contains bug');
+    ).toBe('Repository is acme/app or labels contains bug');
   });
 });
 
@@ -98,7 +98,7 @@ describe('route rows', () => {
   it('splits a route condition into one chip per check, keeping how they combine', () => {
     expect(describeConditions(route('outside-authors').when, phaseOptions(workBoardInfo))).toEqual({
       join: 'and',
-      parts: ['Integration is GitHub or GitLab', 'Author is not trusted'],
+      parts: ['Integration is GitHub', 'Author is not trusted'],
     });
     expect(describeConditions(route('everything-else').when)).toBeNull();
   });

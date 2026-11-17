@@ -113,7 +113,6 @@ test.describe('Factory session navigation', () => {
       http.get('*/web/github/projects/repo-1/issues', () => HttpResponse.json({ issues: [], nextPage: null })),
       http.get('*/web/intake/config', () => HttpResponse.json({ config: {} })),
       http.get('*/web/intake/bindings', () => HttpResponse.json({ bindings: [] })),
-      http.get('*/web/linear/status', () => HttpResponse.json({ enabled: false, connected: false })),
       http.get('*/api/agent-controller/code/sessions/fp-1/permissions', () => HttpResponse.json({ permissions: [] })),
     );
     await context.route(

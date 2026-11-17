@@ -19,8 +19,6 @@ export const BUILT_IN_SKILLS: FactorySkillInfo[] = [
   'factory-self-review',
   'factory-review',
   'factory-rereview',
-  'factory-gitlab-review',
-  'factory-gitlab-rereview',
 ].map(name => ({ name, description: `The ${name} skill`, content: `# ${name}`, builtIn: true }));
 
 /** Serves a signed-in factory with one repository, enough for the app shell around a board's settings. */
@@ -49,9 +47,6 @@ export function stubFactory(factory: Record<string, unknown> = {}) {
     ),
     http.get(`${TEST_BASE_URL}/web/intake/config`, () => HttpResponse.json({ config: {} })),
     http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-      HttpResponse.json({ enabled: false, connected: false, workspace: null }),
-    ),
     http.get(`${TEST_BASE_URL}/web/github/projects/repo-1/issues`, () =>
       HttpResponse.json({ issues: [], nextPage: null }),
     ),

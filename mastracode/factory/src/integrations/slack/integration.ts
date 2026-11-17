@@ -8,10 +8,10 @@
  * into the prepared agent controller by string key, resolve storage domains
  * itself, mint its own state signer, and splice routes onto the factory's
  * assembled server config. Implementing the integration interface instead means
- * the factory does all of that the same way it already does for GitHub and
- * Linear, and the entry's job shrinks to reading Slack's env vars once.
+ * the factory does all of that the same way it already does for GitHub, and
+ * the entry's job shrinks to reading Slack's env vars once.
  *
- * Slack ships as a factory built-in alongside GitHub and Linear (it originally
+ * Slack ships as a factory built-in alongside GitHub (it originally
  * lived in `mastracode/web` to keep `@mastra/slack`/`chat` out of this package;
  * the team reversed that so `create-factory` consumers get Slack channels out
  * of the box). The integration interface remains open — third parties still add

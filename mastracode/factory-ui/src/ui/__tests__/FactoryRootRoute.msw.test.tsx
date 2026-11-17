@@ -80,9 +80,6 @@ describe('Factory root route', () => {
         HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
       ),
       http.get(`${TEST_BASE_URL}/web/factory/projects`, () => HttpResponse.json({ projects: [] })),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
-      ),
     );
 
     const router = renderFactoryRoute('/');
@@ -117,9 +114,6 @@ describe('Factory root route', () => {
       http.get(`${TEST_BASE_URL}/web/factory/projects`, () =>
         HttpResponse.json({ projects: [{ id: 'fp-1', name: 'Pending Factory', repositories: [] }] }),
       ),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
-      ),
     );
 
     const router = renderFactoryRoute('/onboarding');
@@ -140,9 +134,6 @@ describe('Factory root route', () => {
         HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
       ),
       http.get(`${TEST_BASE_URL}/web/factory/projects`, () => HttpResponse.json({ projects: [] })),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
-      ),
       http.get(`${TEST_BASE_URL}/web/config/providers`, () => HttpResponse.json({ providers: [] })),
       http.get(`${TEST_BASE_URL}/web/config/models`, () => HttpResponse.json({ models: [] })),
     );
@@ -167,9 +158,6 @@ describe('Factory root route', () => {
         HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
       ),
       http.get(`${TEST_BASE_URL}/web/factory/projects`, () => HttpResponse.json({ projects: [] })),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: true, reason: 'ready' }),
-      ),
     );
 
     const router = renderFactoryRoute('/?linear=connected');

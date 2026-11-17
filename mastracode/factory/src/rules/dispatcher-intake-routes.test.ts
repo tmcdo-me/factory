@@ -294,7 +294,7 @@ describe('intake routes placing linked cards', () => {
     expect(untrusted?.metadata).not.toHaveProperty('intakeRouteId');
   });
 
-  it("files outside authors' GitHub and GitLab cards in Work › Intake by the default route, and starts nothing", async () => {
+  it("files outside authors' GitHub cards in Work › Intake by the default route, and starts nothing", async () => {
     const { boards, scope, defaultRoute, deliver, runs } = await setup({ withDefaultRoute: true, autoStart: true });
     expect(defaultRoute).toMatchObject({
       name: DEFAULT_INTAKE_ROUTE.name,
@@ -305,12 +305,6 @@ describe('intake routes placing linked cards', () => {
     const arrivals = [
       { sourceKey: 'github-issue:1', board: 'docs', metadata: { authorTrusted: false } },
       { sourceKey: 'github-issue:2', board: 'docs', metadata: {} },
-      {
-        sourceKey: 'gitlab-issue:3',
-        source: 'gitlab-issue' as const,
-        board: 'docs',
-        metadata: { authorTrusted: false },
-      },
     ];
     for (const arrival of arrivals) {
       const card = await deliver({ ...arrival, stage: 'inbox' });
@@ -326,7 +320,7 @@ describe('intake routes placing linked cards', () => {
     for (const arrival of [
       { sourceKey: 'github-issue:4', metadata: { authorTrusted: true } },
       { sourceKey: 'github-issue:5', metadata: { factoryAuthored: true } },
-      { sourceKey: 'linear-issue:ENG-6', source: 'linear-issue' as const, metadata: {} },
+      { sourceKey: 'detail-finding:6', source: 'detail-finding' as const, metadata: {} },
     ]) {
       const card = await deliver({ ...arrival });
       expect(placed(card), arrival.sourceKey).toEqual({ board: 'work', stages: ['intake'] });
@@ -356,7 +350,7 @@ describe('intake routes placing linked cards', () => {
     for (const arrival of [
       { sourceKey: 'github-issue:1', metadata: { authorTrusted: true } },
       { sourceKey: 'github-pr:2', source: 'github-pr' as const, metadata: { authorTrusted: true, state: 'open' } },
-      { sourceKey: 'linear-issue:ENG-3', source: 'linear-issue' as const, metadata: {} },
+      { sourceKey: 'detail-finding:3', source: 'detail-finding' as const, metadata: {} },
     ]) {
       // The integration's rule files on Work; the catch-all decides.
       const card = await deliver({ ...arrival, board: 'work', stage: 'intake' });
@@ -378,10 +372,7 @@ describe('intake routes placing linked cards', () => {
       target: { boardKey: 'work', phaseKey: 'pr-review' },
     });
 
-    for (const arrival of [
-      { sourceKey: 'github-pr:1', source: 'github-pr' as const },
-      { sourceKey: 'gitlab-mr:2', source: 'gitlab-pr' as const },
-    ]) {
+    for (const arrival of [{ sourceKey: 'github-pr:1', source: 'github-pr' as const }]) {
       const card = await deliver({ ...arrival, metadata: { authorTrusted: true } });
       expect(placed(card), arrival.sourceKey).toEqual({ board: 'work', stages: ['pr-review'] });
       expect(card?.metadata).toMatchObject({ intakeRouteId: pullRequestRoute.id });
@@ -464,43 +455,39 @@ describe('intake routes placing linked cards', () => {
     });
   });
 
-  it('places GitLab merge requests and Linear issues by their integration', async () => {
+  it('places pull requests and issues by their integration', async () => {
     const { route, deliver } = await setup();
     await route({
-      name: 'GitLab to triage',
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'gitlab' }] },
+      name: 'GitHub to triage',
+      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'github' }] },
       target: { boardKey: 'work', phaseKey: 'triage' },
     });
     await route({
-      name: 'Linear to planning',
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'linear' }] },
+      name: 'Findings to planning',
+      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'detail' }] },
       target: { boardKey: 'work', phaseKey: 'planning' },
     });
 
-    // A merge request can't land in Work › Triage, so the GitLab route skips it; a route to
+    // A pull request can't land in Work › Triage, so the first GitHub route skips it; a route to
     // Work › PR review places it.
     await route({
-      name: 'GitLab reviews',
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'gitlab' }] },
+      name: 'GitHub reviews',
+      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'github' }] },
       target: { boardKey: 'work', phaseKey: 'pr-review' },
     });
-    const mergeRequest = await deliver({
-      sourceKey: 'gitlab-mr:5',
-      source: 'gitlab-pr',
+    const pullRequest = await deliver({
+      sourceKey: 'github-pr:5',
+      source: 'github-pr',
       metadata: { authorTrusted: true },
     });
-    expect(placed(mergeRequest)).toEqual({ board: 'work', stages: ['pr-review'] });
-    expect(placed(await deliver({ sourceKey: 'gitlab-issue:6', source: 'gitlab-issue' }))).toEqual({
+    expect(placed(pullRequest)).toEqual({ board: 'work', stages: ['pr-review'] });
+    expect(placed(await deliver({ sourceKey: 'github-issue:6', metadata: { authorTrusted: true } }))).toEqual({
       board: 'work',
       stages: ['triage'],
     });
-    expect(placed(await deliver({ sourceKey: 'linear-issue:ENG-1', source: 'linear-issue' }))).toEqual({
+    expect(placed(await deliver({ sourceKey: 'detail-finding:1', source: 'detail-finding' }))).toEqual({
       board: 'work',
       stages: ['planning'],
-    });
-    expect(placed(await deliver({ sourceKey: 'github-issue:3', metadata: { authorTrusted: true } }))).toEqual({
-      board: 'work',
-      stages: ['intake'],
     });
   });
 
@@ -519,10 +506,10 @@ describe('intake routes placing linked cards', () => {
     expect(placed(requested)).toEqual({ board: 'docs', stages: ['writing'] });
 
     // With no route matching, it lands on the default board's first phase, not the phase the rule named.
-    const { route: onlyLinear, deliver: deliverUnmatched } = await setup();
-    await onlyLinear({
-      name: 'Linear to planning',
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'linear' }] },
+    const { route: onlyFindings, deliver: deliverUnmatched } = await setup();
+    await onlyFindings({
+      name: 'Findings to planning',
+      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'detail' }] },
       target: { boardKey: 'work', phaseKey: 'planning' },
     });
     const unmatched = await deliverUnmatched({
@@ -553,33 +540,6 @@ describe('intake routes placing linked cards', () => {
     const again = await deliver({ sourceKey: 'github-issue:1', metadata: { authorTrusted: true } }, card!.id);
     expect(again?.id).toBe(card!.id);
     expect(placed(again)).toEqual({ board: 'work', stages: ['intake'] });
-  });
-
-  it('never moves a Linear card whose issue came back under a new identifier', async () => {
-    const { boards, scope, route, deliver, workItems, project } = await setup();
-    const linear = (sourceKey: string) =>
-      deliver({ sourceKey, source: 'linear-issue', metadata: { linearIssueId: 'issue-1' } });
-    const card = await linear('linear-issue:ENG-1');
-    expect(placed(card)).toEqual({ board: 'work', stages: ['intake'] });
-
-    await boards.create(scope, docsBoard, 'admin');
-    await route({
-      name: 'Linear to Docs',
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'linear' }] },
-      target: { boardKey: 'docs' },
-    });
-    // The issue moved teams, so Linear now reports it as OPS-1; the card filed as ENG-1 is still its card.
-    await linear('linear-issue:OPS-1');
-
-    const cards = await workItems.list(scope);
-    expect(cards.map(item => item.id)).toEqual([card!.id]);
-    expect(placed(cards[0])).toEqual({ board: 'work', stages: ['intake'] });
-    expect(cards[0]!.metadata).not.toHaveProperty('intakeRouteId');
-    const decisions = await workItems.listDeferredDecisions('org-1', project.id);
-    expect(decisions.map(decision => [decision.status, decision.lastError])).toEqual([
-      ['succeeded', null],
-      ['succeeded', null],
-    ]);
   });
 
   describe('retrying a card whose move to its route phase failed', () => {
@@ -706,13 +666,19 @@ const CLOSED_AS = (reason: 'completed' | 'canceled') =>
 const when = (field: string, operator: 'equals' | 'contains' | 'in' | 'exists', value?: string | string[]) =>
   ({ operator: 'AND', conditions: [{ field, operator, value }] }) as const;
 
-describe('intake routes sending a repository, team or project to its own board', () => {
+describe('intake routes sending a repository to its own board', () => {
   // Each arrival carries what that integration's default rule files a new item with.
-  const githubIssue = (repository: string, number: number) => ({
+  const githubIssue = (repository: string, number: number, facts: { state?: string; assignees?: string[] } = {}) => ({
     sourceKey: `github:${repository}:issue:${number}`,
     source: 'github-issue' as const,
     url: `https://github.com/${repository}/issues/${number}`,
-    metadata: { githubRepositoryId: 7, githubIssueNumber: number, state: 'open', assignees: ['octocat'], labels: [] },
+    metadata: {
+      githubRepositoryId: 7,
+      githubIssueNumber: number,
+      state: facts.state ?? 'open',
+      assignees: facts.assignees ?? ['octocat'],
+      labels: [],
+    },
   });
   const githubPullRequest = (repository: string, number: number) => ({
     sourceKey: `github:${repository}:pull-request:${number}`,
@@ -720,40 +686,6 @@ describe('intake routes sending a repository, team or project to its own board',
     url: `https://github.com/${repository}/pull/${number}`,
     metadata: { githubRepositoryId: 7, githubPullRequestNumber: number, authorTrusted: true, labels: [] },
   });
-  const gitlabIssue = (project: string, number: number) => ({
-    sourceKey: `gitlab:${project}:issue:${number}`,
-    source: 'gitlab-issue' as const,
-    url: `https://gitlab.com/${project}/-/issues/${number}`,
-    metadata: { gitlabProjectId: 9, gitlabIssueIid: number, identifier: `${project}#${number}`, labels: [] },
-  });
-  const linearIssue = (team: string, number: number, state = 'Todo') => ({
-    sourceKey: `linear:${team}-${number}`,
-    source: 'linear-issue' as const,
-    url: `https://linear.app/acme/issue/${team}-${number}`,
-    metadata: {
-      linearIssueId: `issue-${team}-${number}`,
-      identifier: `${team}-${number}`,
-      linearState: state,
-      linearTeam: team,
-      linearAssignee: 'Ada',
-      assignee: 'Ada',
-      labels: [],
-    },
-  });
-  const jiraIssue = (project: string, number: number) => ({
-    sourceKey: `jira-${project}-${number}`,
-    source: 'jira-issue' as const,
-    url: `https://acme.atlassian.net/browse/${project}-${number}`,
-    metadata: {
-      identifier: `${project}-${number}`,
-      state: 'To Do',
-      project,
-      site: 'acme',
-      assignees: ['Grace'],
-      labels: [],
-    },
-  });
-
   it("sends one GitHub repository's issues and pull requests to a stored board, whatever the case", async () => {
     const { boards, scope, route, deliver } = await setup();
     await boards.create(scope, docsBoard, 'admin');
@@ -768,52 +700,13 @@ describe('intake routes sending a repository, team or project to its own board',
     expect(placed(await deliver(githubIssue('acme/site', 14)))).toEqual({ board: 'work', stages: ['intake'] });
   });
 
-  it("sends one GitLab project's issues to a stored board, by its full group path", async () => {
-    const { boards, scope, route, deliver } = await setup();
-    await boards.create(scope, docsBoard, 'admin');
-    await route({
-      name: 'Platform to Docs',
-      when: when('source.repository', 'equals', 'acme/platform/api'),
-      target: { boardKey: 'docs' },
-    });
-
-    expect(placed(await deliver(gitlabIssue('acme/platform/api', 3)))).toEqual({ board: 'docs', stages: ['inbox'] });
-    expect(placed(await deliver(gitlabIssue('acme/platform/web', 4)))).toEqual({ board: 'work', stages: ['intake'] });
-  });
-
-  it("sends one Linear team's issues to a stored board, by the team key", async () => {
-    const { boards, scope, route, deliver } = await setup();
-    await boards.create(scope, docsBoard, 'admin');
-    await route({
-      name: 'ENG to Docs',
-      when: when('source.repository', 'equals', 'eng'),
-      target: { boardKey: 'docs' },
-    });
-
-    expect(placed(await deliver(linearIssue('ENG', 12)))).toEqual({ board: 'docs', stages: ['inbox'] });
-    expect(placed(await deliver(linearIssue('OPS', 12)))).toEqual({ board: 'work', stages: ['intake'] });
-  });
-
-  it("sends one Jira project's issues to a stored board, by the project key", async () => {
-    const { boards, scope, route, deliver } = await setup();
-    await boards.create(scope, docsBoard, 'admin');
-    await route({
-      name: 'OPS to Docs',
-      when: when('source.repository', 'in', ['OPS', 'SRE']),
-      target: { boardKey: 'docs' },
-    });
-
-    expect(placed(await deliver(jiraIssue('OPS', 3)))).toEqual({ board: 'docs', stages: ['inbox'] });
-    expect(placed(await deliver(jiraIssue('ENG', 3)))).toEqual({ board: 'work', stages: ['intake'] });
-  });
-
-  it('places by the item key, state, provider and assignees every provider reports', async () => {
+  it('places by the item key, state, provider and assignees the source reports', async () => {
     const { boards, scope, route, deliver } = await setup();
     await boards.create(scope, docsBoard, 'admin');
     await route({ name: 'Key', when: when('item.key', 'equals', 'acme/app#21'), target: { boardKey: 'docs' } });
     await route({
       name: 'State',
-      when: when('item.state', 'equals', 'in review'),
+      when: when('item.state', 'equals', 'Closed'),
       target: { boardKey: 'work', phaseKey: 'planning' },
     });
     await route({
@@ -821,13 +714,22 @@ describe('intake routes sending a repository, team or project to its own board',
       when: when('item.assignees', 'contains', 'grace'),
       target: { boardKey: 'work', phaseKey: 'triage' },
     });
-    await route({ name: 'Provider', when: when('source.provider', 'equals', 'linear'), target: { boardKey: 'docs' } });
+    await route({ name: 'Provider', when: when('source.provider', 'equals', 'detail'), target: { boardKey: 'docs' } });
 
     expect(placed(await deliver(githubIssue('acme/app', 21)))).toEqual({ board: 'docs', stages: ['inbox'] });
     expect(placed(await deliver(githubIssue('acme/app', 22)))).toEqual({ board: 'work', stages: ['intake'] });
-    expect(placed(await deliver(linearIssue('ENG', 5, 'In Review')))).toEqual({ board: 'work', stages: ['planning'] });
-    expect(placed(await deliver(jiraIssue('OPS', 6)))).toEqual({ board: 'work', stages: ['triage'] });
-    expect(placed(await deliver(linearIssue('ENG', 7)))).toEqual({ board: 'docs', stages: ['inbox'] });
+    expect(placed(await deliver(githubIssue('acme/site', 5, { state: 'closed' })))).toEqual({
+      board: 'work',
+      stages: ['planning'],
+    });
+    expect(placed(await deliver(githubIssue('acme/site', 6, { assignees: ['Grace'] })))).toEqual({
+      board: 'work',
+      stages: ['triage'],
+    });
+    expect(placed(await deliver({ sourceKey: 'detail-finding:7', source: 'detail-finding' }))).toEqual({
+      board: 'docs',
+      stages: ['inbox'],
+    });
   });
 
   it('sends assigned items by who they are assigned to, and leaves unassigned ones to the next route', async () => {
@@ -839,11 +741,16 @@ describe('intake routes sending a repository, team or project to its own board',
       when: when('item.assignees', 'exists'),
       target: { boardKey: 'work', phaseKey: 'triage' },
     });
-    const unassigned = { ...jiraIssue('OPS', 9), metadata: { ...jiraIssue('OPS', 9).metadata, assignees: [] } };
 
-    expect(placed(await deliver(jiraIssue('OPS', 8)))).toEqual({ board: 'docs', stages: ['inbox'] });
-    expect(placed(await deliver(linearIssue('ENG', 10)))).toEqual({ board: 'work', stages: ['triage'] });
-    expect(placed(await deliver(unassigned))).toEqual({ board: 'work', stages: ['intake'] });
+    expect(placed(await deliver(githubIssue('acme/app', 8, { assignees: ['Ada', 'Grace'] })))).toEqual({
+      board: 'docs',
+      stages: ['inbox'],
+    });
+    expect(placed(await deliver(githubIssue('acme/app', 10)))).toEqual({ board: 'work', stages: ['triage'] });
+    expect(placed(await deliver(githubIssue('acme/app', 9, { assignees: [] })))).toEqual({
+      board: 'work',
+      stages: ['intake'],
+    });
   });
 });
 

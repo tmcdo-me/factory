@@ -191,30 +191,30 @@ interface SourcedItem {
 }
 
 /**
- * A card whose own primary source is a pull or merge request: an outside contributor's
+ * A card whose own primary source is a pull request: an outside contributor's
  * PR filed on its own card, or a PR card filed before PRs attached to their issue's card.
  * An issue card with an attached PR is not one; see {@link hasPullRequest}.
  */
 export function isPullRequestCard(item: { readonly source: string }): boolean {
-  return item.source === 'github-pr' || item.source === 'gitlab-pr';
+  return item.source === 'github-pr';
 }
 
-/** Every pull or merge request source on a card, oldest first. */
+/** Every pull request source on a card, oldest first. */
 export function pullRequestSources(item: SourcedItem): WorkItemSourceRow[] {
   return (item.workItem?.sources ?? []).filter(source => source.sourceType === 'pull-request');
 }
 
-/** Whether a card carries a pull or merge request: its own, or one attached to its issue. */
+/** Whether a card carries a pull request: its own, or one attached to its issue. */
 export function hasPullRequest(item: SourcedItem & { readonly source?: string }): boolean {
   return (
     (item.source !== undefined && isPullRequestCard({ source: item.source })) || pullRequestSources(item).length > 0
   );
 }
 
-/** The provider number (GitHub PR number, GitLab MR IID) a pull request source names. */
+/** The GitHub pull request number a pull request source names. */
 export function pullRequestSourceNumber(source: Pick<WorkItemSourceRow, 'metadata'>): number | undefined {
   const metadata = source.metadata ?? {};
-  const value = metadata.githubPullRequestNumber ?? metadata.gitlabMergeRequestIid ?? metadata.number;
+  const value = metadata.githubPullRequestNumber ?? metadata.number;
   return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined;
 }
 
@@ -291,9 +291,8 @@ export function newestOwnedOpenPullRequestNumber(
   return (open.length ? pullRequestSourceNumber(open.at(-1)!) : undefined) ?? null;
 }
 
-/** The pull or merge request a card's PR review covers, whichever card shape carries it. */
+/** The pull request a card's PR review covers, whichever card shape carries it. */
 export interface ReviewedChangeRequest {
-  readonly provider: 'github' | 'gitlab';
   readonly number: number | undefined;
   readonly url: string | null;
   readonly headBranch: string | undefined;
@@ -317,10 +316,8 @@ export function reviewedChangeRequest(item: {
 }): ReviewedChangeRequest | undefined {
   if (isPullRequestCard(item)) {
     const metadata = item.workItem.metadata ?? {};
-    const gitlab = item.source === 'gitlab-pr';
-    const value = (gitlab ? metadata.gitlabMergeRequestIid : metadata.githubPullRequestNumber) ?? metadata.number;
+    const value = metadata.githubPullRequestNumber ?? metadata.number;
     return {
-      provider: gitlab ? 'gitlab' : 'github',
       number: typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined,
       url: item.url ?? item.workItem.url ?? null,
       headBranch: typeof metadata.headBranch === 'string' ? metadata.headBranch : undefined,
@@ -330,7 +327,6 @@ export function reviewedChangeRequest(item: {
   const source = reviewedPullRequest(item);
   if (!source) return undefined;
   return {
-    provider: source.integrationId === 'gitlab' ? 'gitlab' : 'github',
     number: pullRequestSourceNumber(source),
     url: source.url ?? null,
     headBranch: typeof source.metadata?.headBranch === 'string' ? source.metadata.headBranch : undefined,
@@ -535,7 +531,7 @@ export function boundChangeRequestNumber(boards: Pick<BoardRegistry, 'get'>, ite
   }
   const number = reviewedChangeRequest({ ...item, source })?.number;
   if (number !== undefined) return String(number);
-  // A GitHub key ends in its number (`github-pr:34`); a GitLab key is encoded, so its digits mean nothing.
+  // A GitHub key ends in its number (`github-pr:34`).
   return source === 'github-pr' ? /(\d+)$/.exec(item.externalSource?.externalId ?? '')?.[1] : undefined;
 }
 

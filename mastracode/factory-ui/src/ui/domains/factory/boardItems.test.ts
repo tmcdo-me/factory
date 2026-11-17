@@ -66,31 +66,6 @@ describe('workItemMeta', () => {
     expect(workItemMeta(item)).toEqual(['PR #22765', 'LekoArts', 'just now']);
   });
 
-  it('shows the Jira assignee instead of the reporter', () => {
-    const item = workItem({
-      source: 'jira-issue',
-      sourceKey: 'jira-issue-1',
-      metadata: { identifier: 'ENG-42', author: 'Grace', assignee: 'Ada' },
-    });
-    expect(workItemMeta(item)).toEqual(['ENG-42', 'Ada', 'just now']);
-  });
-
-  it('shows the incident.io identifier and assignee like other issue sources', () => {
-    const item = workItem({
-      source: 'incidentio-follow-up',
-      sourceKey: 'incidentio:follow-up:01HFOLLOWUP',
-      metadata: { identifier: 'INC-42', author: 'Ada Lovelace', assignee: 'Grace Hopper' },
-    });
-    expect(workItemMeta(item)).toEqual(['INC-42', 'Grace Hopper', 'just now']);
-  });
-
-  it('names a GitLab merge request by its IID and links to GitLab', () => {
-    expect(
-      workItemMeta(workItem({ source: 'gitlab-pr', metadata: { gitlabMergeRequestIid: 5, author: 'Rhys' } })),
-    ).toEqual(['MR !5', 'Rhys', 'just now']);
-    expect(externalLinkLabel('gitlab-pr')).toBe('Open in GitLab');
-  });
-
   it('names a card filed by hand by its card number', () => {
     expect(
       workItemMeta(workItem({ source: 'manual', sourceKey: null, url: null, metadata: { cardNumber: 12 } })),
@@ -99,30 +74,6 @@ describe('workItemMeta', () => {
 });
 
 describe('itemSessionSpec', () => {
-  it.each([
-    ['linear-issue', 'ENG-42', 'factory/linear-eng-42'],
-    ['jira-issue', 'OPS-42', 'factory/jira-ops-42'],
-    ['incidentio-follow-up', 'INC-42', 'factory/incidentio-inc-42'],
-    ['gitlab-issue', 'acme/app#42', 'factory/gitlab-acme-app-42-item1'],
-  ] as const)('uses the normalized key for a %s session branch', (source, key, branch) => {
-    const item = workItem({
-      source,
-      title: 'Repair source facts',
-      metadata: { identifier: 'stale-key', authorTrusted: true },
-      workItem: {
-        provider: source,
-        key,
-        title: 'Repair source facts',
-        url: null,
-        state: 'open',
-        labels: [],
-        author: 'reporter',
-        metadata: {},
-      },
-    });
-    expect(itemSessionSpec(item)).toEqual({ branch, threadTitle: 'Repair source facts' });
-  });
-
   it('keeps legacy provider numbers when only the key has been normalized', () => {
     const item = workItem({
       workItem: {

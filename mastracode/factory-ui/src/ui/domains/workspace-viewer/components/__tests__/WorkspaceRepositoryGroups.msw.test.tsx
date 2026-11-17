@@ -34,7 +34,7 @@ async function openFileTree(changes: WorkspaceChanges) {
       visible
       scope="branch"
       onScopeChange={() => {}}
-      repositoryProviders={{ 'mastra-ai/mastra': 'github', 'mastra-ai/platform': 'gitlab' }}
+      repositoryProviders={{ 'mastra-ai/mastra': 'github', 'mastra-ai/platform': 'github' }}
     />,
   );
   await user.click(await screen.findByRole('button', { name: /^Jump to file/ }));
@@ -53,7 +53,7 @@ describe('workspace repository groups', () => {
       expect.stringContaining('mastra-ai/mastra-website'),
     ]);
     expect(within(groups[0]).getByTestId('repository-provider-github')).toBeInTheDocument();
-    expect(within(groups[1]).getByTestId('repository-provider-gitlab')).toBeInTheDocument();
+    expect(within(groups[1]).getByTestId('repository-provider-github')).toBeInTheDocument();
     expect(within(groups[2]).getByTestId('repository-provider-github')).toBeInTheDocument();
     expect(groups[0]).toHaveTextContent('2 files');
     expect(groups[0]).toHaveTextContent('+6');

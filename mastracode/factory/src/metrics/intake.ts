@@ -1,7 +1,7 @@
 import type { MetricsCollector } from './metrics.js';
 import { factoryMetrics } from './metrics.js';
 
-export type IntakeSource = 'github' | 'linear' | 'gitlab';
+export type IntakeSource = 'github';
 
 /** One inbound event handed to a source's rules, by how it ended (`committed`, `replayed`, `ignored`, `missing`, `error`). */
 export function recordIntakeEvent(source: IntakeSource, outcome: string): void {

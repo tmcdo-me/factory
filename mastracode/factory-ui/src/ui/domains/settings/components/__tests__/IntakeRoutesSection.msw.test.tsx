@@ -172,10 +172,6 @@ async function addCondition(
   if (value !== undefined) await user.type(within(draft).getByRole('textbox', { name: 'Value' }), `${value}{Enter}`);
 }
 
-/**
- * Where the project's items live: a GitHub repository and a GitLab project linked to it, a Linear
- * project in team ENG and a Jira project PLAT bound to it, and a Linear team bound to another project.
- */
 /** Adds one more condition to `group`, picking its value from the ones the field offers. */
 async function addChoice(user: ReturnType<typeof userEvent.setup>, group: HTMLElement, field: string, value: string) {
   await user.click(within(group).getByRole('button', { name: 'Add condition' }));
@@ -189,6 +185,7 @@ async function addChoice(user: ReturnType<typeof userEvent.setup>, group: HTMLEl
 
 const JOIN_SWITCH = 'Join the issue’s card instead';
 
+/** Where the project's items live: two GitHub repositories linked to it. */
 function serveProjectSources() {
   server.use(
     http.get(`${TEST_BASE_URL}/web/factory/projects`, () =>
@@ -197,46 +194,12 @@ function serveProjectSources() {
           {
             id: 'fp-1',
             name: 'Factory',
-            repositories: [
-              listedRepository('repo-1', 'acme/app'),
-              listedRepository('repo-2', 'acme/platform/api', { integrationId: 'gitlab' }),
-            ],
+            repositories: [listedRepository('repo-1', 'acme/app'), listedRepository('repo-2', 'acme/api')],
           },
         ],
       }),
     ),
-    http.get(`${TEST_BASE_URL}/web/intake/bindings`, () =>
-      HttpResponse.json({
-        bindings: [
-          { integrationId: 'linear', sourceId: 'linear-project-1', factoryProjectId: 'fp-1' },
-          { integrationId: 'jira', sourceId: 'jira-10', factoryProjectId: 'fp-1' },
-          { integrationId: 'linear', sourceId: 'linear-team:team-ops', factoryProjectId: 'fp-2' },
-        ],
-      }),
-    ),
-    http.get(`${TEST_BASE_URL}/web/linear/projects`, () =>
-      HttpResponse.json({
-        projects: [
-          {
-            id: 'linear-project-1',
-            name: 'Billing',
-            state: 'started',
-            teams: [{ id: 'team-eng', key: 'ENG', name: 'Engineering' }],
-          },
-        ],
-      }),
-    ),
-    http.get(`${TEST_BASE_URL}/web/linear/teams`, () =>
-      HttpResponse.json({
-        teams: [
-          { id: 'team-eng', key: 'ENG', name: 'Engineering' },
-          { id: 'team-ops', key: 'OPS', name: 'Operations' },
-        ],
-      }),
-    ),
-    http.get(`${TEST_BASE_URL}/web/jira/projects`, () =>
-      HttpResponse.json({ projects: [{ id: 'jira-10', key: 'PLAT', name: 'Platform' }] }),
-    ),
+    http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
   );
 }
 
@@ -244,16 +207,16 @@ function serveProjectSources() {
 const offered = async () => (await screen.findAllByRole('option')).map(option => option.textContent?.trim());
 
 describe('IntakeRoutesSection', () => {
-  it('suggests the repositories, team and project keys the project has, and saves the one picked', async () => {
+  it('suggests the repositories the project has, and saves the one picked', async () => {
     const state = serveRoutes();
     serveProjectSources();
     const user = userEvent.setup();
     renderSection();
 
     const draft = await startRoute(user, 'acme/app goes to Ship');
-    await addCondition(user, draft, 'Repository, team or project');
+    await addCondition(user, draft, 'Repository');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    await waitFor(async () => expect(await offered()).toEqual(['acme/app', 'acme/platform/api', 'ENG', 'PLAT']));
+    await waitFor(async () => expect(await offered()).toEqual(['acme/app', 'acme/api']));
     await user.click(screen.getByRole('option', { name: 'acme/app' }));
     await user.click(within(draft).getByRole('combobox', { name: 'Board' }));
     await user.click(await screen.findByRole('option', { name: 'Ship' }));
@@ -272,19 +235,19 @@ describe('IntakeRoutesSection', () => {
     renderSection();
 
     const draft = await startRoute(user, 'Elsewhere goes to Ship');
-    await addCondition(user, draft, 'Repository, team or project');
+    await addCondition(user, draft, 'Repository');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    await user.type(await screen.findByPlaceholderText('owner/repo, ENG, PLAT'), 'acme/next');
+    await user.type(await screen.findByPlaceholderText('owner/repo'), 'acme/next');
     await user.click(await screen.findByRole('option', { name: 'Use “acme/next”' }));
     await user.click(within(draft).getByRole('button', { name: 'Add condition' }));
     const fields = within(draft).getAllByRole('combobox', { name: 'Field' });
     await user.click(fields.at(-1)!);
-    await user.click(await screen.findByRole('option', { name: 'Repository, team or project' }));
+    await user.click(await screen.findByRole('option', { name: 'Repository' }));
     await user.click(within(draft).getAllByRole('combobox', { name: 'Operator' }).at(-1)!);
     await user.click(await screen.findByRole('option', { name: 'is any of' }));
     await user.click(within(draft).getByRole('combobox', { name: 'Values' }));
-    await user.click(await screen.findByRole('option', { name: 'ENG' }));
-    await user.click(screen.getByRole('option', { name: 'PLAT' }));
+    await user.click(await screen.findByRole('option', { name: 'acme/app' }));
+    await user.click(screen.getByRole('option', { name: 'acme/api' }));
     await user.keyboard('{Escape}');
     await user.click(within(draft).getByRole('combobox', { name: 'Board' }));
     await user.click(await screen.findByRole('option', { name: 'Ship' }));
@@ -296,7 +259,7 @@ describe('IntakeRoutesSection', () => {
         operator: 'AND',
         conditions: [
           { field: 'source.repository', operator: 'equals', value: 'acme/next' },
-          { field: 'source.repository', operator: 'in', value: ['ENG', 'PLAT'] },
+          { field: 'source.repository', operator: 'in', value: ['acme/app', 'acme/api'] },
         ],
       },
     });
@@ -319,9 +282,9 @@ describe('IntakeRoutesSection', () => {
     renderSection();
 
     const draft = await startRoute(user, 'acme/next goes to Ship');
-    await addCondition(user, draft, 'Repository, team or project');
+    await addCondition(user, draft, 'Repository');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    const search = await screen.findByPlaceholderText('owner/repo, ENG, PLAT');
+    const search = await screen.findByPlaceholderText('owner/repo');
     await user.type(search, 'acme/ne');
     release();
     await waitFor(async () => expect(await offered()).toContain('Use “acme/ne”'));
@@ -356,9 +319,9 @@ describe('IntakeRoutesSection', () => {
     renderSection();
 
     const draft = await startRoute(user, 'Mastra goes to Ship');
-    await addCondition(user, draft, 'Repository, team or project');
+    await addCondition(user, draft, 'Repository');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    await user.type(await screen.findByPlaceholderText('owner/repo, ENG, PLAT'), 'mastra');
+    await user.type(await screen.findByPlaceholderText('owner/repo'), 'mastra');
     await waitFor(async () => expect(await offered()).toEqual(['mastra-ai/mastra', 'Use “mastra”']));
     await user.keyboard('{Enter}');
     await user.click(within(draft).getByRole('combobox', { name: 'Board' }));
@@ -374,23 +337,6 @@ describe('IntakeRoutesSection', () => {
     });
   });
 
-  it('suggests only the provider a condition beside it limits cards to', async () => {
-    serveRoutes();
-    serveProjectSources();
-    const user = userEvent.setup();
-    renderSection();
-
-    const draft = await startRoute(user, 'GitLab goes to Ship');
-    await addCondition(user, draft, 'Provider');
-    await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    await user.click(await screen.findByRole('option', { name: 'GitLab' }));
-    await user.click(within(draft).getByRole('button', { name: 'Add condition' }));
-    await user.click(within(draft).getAllByRole('combobox', { name: 'Field' }).at(-1)!);
-    await user.click(await screen.findByRole('option', { name: 'Repository, team or project' }));
-    await user.click(within(draft).getAllByRole('combobox', { name: 'Value' }).at(-1)!);
-    await waitFor(async () => expect(await offered()).toEqual(['acme/platform/api']));
-  });
-
   it('warns when a repository typed for GitHub has no owner, which never matches', async () => {
     serveRoutes();
     serveProjectSources();
@@ -403,9 +349,9 @@ describe('IntakeRoutesSection', () => {
     await user.click(await screen.findByRole('option', { name: 'GitHub' }));
     await user.click(within(draft).getByRole('button', { name: 'Add condition' }));
     await user.click(within(draft).getAllByRole('combobox', { name: 'Field' }).at(-1)!);
-    await user.click(await screen.findByRole('option', { name: 'Repository, team or project' }));
+    await user.click(await screen.findByRole('option', { name: 'Repository' }));
     await user.click(within(draft).getAllByRole('combobox', { name: 'Value' }).at(-1)!);
-    await user.type(await screen.findByPlaceholderText('owner/repo, ENG, PLAT'), 'mastra');
+    await user.type(await screen.findByPlaceholderText('owner/repo'), 'mastra');
     await user.click(await screen.findByRole('option', { name: 'Use “mastra”' }));
     expect(await within(draft).findByText(/GitHub repositories are owner\/repo/)).toBeInTheDocument();
   });
@@ -683,10 +629,10 @@ describe('IntakeRoutesSection', () => {
     // New cards have no event, so a new-card route can't test one.
     expect(screen.queryByRole('option', { name: 'Event' })).toBeNull();
     expect(screen.queryByRole('option', { name: 'Close reason' })).toBeNull();
-    await user.click(screen.getByRole('option', { name: 'Repository, team or project' }));
+    await user.click(screen.getByRole('option', { name: 'Repository' }));
     expect(within(draft).getByRole('combobox', { name: 'Operator' })).toHaveTextContent('is');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    await user.type(await screen.findByPlaceholderText('owner/repo, ENG, PLAT'), 'acme/app{Enter}');
+    await user.type(await screen.findByPlaceholderText('owner/repo'), 'acme/app{Enter}');
     await user.click(within(draft).getByRole('combobox', { name: 'Board' }));
     await user.click(await screen.findByRole('option', { name: 'Ship' }));
     await user.click(within(draft).getByRole('button', { name: 'Add route' }));
@@ -704,20 +650,19 @@ describe('IntakeRoutesSection', () => {
     const user = userEvent.setup();
     renderSection();
 
-    const draft = await startRoute(user, 'Linear issues');
+    const draft = await startRoute(user, 'GitHub cards');
     await addCondition(user, draft, 'Integration');
     await user.click(within(draft).getByRole('combobox', { name: 'Value' }));
-    expect(await screen.findByRole('option', { name: 'incident.io' })).toBeInTheDocument();
-    await user.click(screen.getByRole('option', { name: 'Linear' }));
-    expect(within(draft).getByRole('combobox', { name: 'Value' })).toHaveTextContent('Linear');
+    await user.click(await screen.findByRole('option', { name: 'GitHub' }));
+    expect(within(draft).getByRole('combobox', { name: 'Value' })).toHaveTextContent('GitHub');
     await user.click(within(draft).getByRole('button', { name: 'Add route' }));
 
-    await waitFor(() => expect(routeNames()).toContain('Linear issues'));
+    await waitFor(() => expect(routeNames()).toContain('GitHub cards'));
     expect(state.requests[0]?.body).toMatchObject({
-      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'linear' }] },
+      when: { operator: 'AND', conditions: [{ field: 'source.integration', operator: 'equals', value: 'github' }] },
     });
-    const saved = screen.getByRole('group', { name: 'Linear issues conditions' });
-    expect(within(saved).getByRole('combobox', { name: 'Value' })).toHaveTextContent('Linear');
+    const saved = screen.getByRole('group', { name: 'GitHub cards conditions' });
+    expect(within(saved).getByRole('combobox', { name: 'Value' })).toHaveTextContent('GitHub');
   });
 
   it('adds a value to a several-value condition, keeping a saved value the board no longer has', async () => {

@@ -52,7 +52,7 @@ function crashResumedContext(
 
 async function prepareBoundItem(
   storage: WorkItemsStorage,
-  source: 'github-issue' | 'github-pr' | 'gitlab-pr' = 'github-issue',
+  source: 'github-issue' | 'github-pr' = 'github-issue',
   role: 'triage' | 'work' | 'plan' | 'review' = source.endsWith('-pr') ? 'review' : 'work',
 ) {
   return storage.prepareRunStart({
@@ -62,7 +62,7 @@ async function prepareBoundItem(
     workItem: {
       input: {
         externalSource: {
-          integrationId: source.startsWith('gitlab-') ? 'gitlab' : 'github',
+          integrationId: 'github',
           type: source.endsWith('-pr') ? 'pull-request' : 'issue',
           externalId: `${source}:1`,
         },
@@ -993,7 +993,7 @@ describe('factory_transition_work_item', () => {
     });
   });
 
-  it.each(['github-pr', 'gitlab-pr'] as const)(
+  it.each(['github-pr'] as const)(
     'recovers a %s review binding after crash-resume wipes session state and heals the security posture',
     async source => {
       const storage = (await createFactoryStorageForTests()).workItems;

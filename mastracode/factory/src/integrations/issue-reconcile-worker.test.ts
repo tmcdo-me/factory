@@ -41,7 +41,7 @@ describe('IssueReconcileWorker', () => {
 
   it('sweeps on boot and the configured cadence', async () => {
     const reconcile = vi.fn(async () => EMPTY_SUMMARY);
-    const worker = new IssueReconcileWorker({ integrationId: 'linear', reconcile, intervalMs: 60_000 });
+    const worker = new IssueReconcileWorker({ integrationId: 'tracker', reconcile, intervalMs: 60_000 });
     await worker.init(workerDeps());
 
     await worker.start();
@@ -71,7 +71,7 @@ describe('IssueReconcileWorker', () => {
   it('releases the lease after a failed sweep', async () => {
     const releaseLease = vi.fn(async () => undefined);
     const worker = new IssueReconcileWorker({
-      integrationId: 'linear',
+      integrationId: 'tracker',
       reconcile: vi.fn(async () => {
         throw new Error('provider unavailable');
       }),
@@ -99,7 +99,7 @@ describe('IssueReconcileWorker', () => {
       return EMPTY_SUMMARY;
     });
 
-    const worker = new IssueReconcileWorker({ integrationId: 'linear', reconcile, intervalMs });
+    const worker = new IssueReconcileWorker({ integrationId: 'tracker', reconcile, intervalMs });
     await worker.init(workerDeps({ renewLease, releaseLease }));
 
     await worker.start();
@@ -111,7 +111,7 @@ describe('IssueReconcileWorker', () => {
     // have fired at least twice while the sweep was in flight.
     expect(renewLease.mock.calls.length).toBeGreaterThanOrEqual(2);
     for (const call of renewLease.mock.calls) {
-      expect(call).toEqual(['linear:issue-reconcile', expect.any(String), leaseTtlMs]);
+      expect(call).toEqual(['tracker:issue-reconcile', expect.any(String), leaseTtlMs]);
     }
     expect(releaseLease).toHaveBeenCalledTimes(1);
 
@@ -121,7 +121,7 @@ describe('IssueReconcileWorker', () => {
   it('stops renewing the lease once the sweep finishes', async () => {
     const renewLease = vi.fn(async () => true);
     const reconcile = vi.fn(async () => EMPTY_SUMMARY);
-    const worker = new IssueReconcileWorker({ integrationId: 'linear', reconcile, intervalMs: 60_000 });
+    const worker = new IssueReconcileWorker({ integrationId: 'tracker', reconcile, intervalMs: 60_000 });
     await worker.init(workerDeps({ renewLease }));
 
     await worker.start();

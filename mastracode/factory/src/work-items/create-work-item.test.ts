@@ -142,8 +142,8 @@ const gatedBoard = defineBoard({
   },
 });
 
-// Not GitHub or GitLab, which the project's default intake route catches first.
-const source = { integrationId: 'linear', type: 'issue', externalId: 'ENG-42' } as const;
+// Not GitHub, which the project's default intake route catches first.
+const source = { integrationId: 'acme-tracker', type: 'issue', externalId: 'ENG-42' } as const;
 
 /** A board whose first phase takes every new card but whose later phases refuse it. */
 const closingBoard = defineBoard({

@@ -233,19 +233,11 @@ describe('scenario: source activity reaches the card session as pointers', () =>
   it.each([
     { case: 'an untrusted GitHub comment', decision: {} },
     {
-      case: 'an untrusted GitLab comment',
+      // A signal that only persists never wakes a session, even from a trusted author.
+      case: 'a trusted comment whose signal only persists',
       decision: {
         reference: 'group/project#42',
-        url: 'https://gitlab.example.com/group/project/-/issues/42#note_98',
-        idleBehavior: 'persist' as const,
-      },
-    },
-    {
-      // GitLab can't say whether Factory wrote a comment, so even a trusted one must not wake.
-      case: 'a trusted GitLab comment',
-      decision: {
-        reference: 'group/project#42',
-        url: 'https://gitlab.example.com/group/project/-/issues/42#note_98',
+        url: 'https://github.com/group/project/issues/42#issuecomment-98',
         author: 'maintainer',
         authorTrusted: true,
         idleBehavior: 'persist' as const,

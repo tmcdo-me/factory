@@ -2,18 +2,7 @@ import type { ActivityEvent, BoardEventFacts } from '../boards/board-events.js';
 import type { ExternalWorkItemSource } from '../storage/domains/work-items/base.js';
 import type { WorkItemRow } from '../storage/domains/work-items/work-item-schema.js';
 
-export type WorkItemSource =
-  | 'github-issue'
-  | 'github-pr'
-  | 'gitlab-issue'
-  | 'gitlab-pr'
-  | 'linear-issue'
-  | 'jira-issue'
-  | 'incidentio-follow-up'
-  | 'github-dependabot-alert'
-  | 'vanta-vulnerability'
-  | 'detail-finding'
-  | 'manual';
+export type WorkItemSource = 'github-issue' | 'github-pr' | 'detail-finding' | 'manual';
 
 export function externalSourceForWorkItem(
   source: WorkItemSource,
@@ -25,23 +14,9 @@ export function externalSourceForWorkItem(
       ? ['github', 'pull-request']
       : source === 'github-issue'
         ? ['github', 'issue']
-        : source === 'gitlab-pr'
-          ? ['gitlab', 'pull-request']
-          : source === 'gitlab-issue'
-            ? ['gitlab', 'issue']
-            : source === 'linear-issue'
-              ? ['linear', 'issue']
-              : source === 'jira-issue'
-                ? ['jira', 'issue']
-                : source === 'incidentio-follow-up'
-                  ? ['incidentio', 'issue']
-                  : source === 'github-dependabot-alert'
-                    ? ['github', 'dependabot-alert']
-                    : source === 'vanta-vulnerability'
-                      ? ['vanta', 'vulnerability']
-                      : source === 'detail-finding'
-                        ? ['detail', 'finding']
-                        : ['factory', 'manual'];
+        : source === 'detail-finding'
+          ? ['detail', 'finding']
+          : ['factory', 'manual'];
   return { integrationId, type, externalId: sourceKey, ...(url ? { url } : {}) };
 }
 
@@ -69,18 +44,13 @@ export function needsApproval(
 
 export function workItemSource(source: ExternalWorkItemSource | null): WorkItemSource {
   if (!source) return 'manual';
-  if (source.integrationId === 'linear') return 'linear-issue';
-  if (source.integrationId === 'gitlab') return source.type === 'pull-request' ? 'gitlab-pr' : 'gitlab-issue';
-  if (source.integrationId === 'jira') return 'jira-issue';
-  if (source.integrationId === 'incidentio') return 'incidentio-follow-up';
-  if (source.integrationId === 'vanta') return 'vanta-vulnerability';
   if (source.integrationId === 'detail') return 'detail-finding';
-  // Only GitHub, GitLab, Linear, Jira, and incident.io have provider-specific
-  // rules; anything else (a Slack thread, say) is a plain work item, not a
-  // mislabeled GitHub issue.
+  // Only GitHub has provider-specific rules; anything else (a Slack thread,
+  // say) is a plain work item, not a mislabeled GitHub issue.
   if (source.integrationId !== 'github') return 'manual';
-  if (source.type === 'dependabot-alert') return 'github-dependabot-alert';
-  return source.type === 'pull-request' ? 'github-pr' : 'github-issue';
+  if (source.type === 'pull-request') return 'github-pr';
+  // Only an issue is one; a legacy GitHub source of another type (a Dependabot alert) is plain work.
+  return source.type === 'issue' ? 'github-issue' : 'manual';
 }
 
 /** The card's author is inside the write-access circle, or the card is Factory's own PR. */
@@ -91,7 +61,7 @@ export function authorTrusted(metadata: Record<string, unknown> | null | undefin
 // Authored outside the write-access circle: a missing trust stamp fails closed until
 // the reconcile sweep backfills it, and Factory's own PRs pass through `factoryAuthored`.
 export function externallyAuthored(item: { source: string; metadata: Record<string, unknown> | null }): boolean {
-  if (!['github-pr', 'github-issue', 'gitlab-pr', 'gitlab-issue'].includes(item.source)) return false;
+  if (!['github-pr', 'github-issue'].includes(item.source)) return false;
   return !authorTrusted(item.metadata);
 }
 
@@ -127,19 +97,7 @@ export function isFactoryTriageType(value: unknown): value is FactoryTriageType 
 /** A board id. */
 export type FactoryRuleBoard = string;
 
-export const FACTORY_RULE_SOURCES = [
-  'issue',
-  'pullRequest',
-  'gitlabIssue',
-  'gitlabPullRequest',
-  'linearIssue',
-  'jiraIssue',
-  'incidentioFollowUp',
-  'dependabotAlert',
-  'vantaVulnerability',
-  'detailFinding',
-  'manual',
-] as const;
+export const FACTORY_RULE_SOURCES = ['issue', 'pullRequest', 'detailFinding', 'manual'] as const;
 export type FactoryRuleSource = (typeof FACTORY_RULE_SOURCES)[number];
 
 export const FACTORY_GITHUB_EVENTS = [
@@ -161,34 +119,6 @@ export const FACTORY_GITHUB_EVENTS = [
   'pullRequestChecksFailed',
 ] as const;
 export type FactoryGithubEventName = (typeof FACTORY_GITHUB_EVENTS)[number];
-
-export const FACTORY_GITLAB_EVENTS = [
-  'issueOpened',
-  'issueUpdated',
-  'issueClosed',
-  'issueReopened',
-  'issueCommented',
-  'mergeRequestOpened',
-  'mergeRequestUpdated',
-  'mergeRequestCommented',
-  'mergeRequestMerged',
-  'mergeRequestClosed',
-] as const;
-export type FactoryGitLabEventName = (typeof FACTORY_GITLAB_EVENTS)[number];
-
-export const FACTORY_LINEAR_EVENTS = ['issueObserved', 'issueClosed'] as const;
-export type FactoryLinearEventName = (typeof FACTORY_LINEAR_EVENTS)[number];
-
-export const FACTORY_JIRA_EVENTS = ['issueObserved', 'issueClosed'] as const;
-export type FactoryJiraEventName = (typeof FACTORY_JIRA_EVENTS)[number];
-
-export const FACTORY_INCIDENTIO_EVENTS = ['followUpObserved', 'followUpClosed'] as const;
-export type FactoryIncidentioEventName = (typeof FACTORY_INCIDENTIO_EVENTS)[number];
-
-export const FACTORY_DEPENDABOT_EVENTS = ['alertObserved', 'alertClosed'] as const;
-export type FactoryDependabotEventName = (typeof FACTORY_DEPENDABOT_EVENTS)[number];
-export const FACTORY_VANTA_EVENTS = ['vulnerabilityObserved', 'vulnerabilityClosed'] as const;
-export type FactoryVantaEventName = (typeof FACTORY_VANTA_EVENTS)[number];
 
 export type FactoryRuleJsonValue =
   | null
@@ -220,11 +150,10 @@ export type FactoryRuleActor =
   | { type: 'human'; id: string }
   | { type: 'agent'; bindingId: string; role: string }
   | { type: 'github'; login: string; trusted: boolean; factoryAuthored: boolean }
-  | { type: 'gitlab'; username: string; trusted: boolean; factoryAuthored: boolean }
   | { type: 'system'; id: string };
 
 export interface FactoryRuleIngressIdentity {
-  type: 'human' | 'agent' | 'toolResult' | 'github' | 'gitlab' | 'linear' | 'jira' | 'incidentio' | 'vanta' | 'rule';
+  type: 'human' | 'agent' | 'toolResult' | 'github' | 'rule';
   id: string;
 }
 
@@ -447,234 +376,6 @@ export interface FactoryRuleBoardFlow {
   readonly completed?: Readonly<FactoryRuleBoardClosurePhase>;
   /** Terminal phase a pull request closed unmerged ends its own card in: `sourceClosed.canceled`, else the next terminal phase. */
   readonly canceled?: Readonly<FactoryRuleBoardClosurePhase>;
-}
-
-export interface FactoryGitLabRuleContext extends FactoryRuleContextBase {
-  /** The status change this delivery reports, named the same for every provider; absent for other events. */
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  /** Where the card's board sends it when its tracked source closes. */
-  boardClosure?: FactoryRuleBoardClosure;
-  /** The phases the card's board runs its pull request loop through; absent without a card. */
-  flow?: FactoryRuleBoardFlow;
-  /** What the card's current phase means on its board; absent without a card or when the board does not declare the phase. */
-  phase?: FactoryRulePhaseContext;
-  intake?: FactoryRuleIntakeTarget;
-  /** Set on a merge request's first sighting when it is filed on an existing card instead of its own. */
-  pullRequestHome?: FactoryPullRequestHome;
-  event: FactoryGitLabEventName;
-  deliveryId: string;
-  factory: { createdAt: string };
-  repository: { id: number; fullName: string; host: string };
-  issue?: {
-    number: number;
-    sourceKey: string;
-    title: string;
-    url: string;
-    createdAt?: string;
-    updatedAt?: string;
-    assignees?: string[];
-    labels?: string[];
-    labelColors?: Record<string, string>;
-    state?: 'open' | 'closed';
-    author?: string;
-    authorTrusted: boolean;
-  };
-  note?: {
-    id: number;
-    body?: string;
-    url?: string;
-    author?: string;
-    createdAt?: string;
-    updatedAt?: string;
-  };
-  mergeRequest?: {
-    number: number;
-    sourceKey: string;
-    title: string;
-    url: string;
-    createdAt?: string;
-    state: 'open' | 'closed';
-    draft: boolean;
-    merged: boolean;
-    assignees?: string[];
-    reviewers?: string[];
-    labels?: string[];
-    labelColors?: Record<string, string>;
-    author?: string;
-    authorTrusted: boolean;
-    factoryAuthored: boolean;
-    headBranch: string;
-    baseBranch: string;
-  };
-}
-
-export interface FactoryLinearRuleContext extends FactoryRuleContextBase {
-  /** The status change this delivery reports, named the same for every provider; absent for other events. */
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  /** Where the card's board sends it when its tracked source closes. */
-  boardClosure?: FactoryRuleBoardClosure;
-  /** The phases the card's board runs its pull request loop through; absent without a card. */
-  flow?: FactoryRuleBoardFlow;
-  /** What the card's current phase means on its board; absent without a card or when the board does not declare the phase. */
-  phase?: FactoryRulePhaseContext;
-  /** Where a new card is filed before the project's intake routes place it. */
-  intake?: FactoryRuleIntakeTarget;
-  event: FactoryLinearEventName;
-  issue: {
-    id: string;
-    identifier: string;
-    title: string;
-    url: string;
-    state: string;
-    stateType: string;
-    priorityLabel: string;
-    assignee: string | null;
-    creator: string | null;
-    team: string | null;
-    labels: readonly string[];
-    createdAt: string;
-    updatedAt: string;
-    sourceId?: string | null;
-    projectId?: string | null;
-  };
-}
-
-export interface FactoryJiraRuleContext extends FactoryRuleContextBase {
-  /** The status change this delivery reports, named the same for every provider; absent for other events. */
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  /** Where the card's board sends it when its tracked source closes. */
-  boardClosure?: FactoryRuleBoardClosure;
-  /** The phases the card's board runs its pull request loop through; absent without a card. */
-  flow?: FactoryRuleBoardFlow;
-  /** What the card's current phase means on its board; absent without a card or when the board does not declare the phase. */
-  phase?: FactoryRulePhaseContext;
-  /** Where a new card is filed before the project's intake routes place it. */
-  intake?: FactoryRuleIntakeTarget;
-  event: FactoryJiraEventName;
-  issue: {
-    /** Stable issue reference — the direct integration's Jira id or the Platform-encoded issue reference. */
-    id: string;
-    identifier: string;
-    title: string;
-    url: string;
-    state: string;
-    stateType: string;
-    priorityLabel: string;
-    assignee: string | null;
-    author: string | null;
-    project: string | null;
-    site: string | null;
-    labels: readonly string[];
-    createdAt: string;
-    updatedAt: string;
-  };
-}
-
-export interface FactoryIncidentioRuleContext extends FactoryRuleContextBase {
-  /** The status change this delivery reports, named the same for every provider; absent for other events. */
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  /** Where the card's board sends it when its tracked source closes. */
-  boardClosure?: FactoryRuleBoardClosure;
-  /** The phases the card's board runs its pull request loop through; absent without a card. */
-  flow?: FactoryRuleBoardFlow;
-  /** What the card's current phase means on its board; absent without a card or when the board does not declare the phase. */
-  phase?: FactoryRulePhaseContext;
-  /** Where a new card is filed before the project's intake routes place it. */
-  intake?: FactoryRuleIntakeTarget;
-  event: FactoryIncidentioEventName;
-  issue: {
-    /** Stable item reference — the prefixed incident.io follow-up id the intake feed serves as `id`. */
-    id: string;
-    identifier: string;
-    title: string;
-    url: string;
-    state: string;
-    stateType: string;
-    priorityLabel: string;
-    assignee: string | null;
-    author: string | null;
-    /** Reference of the incident this follow-up belongs to, when available. */
-    incident: string | null;
-    labels: readonly string[];
-    createdAt: string;
-    updatedAt: string;
-  };
-}
-
-export interface FactoryDependabotRuleContext extends FactoryRuleContextBase {
-  /** The status change this sync reports, named the same for every provider; absent for other events. */
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  /** Where the card's board sends it when its tracked source closes. */
-  boardClosure?: FactoryRuleBoardClosure;
-  /** What the card's current phase means on its board; absent without a card or when the board does not declare the phase. */
-  phase?: FactoryRulePhaseContext;
-  /** Where a new card is filed before the project's intake routes place it. */
-  intake?: FactoryRuleIntakeTarget;
-  event: FactoryDependabotEventName;
-  alert: {
-    /** Stable alert reference — `owner/repo#dependabot-<number>`. */
-    id: string;
-    number: number;
-    repository: string;
-    title: string;
-    url: string;
-    /** `open`, `dismissed`, `fixed`, or `auto_dismissed`. */
-    state: string;
-    severity: string | null;
-    packageName: string | null;
-    ecosystem: string | null;
-    manifestPath: string | null;
-    /** Markdown writeup for the card's description. */
-    description: string | null;
-    ghsaId: string | null;
-    cveId: string | null;
-    labels: readonly string[];
-    createdAt: string;
-    updatedAt: string;
-  };
-}
-
-export interface FactoryVantaRuleContext extends FactoryRuleContextBase {
-  boardEvent?: BoardEventFacts;
-  item?: FactoryRuleItemContext;
-  board?: FactoryRuleBoard;
-  itemRevision?: number;
-  boardClosure?: FactoryRuleBoardClosure;
-  phase?: FactoryRulePhaseContext;
-  intake?: FactoryRuleIntakeTarget;
-  event: FactoryVantaEventName;
-  vulnerability: {
-    /** Vanta vulnerability id — one card per vulnerability, not per advisory. */
-    id: string;
-    /** Advisory name, e.g. `CVE-2026-118764` or `AIKIDO-2026-54683`. */
-    name: string;
-    title: string;
-    description: string | null;
-    url: string | null;
-    /** `open`, or `resolved` once Vanta no longer lists it as active. */
-    state: 'open' | 'resolved';
-    severity: string | null;
-    packageIdentifier: string | null;
-    fixable: boolean | null;
-    remediateBy: string | null;
-    labels: readonly string[];
-    createdAt: string;
-  };
 }
 
 export type FactoryRuleHandler<TContext> = (
@@ -937,20 +638,6 @@ export function factoryRuleSourceForWorkItem(source: WorkItemSource): FactoryRul
       return 'issue';
     case 'github-pr':
       return 'pullRequest';
-    case 'gitlab-issue':
-      return 'gitlabIssue';
-    case 'gitlab-pr':
-      return 'gitlabPullRequest';
-    case 'linear-issue':
-      return 'linearIssue';
-    case 'jira-issue':
-      return 'jiraIssue';
-    case 'incidentio-follow-up':
-      return 'incidentioFollowUp';
-    case 'github-dependabot-alert':
-      return 'dependabotAlert';
-    case 'vanta-vulnerability':
-      return 'vantaVulnerability';
     case 'detail-finding':
       return 'detailFinding';
     case 'manual':

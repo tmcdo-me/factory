@@ -9,7 +9,6 @@ import type { ProjectBoardSource } from '../boards/project-boards.js';
 import { primeTenantCredentialsForTenant } from '../routes/tenant-credentials.js';
 import { hydrateFactorySession, resolveFactorySessionModel } from '../session/factory-session.js';
 import { resolveWorkItemRepository } from '../session/work-item-repository.js';
-import type { IntakeStorage } from '../storage/domains/intake/base.js';
 import type { ModelDefaultsStorage } from '../storage/domains/model-defaults/base.js';
 import { isFactoryPrincipalId } from '../storage/domains/projects/base.js';
 import type { EffectiveModelScope, FactoryProjectsStorage } from '../storage/domains/projects/base.js';
@@ -171,7 +170,6 @@ export class FactoryStartCoordinator {
     | ((
         request: FactoryStartRequest,
       ) => SourceControlStorageHandle | undefined | Promise<SourceControlStorageHandle | undefined>);
-  readonly #intake?: IntakeStorage;
   readonly #projects?: FactoryProjectsStorage;
   readonly #modelDefaults?: ModelDefaultsStorage;
   readonly #boards?: ProjectBoardSource;
@@ -186,7 +184,6 @@ export class FactoryStartCoordinator {
       | ((
           request: FactoryStartRequest,
         ) => SourceControlStorageHandle | undefined | Promise<SourceControlStorageHandle | undefined>),
-    intake?: IntakeStorage,
     sessionModel?: { projects: FactoryProjectsStorage; modelDefaults: ModelDefaultsStorage },
     /** Tells a pull request review run from the card's other review runs; without it every review run with a pull request is untrusted. */
     boards?: BoardRegistry | ProjectBoardSource,
@@ -198,7 +195,6 @@ export class FactoryStartCoordinator {
     this.#storage = storage;
     this.#transitionService = transitionService;
     this.#sourceControl = sourceControl;
-    this.#intake = intake;
     this.#projects = sessionModel?.projects;
     this.#modelDefaults = sessionModel?.modelDefaults;
     this.#boards = boards ? toBoardSource(boards) : undefined;
@@ -224,7 +220,6 @@ export class FactoryStartCoordinator {
     const storedItem = request.workItem.id
       ? await storage.get({ orgId: request.orgId, id: request.workItem.id })
       : null;
-    const intakeConfig = await this.#intake?.getConfig({ orgId: request.orgId, integrationIds: ['linear'] });
     let repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: request.orgId,
@@ -233,7 +228,6 @@ export class FactoryStartCoordinator {
         metadata: request.workItem.input.metadata ?? null,
         workItem: { metadata: request.workItem.input.metadata ?? null },
       },
-      linearRepositoryMap: intakeConfig?.linear?.repositoryByLinearProject,
     });
     if (repository.status === 'ambiguous') {
       // A retry of this role's existing session keeps its already-chosen

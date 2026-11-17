@@ -1,6 +1,5 @@
 import type { BoardPhaseKind } from '@mastra/factory/boards';
 import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
-import { LinearIcon } from '@mastra/playground-ui/icons/LinearIcon';
 import { SlackIcon } from '@mastra/playground-ui/icons/SlackIcon';
 import { cn } from '@mastra/playground-ui/utils/cn';
 import type { ComponentType, SVGProps } from 'react';
@@ -10,7 +9,6 @@ import type { BoardInfo } from '../boardFlow';
 import type { WorkItemSource } from '../services/workItems';
 import { boardStage, stageTone } from '../stages';
 import type { BuiltinStageId, StageTone } from '../stages';
-import { GitLabIcon, IncidentIoIcon, JiraIcon } from '../../../ui/icons';
 import { IntakeIcon } from './IntakeIcon';
 import { IconCircleDashed } from '@mastra/playground-ui/icons/central/IconCircleDashed';
 import { IconCircleRecord } from '@mastra/playground-ui/icons/central/IconCircleRecord';
@@ -27,11 +25,6 @@ import { IconClipboard2 } from '@mastra/playground-ui/icons/central/IconClipboar
 const SOURCE_ICONS: Record<WorkItemSource, { icon: ComponentType<SVGProps<SVGSVGElement>>; className: string }> = {
   'github-issue': { icon: GithubIcon, className: 'text-foreground' },
   'github-pr': { icon: IconPullRequest, className: 'text-muted-foreground' },
-  'gitlab-issue': { icon: GitLabIcon, className: 'text-badge-red-indicator' },
-  'gitlab-pr': { icon: GitLabIcon, className: 'text-badge-red-indicator' },
-  'linear-issue': { icon: LinearIcon, className: 'text-badge-blue-indicator' },
-  'jira-issue': { icon: JiraIcon, className: 'text-badge-blue-indicator' },
-  'incidentio-follow-up': { icon: IncidentIoIcon, className: 'text-badge-red-indicator' },
   'slack-thread': { icon: SlackIcon, className: '' },
   manual: { icon: IconCircleRecord, className: 'text-muted-foreground' },
 };

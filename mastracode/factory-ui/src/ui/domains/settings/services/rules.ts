@@ -79,10 +79,7 @@ export function limitedProviders(limits: readonly Limit[]): Set<string> | undefi
   return allowed;
 }
 
-const REPOSITORY_FORMATS = new Map([
-  ['github', 'GitHub repositories are owner/repo, such as mastra-ai/mastra.'],
-  ['gitlab', 'GitLab projects are group/project, such as acme/platform/api.'],
-]);
+const REPOSITORY_FORMATS = new Map([['github', 'GitHub repositories are owner/repo, such as mastra-ai/mastra.']]);
 
 /** The repository names a condition requires one of: "is" and "is any of" only, since the others can still match. */
 function requiredRepositories(condition: Condition): string[] {
@@ -126,7 +123,7 @@ function hintIn(group: Group, limits: readonly Condition[]): string | undefined 
 
 /**
  * A hint when a condition requires `source.repository` to be a bare name while every card it tests
- * also comes from GitHub or GitLab, whose repositories always have an owner: that name never matches.
+ * also comes from GitHub, whose repositories always have an owner: that name never matches.
  */
 export function repositoryHint(rule: unknown): string | undefined {
   if (!rule || typeof rule !== 'object' || !isGroup(rule)) return undefined;

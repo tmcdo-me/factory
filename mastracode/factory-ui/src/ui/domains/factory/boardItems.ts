@@ -16,11 +16,6 @@ export function cardLabels(metadata: Record<string, unknown>): string[] {
 export const SOURCE_LABELS: Record<WorkItemSource, string> = {
   'github-issue': 'Issue',
   'github-pr': 'PR Review',
-  'gitlab-issue': 'GitLab',
-  'gitlab-pr': 'MR Review',
-  'linear-issue': 'Linear',
-  'jira-issue': 'Jira',
-  'incidentio-follow-up': 'incident.io',
   'slack-thread': 'Slack',
   manual: 'Manual',
 };
@@ -62,75 +57,12 @@ export function githubNumberForItem(item: Pick<WorkItem, 'source' | 'workItem' |
   return itemNumber;
 }
 
-/** The change-request number a review card carries: a GitHub PR number or a GitLab MR iid. */
+/** The change-request number a review card carries: its GitHub PR number. */
 export function changeRequestNumberForItem(
   item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>,
 ): number | undefined {
-  const metadata = sourceMetadata(item);
   if (item.source === 'github-pr') return githubNumberForItem(item);
-  if (item.source !== 'gitlab-pr') return;
-  const iid = metadata.gitlabMergeRequestIid;
-  return typeof iid === 'number' && Number.isSafeInteger(iid) && iid > 0 ? iid : undefined;
-}
-
-export function gitlabIdentifierForItem(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source === 'gitlab-issue' && typeof metadata.identifier === 'string') return metadata.identifier;
-  if (item.source === 'gitlab-issue') {
-    const iid = metadata.gitlabIssueIid;
-    return typeof iid === 'number' && Number.isSafeInteger(iid) && iid > 0 ? `#${iid}` : undefined;
-  }
-  if (item.source !== 'gitlab-pr') return;
-  const iid = metadata.gitlabMergeRequestIid;
-  return typeof iid === 'number' && Number.isSafeInteger(iid) && iid > 0 ? `!${iid}` : undefined;
-}
-
-/** The human issue key a Linear card carries (`ENG-123`), when it has one. */
-export function linearIdentifierForItem(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'linear-issue' || typeof metadata.identifier !== 'string') return;
-  return metadata.identifier;
-}
-/** The opaque Linear issue id a card carries, when it has one. */
-export function linearIssueIdForItem(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'linear-issue' || typeof metadata.linearIssueId !== 'string') return;
-  return metadata.linearIssueId;
-}
-
-export function jiraIdentifierForItem(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'jira-issue' || typeof metadata.identifier !== 'string') return;
-  return metadata.identifier;
-}
-
-export function jiraIssueRefForItem(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'jira-issue') return;
-  return nonEmptyString(metadata.issueRef) ?? nonEmptyString(metadata.issueReference);
-}
-
-/** The human reference an incident.io follow-up card carries (`INC-42` or the item id), when it has one. */
-export function incidentioIdentifierForItem(
-  item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>,
-): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'incidentio-follow-up' || typeof metadata.identifier !== 'string') return;
-  return metadata.identifier;
-}
-
-/** The prefixed incident.io item reference a card carries, when it has one. */
-export function incidentioIssueRefForItem(
-  item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>,
-): string | undefined {
-  const metadata = sourceMetadata(item);
-  if (item.source !== 'incidentio-follow-up') return;
-  return nonEmptyString(metadata.issueRef) ?? nonEmptyString(metadata.issueReference);
-}
-
-/** Legacy metadata may hold `issueRef: ''` beside a populated `issueReference`; skip empty values. */
-function nonEmptyString(value: unknown): string | undefined {
-  return typeof value === 'string' && value ? value : undefined;
+  return undefined;
 }
 
 export type PullRequestStatus = 'draft' | 'open' | 'closed' | 'merged';
@@ -162,10 +94,6 @@ export function candidateSourceKeyForItem(item: WorkItem): string | undefined {
 
 /** Aria label for the icon-only external link next to a card title. */
 export function externalLinkLabel(source: WorkItemSource): string {
-  if (source === 'gitlab-issue' || source === 'gitlab-pr') return 'Open in GitLab';
-  if (source === 'linear-issue') return 'Open in Linear';
-  if (source === 'jira-issue') return 'Open in Jira';
-  if (source === 'incidentio-follow-up') return 'Open in incident.io';
   if (source === 'slack-thread') return 'Open in Slack';
   if (source === 'manual') return 'Open link';
   return 'Open in GitHub';
@@ -177,19 +105,14 @@ export function sourceCreatedAt(metadata: Record<string, unknown>): string | und
   return typeof value === 'string' && isValid(new Date(value)) ? value : undefined;
 }
 
-/** The upstream key a card is known by: `#123` on GitHub, `ENG-42` on Linear. */
+/** The upstream key a card is known by: `#123` on GitHub. */
 export function workItemKey(item: Pick<WorkItem, 'source' | 'workItem' | 'metadata'>): string | undefined {
   if (item.workItem?.provider !== 'factory' && item.workItem?.key) return item.workItem.key;
   const githubNumber = githubNumberForItem(item);
   if (githubNumber !== undefined) return `#${githubNumber}`;
   const cardNumber = item.source === 'manual' ? sourceMetadata(item).cardNumber : undefined;
   if (typeof cardNumber === 'number' && Number.isInteger(cardNumber) && cardNumber > 0) return `#${cardNumber}`;
-  return (
-    gitlabIdentifierForItem(item) ??
-    linearIdentifierForItem(item) ??
-    jiraIdentifierForItem(item) ??
-    incidentioIdentifierForItem(item)
-  );
+  return undefined;
 }
 
 /**

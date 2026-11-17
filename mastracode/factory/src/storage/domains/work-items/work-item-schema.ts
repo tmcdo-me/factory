@@ -2,15 +2,7 @@ import type { CollectionSchema } from '@mastra/core/storage';
 
 import type { FactoryTriageType } from '../../../rules/types.js';
 
-export type WorkItemProvider =
-  | 'github'
-  | 'gitlab'
-  | 'jira'
-  | 'linear'
-  | 'slack'
-  | 'incidentio'
-  | 'factory'
-  | (string & {});
+export type WorkItemProvider = 'github' | 'slack' | 'factory' | (string & {});
 
 /** The work itself; external identities and facts belong to its sources. */
 export const FACTORY_WORK_ITEMS_SCHEMA: CollectionSchema = {

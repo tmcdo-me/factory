@@ -527,15 +527,15 @@ describe('review follow-ups', () => {
     installFactoryMetrics(metrics);
     const { records, targets } = capture();
     const stop = startFactoryMetrics(metrics, targets, { storage: undefined, vector: undefined, pubsub: undefined });
-    recordSweepWorkerStarted('gitlab', 'merge_close');
-    recordReconcileSweep('gitlab', 'merge_close', { replayed: 0, ok: false });
+    recordSweepWorkerStarted('github', 'merge_close');
+    recordReconcileSweep('github', 'merge_close', { replayed: 0, ok: false });
     await metrics.tick();
     await stop();
     expect(
       records.some(
         r =>
           r.name === 'mastra_factory_intake_last_sweep_age_ms' &&
-          r.labels.source === 'gitlab' &&
+          r.labels.source === 'github' &&
           r.labels.kind === 'merge_close',
       ),
     ).toBe(true);
@@ -561,7 +561,7 @@ describe('zero counters', () => {
     expect(records.map(r => [r.name, r.value])).toEqual([['kept_total', 0]]);
   });
 
-  it('sends intake counts for configured GitHub and Linear integrations when quiet', async () => {
+  it('sends intake counts for a configured GitHub integration when quiet, and none for Slack', async () => {
     const metrics = new FactoryMetrics(resolveMetricsConfig({ groups: ['intake'] }, {}), 'all');
     installFactoryMetrics(metrics);
     const { records, targets } = capture();

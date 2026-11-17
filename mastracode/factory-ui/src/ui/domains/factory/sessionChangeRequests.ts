@@ -49,7 +49,7 @@ export function changeRequestLinkLabel(reference: string, status: PullRequestSta
 export function changeRequestRepository(url: string): string | undefined {
   try {
     const path = new URL(url).pathname;
-    const end = path.search(/\/(?:pull|-\/merge_requests)\//);
+    const end = path.search(/\/pull\//);
     return end > 0 ? path.slice(1, end) : undefined;
   } catch {
     return undefined;

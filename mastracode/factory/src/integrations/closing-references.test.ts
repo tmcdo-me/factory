@@ -2,8 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { closingIssueNumbers } from './closing-references.js';
 
-const github = { provider: 'github' as const, repository: 'acme/app' };
-const gitlab = { provider: 'gitlab' as const, repository: 'group/sub/project' };
+const github = { repository: 'acme/app' };
 
 describe('closingIssueNumbers', () => {
   it.each([
@@ -25,27 +24,17 @@ describe('closingIssueNumbers', () => {
     ['<!-- fixes #12 -->', 'an HTML comment'],
     ['refixes #12 or prefix#5 or fixes#6', 'keyword glued to other words'],
     ['Related to #12', 'a mention without a closing keyword'],
-    ['Implements #9', "GitLab's keyword on GitHub"],
+    ['Implements #9', 'a keyword GitHub does not act on'],
   ])('ignores %j (%s)', text => {
     expect(closingIssueNumbers(text, github)).toEqual([]);
   });
 
-  it("reads GitLab's keywords and lists", () => {
-    expect(closingIssueNumbers('Closes #1, #2 and #3', gitlab)).toEqual([1, 2, 3]);
-    expect(closingIssueNumbers('Implements group/sub/project#9', gitlab)).toEqual([9]);
-    expect(closingIssueNumbers('Implements other/project#9', gitlab)).toEqual([]);
-  });
-
+  // GitHub acts only on the issue right after the keyword, not on a list after it.
   it.each([
-    ['#1, #2 and #3', [1, 2, 3]],
-    ['#1,#2, and #3', [1, 2, 3]],
-    ['#1 , and #2', [1, 2]],
-    ['#1  and  #2', [1, 2]],
-    ['#1,and #2', [1]],
-    ['#1 or #2', [1]],
-    ['group/sub/project#4, #5', [4, 5]],
-  ])('reads the GitLab list "Closes %s"', (list, expected) => {
-    expect(closingIssueNumbers(`Closes ${list}`, gitlab)).toEqual(expected);
+    ['#1, #2 and #3', [1]],
+    ['#1 and #2', [1]],
+  ])('reads only the first issue of "Closes %s"', (list, expected) => {
+    expect(closingIssueNumbers(`Closes ${list}`, github)).toEqual(expected);
   });
 
   it.each([
@@ -65,23 +54,21 @@ describe('closingIssueNumbers', () => {
   // A description is attacker-shaped text from anyone with Developer access, read on every delivery
   // and replay, so it must take linear time. Each body here took seconds to minutes before.
   it.each([
-    ['40k spaces after a GitLab list', `Closes #1${' '.repeat(40_000)}`, gitlab],
-    ['1 MB of unclosed HTML comments', `Closes #1 ${'<!--'.repeat(262_144)}`, github],
-    ['1 MB of unclosed HTML comments on GitLab', `Closes #1 ${'<!--'.repeat(262_144)}`, gitlab],
+    ['40k spaces after the reference', `Closes #1${' '.repeat(40_000)}`],
+    ['1 MB of unclosed HTML comments', `Closes #1 ${'<!--'.repeat(262_144)}`],
     [
       'a 262k-backtick fence opener followed by shorter runs',
       `Closes #1 ${'`'.repeat(262_000)}${` ${'`'.repeat(261_999)}`.repeat(3)}`,
-      gitlab,
     ],
-    ['1 MB of short code fences', `Closes #1 ${'```a```'.repeat(150_000)}`, gitlab],
-  ])('reads %s in linear time', (_, body, options) => {
+    ['1 MB of short code fences', `Closes #1 ${'```a```'.repeat(150_000)}`],
+  ])('reads %s in linear time', (_, body) => {
     const started = performance.now();
-    expect(closingIssueNumbers(body, options)).toEqual([1]);
+    expect(closingIssueNumbers(body, github)).toEqual([1]);
     expect(performance.now() - started).toBeLessThan(250);
   });
 
   it('has nothing to read in an empty description', () => {
     expect(closingIssueNumbers(null, github)).toEqual([]);
-    expect(closingIssueNumbers('', gitlab)).toEqual([]);
+    expect(closingIssueNumbers('', github)).toEqual([]);
   });
 });

@@ -1,7 +1,6 @@
 /**
  * Coverage for the intake writes onboarding makes once the Factory project exists and the Work
- * step's switch is on: both hosts select the repository the same way, and a GitLab project is
- * routed to the new Factory first.
+ * step's switch is on: the GitHub repository is selected as an issue source.
  */
 import { http, HttpResponse } from 'msw';
 import { describe, expect, it } from 'vitest';
@@ -9,7 +8,6 @@ import { describe, expect, it } from 'vitest';
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { TEST_BASE_URL } from '../../../../../../e2e/ui/render';
 import type { IntakeBindingWrite } from '../../../factory/services/intake';
-import type { GitLabRepository } from '../../../factory/services/gitlab';
 import { applyCodeHostIntake } from '../onboardingIntake';
 import type { GithubRepo, SourceControlRepository } from '../github';
 
@@ -27,20 +25,6 @@ const githubRepo: GithubRepo = {
   installationStorageId: 'inst-7',
   sandboxProvider: 'local',
   sandboxWorkdir: '/workspace/widgets',
-};
-
-const gitlabProject: GitLabRepository = {
-  provider: 'gitlab',
-  id: 'gitlab-source-1',
-  externalId: '4711',
-  fullName: 'acme/platform',
-  name: 'platform',
-  owner: 'acme',
-  defaultBranch: 'main',
-  private: true,
-  installationStorageId: 'inst-9',
-  sandboxProvider: 'local',
-  sandboxWorkdir: '/workspace/platform',
 };
 
 /** Stub both intake endpoints, so a write to either is recorded rather than reaching the network. */
@@ -72,17 +56,6 @@ describe('Code-host intake at the end of onboarding', () => {
 
     expect(intake.savedConfigs).toEqual([{ github: { enabled: true, sourceIds: ['acme/widgets'] } }]);
     expect(intake.savedBindings).toEqual([]);
-  });
-
-  it('routes a GitLab project to the new Factory and selects it', async () => {
-    const intake = stubIntake();
-
-    await route(gitlabProject);
-
-    expect(intake.savedBindings).toEqual([
-      { integrationId: 'gitlab', sourceId: 'gitlab-source-1', factoryProjectId: 'factory-1' },
-    ]);
-    expect(intake.savedConfigs).toEqual([{ gitlab: { enabled: true, sourceIds: ['gitlab-source-1'] } }]);
   });
 
   it('keeps sources other members picked and skips the write when the repository is already selected', async () => {

@@ -57,7 +57,7 @@ function item(sessions: Record<string, WorkItemSessionRef>): WorkItem {
 }
 
 describe('cardMoves', () => {
-  it.each(['github-issue', 'github-pr', 'linear-issue', 'jira-issue', 'incidentio-follow-up'] as const)(
+  it.each(['github-issue', 'github-pr'] as const)(
     'does not infer built-in automation for a custom-board %s',
     source => {
       expect(cardMoves({ source, board: 'release', metadata: {} }, 'intake', releaseBoard)).toEqual([]);
@@ -153,23 +153,13 @@ describe('cardMoves', () => {
     },
   );
 
-  it.each(['linear-issue', 'jira-issue', 'incidentio-follow-up'] as const)(
-    'offers a %s the same issue lanes',
-    source => {
-      expect(cardMoves({ source, metadata: {} }, 'intake', work)).toEqual([investigate, plan]);
-    },
-  );
-
   it('re-reviews an open pull request sitting in Done, and reviews it in a working lane', () => {
     const pullRequest = { source: 'github-pr' as const, metadata: { state: 'open' }, stages: ['done'] };
     expect(cardMoves(pullRequest, 'done', work)).toEqual([{ label: 'Re-review', role: 'review', stage: 'pr-review' }]);
     expect(cardMoves(pullRequest, 'review', selfReviewWork)).toEqual([review]);
-    const mergeRequest = { ...pullRequest, source: 'gitlab-pr' as const };
-    expect(cardMoves(mergeRequest, 'done', work)).toEqual([{ label: 'Re-review', role: 'review', stage: 'pr-review' }]);
-    expect(cardMoves(mergeRequest, 'review', selfReviewWork)).toEqual([review]);
   });
 
-  it.each(['github-pr', 'gitlab-pr'] as const)(
+  it.each(['github-pr'] as const)(
     'offers a %s card on the Work board Review into PR review from intake, and Re-review once merged-open in Done',
     source => {
       expect(cardMoves({ source, board: 'work', metadata: {} }, 'intake', work)).toEqual([
@@ -251,7 +241,6 @@ describe('cardMoves', () => {
 
   it("offers a card in an older project's Work self-review no lane, so its session is the action", () => {
     expect(cardMoves({ source: 'github-issue', metadata: {} }, 'review', selfReviewWork)).toEqual([]);
-    expect(cardMoves({ source: 'linear-issue', metadata: {} }, 'review', selfReviewWork)).toEqual([]);
   });
 
   it('offers a finished card no lane, so its session is the action', () => {

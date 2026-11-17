@@ -71,10 +71,7 @@ it.each([
       http.get(`${projectUrl}/work-items`, () => HttpResponse.json({ workItems: [providerFactsCard] })),
       http.get(`${projectUrl}/sessions`, () => HttpResponse.json({ sessions: [] })),
       http.get(`${TEST_BASE_URL}/web/intake/config`, () =>
-        HttpResponse.json({ config: { github: { enabled: false }, linear: { enabled: false } } }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: false, connected: false, workspace: null }),
+        HttpResponse.json({ config: { github: { enabled: false } } }),
       ),
       http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
       http.get(`${TEST_BASE_URL}/api/agent-controller/code/sessions/:resourceId/permissions`, () =>

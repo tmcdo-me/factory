@@ -284,14 +284,7 @@ function summaryRole(boards: BoardRegistry, decision: Record<string, unknown>): 
 function summarySource(decision: Record<string, unknown>): WorkItemSource | null {
   if (decision.type !== 'upsertLinkedWorkItem') return null;
   const source = decision.source;
-  return source === 'github-issue' ||
-    source === 'github-pr' ||
-    source === 'gitlab-issue' ||
-    source === 'gitlab-pr' ||
-    source === 'linear-issue' ||
-    source === 'manual'
-    ? source
-    : null;
+  return source === 'github-issue' || source === 'github-pr' || source === 'manual' ? source : null;
 }
 
 function decisionSummary(boards: BoardRegistry, decision: FactoryDeferredDecisionRecord, overtaken = false) {
@@ -659,7 +652,6 @@ export class WorkItemRoutes extends Route<WorkItemRoutesDeps> {
             sort: context.req.query('sort'),
             q: context.req.query('q'),
             source: context.req.queries('source'),
-            linearProject: context.req.queries('linearProject'),
             label: context.req.queries('label'),
             teammate: context.req.queries('teammate'),
             author: context.req.queries('author'),

@@ -27,7 +27,6 @@ import { resolveWorkItemRepository } from '../session/work-item-repository.js';
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
 import type { ModelCredentialsStorage } from '../storage/domains/credentials/base.js';
 import type { CustomProvidersStorage } from '../storage/domains/custom-providers/base.js';
-import type { IntakeStorage } from '../storage/domains/intake/base.js';
 import type { ModelDefaultsStorage } from '../storage/domains/model-defaults/base.js';
 import { effectiveModelScope, factoryPrincipalId } from '../storage/domains/projects/base.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
@@ -80,7 +79,6 @@ export interface FactorySessionToolDependencies {
   /** A fixed registry, or the per-project boards. */
   boards: BoardRegistry | ProjectBoardSource;
   auditRecorder: AuditRecorder;
-  intake?: Pick<IntakeStorage, 'getConfig'>;
   /** The browser Start's coordinator; absent until the Factory runtime is ready. */
   startCoordinator: () => Pick<FactoryStartCoordinator, 'prepare'> | undefined;
 }
@@ -572,13 +570,11 @@ export function createFactorySessionTools(
   }
 
   async function resolveRepository(sourceControl: SourceControlStorageHandle, item: Card): Promise<string> {
-    const intakeConfig = await deps.intake?.getConfig({ orgId: scope.orgId, integrationIds: ['linear'] });
     const repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: scope.orgId,
       factoryProjectId: scope.factoryProjectId,
       item,
-      linearRepositoryMap: intakeConfig?.linear?.repositoryByLinearProject,
     });
     if (repository.status === 'ambiguous') {
       throw new Error(ambiguousRepository(repository.candidates));

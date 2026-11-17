@@ -28,7 +28,7 @@ function metadataString(source: Record<string, unknown>, key: string): string | 
 
 /**
  * Best-effort creator attribution for external items. GitHub exposes a stable
- * public avatar URL; GitLab and Linear names fall through to initials.
+ * public avatar URL.
  */
 function externalCreatorProfile(item: WorkItem): AuditActorProfile | undefined {
   if (item.source === 'github-issue' || item.source === 'github-pr') {
@@ -39,59 +39,6 @@ function externalCreatorProfile(item: WorkItem): AuditActorProfile | undefined {
       name: author,
       avatarUrl: `https://github.com/${encodeURIComponent(author)}.png?size=64`,
     };
-  }
-  if (item.source === 'gitlab-issue' || item.source === 'gitlab-pr') {
-    const author = metadataString(sourceMetadata(item), 'author');
-    return author ? { id: `gitlab:${author}`, name: author } : undefined;
-  }
-  if (item.source === 'linear-issue') {
-    const creator =
-      metadataString(sourceMetadata(item), 'creator') ?? metadataString(sourceMetadata(item), 'linearCreator');
-    return creator ? { id: `linear:${creator}`, name: creator } : undefined;
-  }
-  if (item.source === 'jira-issue') {
-    const creator = metadataString(sourceMetadata(item), 'creator') ?? metadataString(sourceMetadata(item), 'author');
-    if (!creator) return undefined;
-    return { id: `jira:${creator}`, name: creator };
-  }
-  if (item.source === 'incidentio-follow-up') {
-    const creator = metadataString(sourceMetadata(item), 'creator') ?? metadataString(sourceMetadata(item), 'author');
-    if (!creator) return undefined;
-    return { id: `incidentio:${creator}`, name: creator };
-  }
-  return undefined;
-}
-
-/**
- * Best-effort current-assignee attribution for GitLab and Linear issues. The
- * assignee is the current owner and is also represented in the activity rail.
- */
-function externalAssigneeProfile(item: WorkItem): AuditActorProfile | undefined {
-  if (item.source === 'gitlab-issue' || item.source === 'gitlab-pr') {
-    const assignees = sourceMetadata(item).assignees;
-    const assignee =
-      metadataString(sourceMetadata(item), 'assignee') ??
-      (Array.isArray(assignees)
-        ? assignees.find(value => typeof value === 'string' && value.trim())?.trim()
-        : undefined);
-    return assignee ? { id: `gitlab:${assignee}`, name: assignee } : undefined;
-  }
-  if (item.source === 'linear-issue') {
-    const assignee =
-      metadataString(sourceMetadata(item), 'assignee') ?? metadataString(sourceMetadata(item), 'linearAssignee');
-    if (!assignee) return undefined;
-    return { id: `linear:${assignee}`, name: assignee };
-  }
-  if (item.source === 'jira-issue') {
-    const assignee = metadataString(sourceMetadata(item), 'assignee');
-    if (!assignee) return undefined;
-    return { id: `jira:${assignee}`, name: assignee };
-  }
-  if (item.source === 'incidentio-follow-up') {
-    const assignee =
-      metadataString(sourceMetadata(item), 'assignee') ?? metadataString(sourceMetadata(item), 'incidentioAssignee');
-    if (!assignee) return undefined;
-    return { id: `incidentio:${assignee}`, name: assignee };
   }
   return undefined;
 }
@@ -120,32 +67,6 @@ function syntheticCreatedEvent(item: WorkItem, hasRealCreateEvent: boolean): Aud
   };
 }
 
-/**
- * Synthesize an "assigned" event when the assignee is known and differs from
- * the reporter/creator. Currently only Linear issues expose a stable
- * assignee, and we anchor the event at `updatedAt` so it sorts after the
- * creation entry in a newest-first timeline.
- */
-function syntheticAssignedEvent(
-  item: WorkItem,
-  creator: AuditActorProfile | undefined,
-  assignee: AuditActorProfile | undefined,
-  auditEvents: AuditEvent[],
-): AuditEvent | undefined {
-  if (!assignee) return undefined;
-  if (creator && creator.id === assignee.id) return undefined;
-  if (auditEvents.some(event => event.action === ASSIGNED_ACTION)) return undefined;
-  return {
-    id: `synthetic-assigned:${item.id}`,
-    actorId: assignee.id,
-    actorType: 'human',
-    action: ASSIGNED_ACTION,
-    targets: [{ type: 'work_item', id: item.id, name: item.title }],
-    metadata: {},
-    occurredAt: item.updatedAt,
-  };
-}
-
 function targetsWorkItem(event: AuditEvent, workItemId: string): boolean {
   return event.targets.some(target => target.type === 'work_item' && target.id === workItemId);
 }
@@ -171,18 +92,13 @@ export function workItemActivity(item: WorkItem, page: AuditEventPage | undefine
   const hasRealCreated = auditEvents.some(event => event.action === CREATED_ACTION);
 
   const creator = externalCreatorProfile(item);
-  const assignee = externalAssigneeProfile(item);
 
   const created = syntheticCreatedEvent(item, hasRealCreated);
-  const assigned = syntheticAssignedEvent(item, creator, assignee, auditEvents);
-  // Timeline is newest-first; synthetic entries go at the end (older).
-  // `assigned` happened after `created`, so it appears higher in the list.
-  const syntheticTail = [assigned, created].filter((event): event is AuditEvent => event !== undefined);
-  const events = syntheticTail.length > 0 ? [...auditEvents, ...syntheticTail] : auditEvents;
+  // Timeline is newest-first; the synthetic created entry goes at the end (older).
+  const events = created ? [...auditEvents, created] : auditEvents;
 
   const extraActors: Record<string, AuditActorProfile> = {};
   if (creator) extraActors[creator.id] = creator;
-  if (assignee) extraActors[assignee.id] = assignee;
 
   const latestHumanEvent = auditEvents.find(event => event.actorType === 'human' && isHumanActorId(event.actorId));
   const latestStage = latestStageWorker(item);
@@ -201,10 +117,8 @@ export function workItemActivity(item: WorkItem, page: AuditEventPage | undefine
     if (profile) return { events, lastWorker: profile, extraActors };
   }
 
-  // Nothing internal resolves — fall back to the external contributor. Prefer
-  // the current assignee ("who owns this now") over the reporter/opener.
-  const externalFallback = assignee ?? creator;
-  return { events, extraActors, ...(externalFallback ? { lastWorker: externalFallback } : {}) };
+  // Nothing internal resolves — fall back to the external contributor who opened it.
+  return { events, extraActors, ...(creator ? { lastWorker: creator } : {}) };
 }
 
 /** Comments render as themselves; the audit row each one also writes would show it twice. */

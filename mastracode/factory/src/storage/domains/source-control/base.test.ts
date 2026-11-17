@@ -29,7 +29,7 @@ describe('SourceControlStorage', () => {
   let projects: FactoryProjectsStorage;
   let domain: SourceControlStorage;
   let github: SourceControlStorageHandle;
-  let gitlab: SourceControlStorageHandle;
+  let forge: SourceControlStorageHandle;
 
   beforeEach(async () => {
     backend = new LibSQLFactoryStorage({ id: 'source-control-test', url: ':memory:' });
@@ -37,7 +37,7 @@ describe('SourceControlStorage', () => {
     domain = backend.registerDomain(new SourceControlStorage());
     await backend.init();
     github = domain.forIntegration('github');
-    gitlab = domain.forIntegration('gitlab');
+    forge = domain.forIntegration('acme-forge');
   });
 
   afterEach(async () => {
@@ -109,26 +109,26 @@ describe('SourceControlStorage', () => {
 
   it('stores concrete installations and repositories isolated by integration', async () => {
     const githubInstallation = await createInstallation(github, { externalId: 'shared-installation' });
-    const gitlabInstallation = await createInstallation(gitlab, { externalId: 'shared-installation' });
+    const forgeInstallation = await createInstallation(forge, { externalId: 'shared-installation' });
 
-    expect(githubInstallation.id).not.toBe(gitlabInstallation.id);
+    expect(githubInstallation.id).not.toBe(forgeInstallation.id);
     expect(
       await github.installations.findByExternalId({ orgId: 'org-1', externalId: 'shared-installation' }),
     ).toMatchObject({
       integrationId: 'github',
     });
-    expect(await github.installations.get({ orgId: 'org-1', id: gitlabInstallation.id })).toBeNull();
+    expect(await github.installations.get({ orgId: 'org-1', id: forgeInstallation.id })).toBeNull();
 
     const githubRepository = await github.repositories.upsert({
       orgId: 'org-1',
       input: { installationId: githubInstallation.id, ...repositoryInput },
     });
-    const gitlabRepository = await gitlab.repositories.upsert({
+    const forgeRepository = await forge.repositories.upsert({
       orgId: 'org-1',
-      input: { installationId: gitlabInstallation.id, ...repositoryInput },
+      input: { installationId: forgeInstallation.id, ...repositoryInput },
     });
-    expect(githubRepository.id).not.toBe(gitlabRepository.id);
-    expect(await github.repositories.get({ orgId: 'org-1', id: gitlabRepository.id })).toBeNull();
+    expect(githubRepository.id).not.toBe(forgeRepository.id);
+    expect(await github.repositories.get({ orgId: 'org-1', id: forgeRepository.id })).toBeNull();
     expect(
       await github.repositories.findBySlug({
         orgId: 'org-1',
@@ -141,17 +141,17 @@ describe('SourceControlStorage', () => {
   it('links one Factory project to multiple provider installations and multiple repositories per connection', async () => {
     const project = await createProject();
     const githubInstallation = await createInstallation(github);
-    const gitlabInstallation = await createInstallation(gitlab);
+    const forgeInstallation = await createInstallation(forge);
     const githubConnection = await github.connections.create({
       orgId: 'org-1',
       factoryProjectId: project.id,
       installationId: githubInstallation.id,
       createdByUserId: 'user-1',
     });
-    await gitlab.connections.create({
+    await forge.connections.create({
       orgId: 'org-1',
       factoryProjectId: project.id,
-      installationId: gitlabInstallation.id,
+      installationId: forgeInstallation.id,
       createdByUserId: 'user-1',
     });
 
@@ -180,7 +180,7 @@ describe('SourceControlStorage', () => {
     );
 
     expect(await github.connections.list({ orgId: 'org-1', factoryProjectId: project.id })).toHaveLength(1);
-    expect(await gitlab.connections.list({ orgId: 'org-1', factoryProjectId: project.id })).toHaveLength(1);
+    expect(await forge.connections.list({ orgId: 'org-1', factoryProjectId: project.id })).toHaveLength(1);
     expect(await github.projectRepositories.list({ orgId: 'org-1', connectionId: githubConnection.id })).toHaveLength(
       2,
     );
@@ -280,7 +280,7 @@ describe('SourceControlStorage', () => {
     const otherProject = await createProject({ orgId: 'org-2', name: 'Other org' });
     const firstInstallation = await createInstallation(github);
     const secondInstallation = await createInstallation(github, { externalId: 'github-installation-2' });
-    const gitlabInstallation = await createInstallation(gitlab);
+    const forgeInstallation = await createInstallation(forge);
     const connection = await github.connections.create({
       orgId: 'org-1',
       factoryProjectId: project.id,
@@ -304,7 +304,7 @@ describe('SourceControlStorage', () => {
       github.connections.create({
         orgId: 'org-1',
         factoryProjectId: project.id,
-        installationId: gitlabInstallation.id,
+        installationId: forgeInstallation.id,
         createdByUserId: 'user-1',
       }),
     ).rejects.toThrow(/installation not found/);
@@ -1032,7 +1032,7 @@ describe('SourceControlStorage', () => {
       const project = await createProject();
       const other = await createProject({ name: 'other' });
       const { first, second } = await twoLinks(project.id);
-      const gitlabLink = await linkRepository({ handle: gitlab, factoryProjectId: project.id });
+      const forgeLink = await linkRepository({ handle: forge, factoryProjectId: project.id });
       const elsewhere = await linkRepository({ factoryProjectId: other.id });
 
       const a = await github.sessions.create(
@@ -1049,8 +1049,8 @@ describe('SourceControlStorage', () => {
         ...sessionInput('00000000-0000-4000-8000-000000000134', first.id, 'user-1', 'd'),
         visibility: 'private',
       });
-      const viaGitlab = await gitlab.sessions.create(
-        sessionInput('00000000-0000-4000-8000-000000000135', gitlabLink.id, 'user-1', 'e'),
+      const viaForge = await forge.sessions.create(
+        sessionInput('00000000-0000-4000-8000-000000000135', forgeLink.id, 'user-1', 'e'),
       );
       await github.sessions.create(sessionInput('00000000-0000-4000-8000-000000000136', elsewhere.id, 'user-1', 'a'));
 
@@ -1062,9 +1062,9 @@ describe('SourceControlStorage', () => {
       expect(listed.map(s => s.id).sort()).toEqual([a.id, b.id, mine.id].sort());
       expect(
         (
-          await gitlab.sessions.listByProject({ orgId: 'org-1', factoryProjectId: project.id, viewerUserId: 'user-1' })
+          await forge.sessions.listByProject({ orgId: 'org-1', factoryProjectId: project.id, viewerUserId: 'user-1' })
         ).map(s => s.id),
-      ).toEqual([viaGitlab.id]);
+      ).toEqual([viaForge.id]);
       expect(
         await github.sessions.listByProject({ orgId: 'org-2', factoryProjectId: project.id, viewerUserId: 'user-2' }),
       ).toEqual([]);
@@ -1377,7 +1377,7 @@ describe('SourceControlStorage', () => {
         externalId: 'r2',
         slug: 'mastra-ai/mastra',
         createdAt: at(2),
-        handle: gitlab,
+        handle: forge,
       });
       const third = await linkUnderOwnInstallation({
         factoryProjectId: project.id,
@@ -1491,7 +1491,7 @@ describe('SourceControlStorage', () => {
         id: project.id,
         input: { sandboxWorkingDirectory: '/workspace/custom' },
       });
-      await gitlab.projectRepositories.update({ orgId: 'org-1', id: second.id, input: { inEnvironment: true } });
+      await forge.projectRepositories.update({ orgId: 'org-1', id: second.id, input: { inEnvironment: true } });
       await projects.update({ orgId: 'org-1', id: project.id, input: { sandboxSettings: { cpuCount: 2 } } });
       await backend.ops.updateMany('factory_projects', { id: project.id }, { environment_backfilled_at: null });
 
@@ -1501,7 +1501,7 @@ describe('SourceControlStorage', () => {
         sandboxWorkingDirectory: '/workspace/custom',
         sandboxSettings: { cpuCount: 2 },
       });
-      expect(await gitlab.projectRepositories.get({ orgId: 'org-1', id: second.id })).toMatchObject({
+      expect(await forge.projectRepositories.get({ orgId: 'org-1', id: second.id })).toMatchObject({
         position: 2,
         inEnvironment: true,
       });
@@ -1520,7 +1520,7 @@ describe('SourceControlStorage', () => {
         externalId: 'r2',
         slug: 'mastra-ai/mastra',
         createdAt: at(2),
-        handle: gitlab,
+        handle: forge,
       });
       const other = await linkUnderOwnInstallation({
         factoryProjectId: project.id,
@@ -1553,7 +1553,7 @@ describe('SourceControlStorage', () => {
         externalId: 'r3',
         slug: 'mastra-ai/c',
         createdAt: at(3),
-        handle: gitlab,
+        handle: forge,
       });
       await github.projectRepositories.update({ orgId: 'org-1', id: a.id, input: { position: 5 } });
 
@@ -1563,7 +1563,7 @@ describe('SourceControlStorage', () => {
         ),
       ).toEqual([b.id, a.id]);
       expect(
-        (await gitlab.projectRepositories.listByProject({ orgId: 'org-1', factoryProjectId: project.id })).map(
+        (await forge.projectRepositories.listByProject({ orgId: 'org-1', factoryProjectId: project.id })).map(
           link => link.id,
         ),
       ).toEqual([c.id]);

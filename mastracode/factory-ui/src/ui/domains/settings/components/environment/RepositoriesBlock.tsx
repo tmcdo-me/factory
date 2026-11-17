@@ -30,7 +30,7 @@ export function reorderPatch(ordered: FactoryEnvironmentRepository[]): FactoryEn
   }));
 }
 
-export type RepositoryProviders = Record<string, 'github' | 'gitlab'>;
+export type RepositoryProviders = Record<string, 'github'>;
 
 function splitRows(repositories: FactoryEnvironmentRepository[]) {
   const ordered = [...repositories].sort((a, b) => a.position - b.position);
@@ -174,7 +174,7 @@ function RepositoryRow({
 }: {
   repository: FactoryEnvironmentRepository;
   position: number;
-  provider: 'github' | 'gitlab';
+  provider: 'github';
   disabled: boolean;
   dragHandleProps: React.HTMLAttributes<HTMLElement> | null;
   onToggle: (inEnvironment: boolean) => void;

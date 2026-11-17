@@ -637,10 +637,8 @@ export const boardPhasesQuerySchema = z.object({
   sort: z.enum(BOARD_PHASES_SORTS).default('recent'),
   /** Words that must all be in the card's title, key, number or source id. */
   q: z.string().max(200).optional(),
-  /** A provider (`github`, `linear`, `manual`…), or `pull-request` for every card that has one. */
+  /** A provider (`github`, `manual`…), or `pull-request` for every card that has one. */
   source: pickedValuesSchema,
-  /** Linear project ids. Picked without `source`, they keep Linear cards only. */
-  linearProject: pickedValuesSchema,
   /** A card matches when it carries every one of them. */
   label: pickedValuesSchema,
   /** Participant ids (`github:octocat`, `factory:<user id>`) related to the card in any way. */
@@ -727,7 +725,7 @@ export const workItemFilterOptionsResponseSchema = z.object({
     z.object({
       id: z.string(),
       name: z.string(),
-      source: z.enum(['github', 'gitlab', 'linear', 'jira', 'incidentio']),
+      source: z.enum(['github']),
     }),
   ),
   /** The Factory users who created a card, moved one or started a session on one, sorted. */

@@ -292,17 +292,6 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('factory-work-it
         externalSource: pullRequest23029,
         metadata: { githubPullRequestNumber: 23029, headBranch, ...metadata },
       });
-    const gitlabCard = (headBranch = 'factory/gitlab-mr-head', metadata: Record<string, unknown> = {}) =>
-      reviewSignal({
-        externalSource: {
-          integrationId: 'gitlab',
-          type: 'pull-request',
-          externalId: '5',
-          url: 'https://gitlab.com/acme/app/-/merge_requests/5',
-        },
-        metadata: { gitlabMergeRequestIid: 5, headBranch, ...metadata },
-      });
-
     it("gives a new pull request on an issue card a first pass, not a re-review of the card's last one", async () => {
       const attach = [
         { source: pullRequest35, metadata: { state: 'open', githubPullRequestNumber: 35, headBranch: 'fix-upload' } },
@@ -333,27 +322,6 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('factory-work-it
       });
       expect(again.contents).toContain('Procedure: factory-rereview (re-review after the verdict recorded on it)');
       expect(again.contents).toContain(`previous pass recorded "request changes" on \`${OLD}\``);
-    });
-
-    it('names a GitLab merge request and points the reviewer at provider-neutral review tools', async () => {
-      const { contents } = await gitlabCard();
-      expect(contents).toContain('Covers: GitLab merge request !5');
-      expect(contents).toContain('Procedure: factory-gitlab-review (first pass on it)');
-      expect(contents).toContain('source_control_get_change_request');
-      expect(contents).toContain('source_control_refresh_change_request_checkout');
-      expect(contents).toContain('untrusted MR metadata');
-      expect(contents).not.toContain('gh pr');
-      expect(contents).not.toContain('git fetch');
-
-      const rereview = await gitlabCard('factory/gitlab-mr-head', { reviewVerdict: 'approve' });
-      expect(rereview.contents).toContain('Procedure: factory-gitlab-rereview');
-    });
-
-    it('does not interpolate an unsafe GitLab head branch into the review guidance', async () => {
-      const hostileBranch = 'feat/`run-untrusted-command`';
-      const { contents } = await gitlabCard(hostileBranch);
-      expect(contents).not.toContain(hostileBranch);
-      expect(contents).not.toContain('git fetch --filter=blob:none origin feat/');
     });
 
     it('labels a valid head branch as untrusted data and omits a hostile one', async () => {

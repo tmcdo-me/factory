@@ -119,8 +119,6 @@ function renderBoard(initialSearch = '', issues = [issue(10, ['bug'], 'alice'), 
       HttpResponse.json({ config: { github: { enabled: true, sourceIds: ['acme/app'] } } }),
     ),
     http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () => HttpResponse.json({ connected: false })),
-    http.get(`${TEST_BASE_URL}/web/incidentio/status`, () => HttpResponse.json({ connected: false })),
     http.get(`${TEST_BASE_URL}/web/factory/projects/:factoryId/sessions`, () => HttpResponse.json({ sessions: [] })),
     // The auto-triaged lane refetches issues by label; keep it empty so candidates aren't duplicated.
     http.get(`${TEST_BASE_URL}/web/github/projects/repo-1/issues`, ({ request }) =>

@@ -245,8 +245,7 @@ export async function recordFactoryPullRequestProvenance(
  * The tool result only names a URL, and a run can be made to print any URL, so the pull request
  * GitHub reports must prove it is this card's: its head lives in the base repository (not a fork)
  * and is the card's own branch (its build branch, a session's, or the run binding's). It is
- * skipped for a finished card, for a card that keeps other records only (a GitLab card, a GitHub
- * card from another repository), and when another card already holds the pull request (an
+ * skipped for a finished card, for a GitHub card from another repository, and when another card already holds the pull request (an
  * "opened" that won the race filed it on a card of its own). Never throws: the event path still
  * files the pull request when this could not.
  */
@@ -258,7 +257,6 @@ async function attachOwnPullRequest(
   const { item, binding } = input;
   if (workItems.legacyMode || binding.workItemId !== item.id || input.itemOpen !== true) return undefined;
   const own = item.externalSource;
-  if (own?.integrationId === 'gitlab') return undefined;
   if (own?.integrationId === 'github' && !cardBelongsToRepository(item, created.repositoryId, created.repositorySlug)) {
     return undefined;
   }

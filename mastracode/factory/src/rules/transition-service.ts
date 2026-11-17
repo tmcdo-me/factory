@@ -159,8 +159,6 @@ function actorId(actor: FactoryRuleActor): string {
       return `agent:${actor.bindingId}`;
     case 'github':
       return `github:${actor.login}`;
-    case 'gitlab':
-      return `gitlab:${actor.username}`;
   }
 }
 
@@ -169,7 +167,6 @@ export function auditActorOf(actor: FactoryRuleActor): { actorId: string; actorT
   const id = actorId(actor);
   switch (actor.type) {
     case 'github':
-    case 'gitlab':
       return { actorId: id, actorType: 'human' };
     case 'human':
       return { actorId: id, actorType: isAgentActor(id) ? 'agent' : isFactoryPrincipalId(id) ? 'system' : 'human' };
@@ -427,7 +424,7 @@ export class FactoryTransitionService {
     }
     const itemSource = workItemSource(item.externalSource);
     const source = factoryRuleSourceForWorkItem(itemSource);
-    const isPullRequest = source === 'pullRequest' || source === 'gitlabPullRequest';
+    const isPullRequest = source === 'pullRequest';
     // Rows filed before boards were persisted belong to the default board.
     if (item.board === null && !boards.has(DEFAULT_BOARD_ID)) {
       return this.#commitRejection(

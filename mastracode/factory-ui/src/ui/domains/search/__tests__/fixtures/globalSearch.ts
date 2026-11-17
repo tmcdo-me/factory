@@ -221,11 +221,11 @@ function toExternalSource(source: WorkItem['source'], sourceKey: string | null, 
   if (source === 'manual' || !sourceKey) return null;
 
   let integrationId = 'github';
-  if (source === 'linear-issue') integrationId = 'linear';
-  if (source === 'gitlab-issue' || source === 'gitlab-pr') integrationId = 'gitlab';
+  if (source === 'slack-thread') integrationId = 'slack';
 
   let type = 'issue';
-  if (source === 'github-pr' || source === 'gitlab-pr') type = 'pull-request';
+  if (source === 'github-pr') type = 'pull-request';
+  if (source === 'slack-thread') type = 'slack-thread';
 
   return {
     integrationId,

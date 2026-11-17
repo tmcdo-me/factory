@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { resolveWorkItemRepository } from './work-item-repository.js';
 
-async function seedRepositories(slugs: string[], integrationId: 'github' | 'gitlab' = 'github') {
+async function seedRepositories(slugs: string[], integrationId = 'github') {
   const seeded = await createFactoryStorageForTests();
   const sourceControl = seeded.sourceControl.forIntegration(integrationId);
   const project = await seeded.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Factory' } });
@@ -74,23 +74,16 @@ describe('resolveWorkItemRepository', () => {
       projectRepositoryId: repositories[0]!.projectRepository.id,
       slug: 'acme/renamed',
     });
-    // A GitLab project id must not match a GitHub repository that happens to share it.
+    // Another provider has no repository id Factory reads, so it falls back to the slug.
+    const other = await seedRepositories(['acme/renamed'], 'acme-forge');
     await expect(
       resolveWorkItemRepository({
-        ...args,
-        item: { metadata: { repository: 'acme/old-name' }, workItem: { metadata: { gitlabProjectId: '2' } } },
+        sourceControl: other.sourceControl,
+        orgId: 'org-1',
+        factoryProjectId: other.project.id,
+        item: { metadata: { repository: 'acme/old-name' }, workItem: { metadata: { githubRepositoryId: 1 } } },
       }),
     ).resolves.toMatchObject({ status: 'unlinked' });
-
-    const gitlab = await seedRepositories(['acme/gitlab-renamed'], 'gitlab');
-    await expect(
-      resolveWorkItemRepository({
-        sourceControl: gitlab.sourceControl,
-        orgId: 'org-1',
-        factoryProjectId: gitlab.project.id,
-        item: { metadata: { repository: 'acme/old-name' }, workItem: { metadata: { gitlabProjectId: '1' } } },
-      }),
-    ).resolves.toMatchObject({ status: 'resolved', slug: 'acme/gitlab-renamed' });
     await expect(
       resolveWorkItemRepository({
         ...args,
@@ -99,18 +92,7 @@ describe('resolveWorkItemRepository', () => {
     ).resolves.toEqual({ status: 'unlinked', hint: 'Repository acme/old-name is not linked to this Factory.' });
   });
 
-  it('uses a Linear project mapping and resolves an unattributed single-repository item', async () => {
-    const { sourceControl, project, repositories } = await seedRepositories(['acme/one', 'acme/two']);
-    const args = { sourceControl, orgId: 'org-1', factoryProjectId: project.id };
-
-    await expect(
-      resolveWorkItemRepository({
-        ...args,
-        item: { metadata: null, workItem: { metadata: { linearProjectId: 'linear-project' } } },
-        linearRepositoryMap: { 'linear-project': 'acme/two' },
-      }),
-    ).resolves.toMatchObject({ status: 'resolved', projectRepositoryId: repositories[1]!.projectRepository.id });
-
+  it('resolves an unattributed single-repository item', async () => {
     const single = await seedRepositories(['acme/only']);
     await expect(
       resolveWorkItemRepository({
@@ -139,25 +121,6 @@ describe('resolveWorkItemRepository', () => {
       }),
     ).resolves.toMatchObject({ status: 'unlinked' });
   });
-
-  it.each(['github', 'gitlab'] as const)(
-    'uses only the %s id when both provider ids are present',
-    async integrationId => {
-      const { sourceControl, project } = await seedRepositories(['acme/one', 'acme/two'], integrationId);
-
-      await expect(
-        resolveWorkItemRepository({
-          sourceControl,
-          orgId: 'org-1',
-          factoryProjectId: project.id,
-          item: {
-            metadata: { repository: 'acme/old-name' },
-            workItem: { metadata: { githubRepositoryId: 1, gitlabProjectId: '2' } },
-          },
-        }),
-      ).resolves.toMatchObject({ status: 'resolved', slug: integrationId === 'github' ? 'acme/one' : 'acme/two' });
-    },
-  );
 
   it('falls back to a linked slug for unmatched ids and reports an empty factory', async () => {
     const { sourceControl, project } = await seedRepositories(['acme/one']);
@@ -231,13 +194,6 @@ describe('resolveWorkItemRepository', () => {
       resolveWorkItemRepository({
         ...args,
         item: { metadata: null, workItem: { metadata: { githubRepositoryId: 1 } } },
-      }),
-    ).resolves.toEqual(expected);
-    await expect(
-      resolveWorkItemRepository({
-        ...args,
-        item: { metadata: null, workItem: { metadata: { linearProjectId: 'linear-project' } } },
-        linearRepositoryMap: { 'linear-project': 'acme/one' },
       }),
     ).resolves.toEqual(expected);
   });

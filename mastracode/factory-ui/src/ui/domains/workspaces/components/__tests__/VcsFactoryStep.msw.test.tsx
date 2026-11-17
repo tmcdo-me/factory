@@ -7,7 +7,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../../../../e2e/ui/render';
-import type { GitLabRepository } from '../../../factory/services/gitlab';
 import type { GitHubAppCallbackResult } from '../GitHubAppCallbackHandler';
 import { VcsFactoryStep } from '../VcsFactoryStep';
 import type { VcsFactoryStepProps } from '../VcsFactoryStep';
@@ -31,19 +30,6 @@ const repo = {
   repositoryStorageId: 'repo-99',
   sandboxProvider: 'local',
   sandboxWorkdir: '/workspace/hello',
-};
-
-const gitlabRepository: GitLabRepository = {
-  provider: 'gitlab',
-  id: 'gitlab:123',
-  externalId: '123',
-  fullName: 'group/project',
-  name: 'project',
-  owner: 'group',
-  defaultBranch: 'main',
-  private: true,
-  sandboxProvider: 'local',
-  sandboxWorkdir: '/workspace/project',
 };
 
 function renderStep(props: Partial<VcsFactoryStepProps> = {}) {
@@ -143,26 +129,6 @@ describe('VCS Factory step', () => {
     expect(calls).toBe(2);
   });
 
-  it('offers Retry when GitLab status cannot be loaded', async () => {
-    let calls = 0;
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () => HttpResponse.json(connectedGithub)),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () => {
-        calls += 1;
-        if (calls === 1) return HttpResponse.json({ error: 'Temporary outage' }, { status: 503 });
-        return HttpResponse.json({ enabled: true, configured: false, reauthRequired: false, reason: 'not_connected' });
-      }),
-    );
-    renderStep();
-
-    await userEvent.click(await screen.findByRole('radio', { name: 'GitLab' }));
-    expect(await screen.findByText("Couldn't load GitLab status.")).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: 'Retry GitLab' }));
-    expect(await screen.findByRole('button', { name: /Connect GitLab/ })).toBeEnabled();
-    expect(screen.getByText('Projects, branches, and merge requests.')).toBeInTheDocument();
-    expect(calls).toBe(2);
-  });
-
   it('offers Retry when GitHub status cannot be loaded, instead of a Connect that would fail', async () => {
     let calls = 0;
     server.use(
@@ -181,32 +147,10 @@ describe('VCS Factory step', () => {
     expect(calls).toBe(2);
   });
 
-  it('says an install GitHub reported is not usable yet instead of a bare Connect, even with GitLab ready', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'not_connected' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: true, configured: true, reauthRequired: false }),
-      ),
-    );
-    const onConnect = vi.fn();
-    renderStep({ githubCallback: { kind: 'installed' }, onConnect });
-
-    const notice = await screen.findByRole('alert');
-    expect(notice).toHaveTextContent('Factory can’t see this GitHub installation yet');
-    expect(screen.getByRole('radio', { name: 'GitHub' })).toBeChecked();
-    await userEvent.click(within(notice).getByRole('button', { name: 'Choose another account' }));
-    expect(onConnect).toHaveBeenCalledOnce();
-  });
-
   it('blames a failed status load, not the install, when status cannot be read after an install', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
         HttpResponse.json({ error: 'Temporary outage' }, { status: 503 }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: false, configured: false, reauthRequired: false, reason: 'missing_config' }),
       ),
     );
     renderStep({ githubCallback: { kind: 'installed' } });
@@ -216,31 +160,10 @@ describe('VCS Factory step', () => {
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
-  it('shows a GitHub refusal even when the drafted repository is on GitLab', async () => {
+  it('keeps Connect after its notice is dismissed', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
         HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'not_connected' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: true, configured: true, reauthRequired: false }),
-      ),
-    );
-    renderStep({
-      initialRepository: gitlabRepository,
-      githubCallback: { kind: 'error', code: 'github_app_installation_not_owned', message: 'Only the owner can link.' },
-    });
-
-    expect(await screen.findByRole('alert')).toHaveTextContent('Only the owner can link.');
-    expect(await screen.findByRole('radio', { name: 'GitHub' })).toBeChecked();
-  });
-
-  it('stays on GitHub after its notice is dismissed, so Connect is still there', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'not_connected' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: true, configured: true, reauthRequired: false }),
       ),
     );
     renderWithProviders(
@@ -255,7 +178,6 @@ describe('VCS Factory step', () => {
     await userEvent.click(within(notice).getByRole('button', { name: 'Dismiss notice' }));
 
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'GitHub' })).toBeChecked();
     expect(screen.getByRole('button', { name: 'Connect GitHub' })).toBeEnabled();
   });
 
@@ -263,9 +185,6 @@ describe('VCS Factory step', () => {
     server.use(
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
         HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'personal_install_hidden' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: false, configured: false, reauthRequired: false, reason: 'missing_config' }),
       ),
     );
     renderStep();
@@ -275,22 +194,6 @@ describe('VCS Factory step', () => {
     expect(within(notice).getByRole('button', { name: 'Choose another account' })).toBeInTheDocument();
     // Platform's reason holds until the organization changes; dismissing it would hide the only explanation.
     expect(within(notice).queryByRole('button', { name: 'Dismiss notice' })).not.toBeInTheDocument();
-  });
-
-  it('keeps a ready GitLab user on GitLab when Platform withholds a personal GitHub install', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'personal_install_hidden' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: true, configured: true, reauthRequired: false }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/projects`, () => HttpResponse.json({ projects: [] })),
-    );
-    renderStep();
-
-    expect(await screen.findByRole('radio', { name: 'GitLab' })).toBeChecked();
-    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('shows nothing extra when an install is usable right away', async () => {
@@ -427,52 +330,6 @@ describe('VCS Factory step', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Refresh' })).toBeEnabled());
   });
 
-  it('opens connected repositories directly and lets the user switch providers', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () => HttpResponse.json(connectedGithub)),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({
-          enabled: true,
-          configured: true,
-          reauthRequired: false,
-          reason: 'ready',
-        }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/projects`, () =>
-        HttpResponse.json({
-          projects: [
-            {
-              id: 'gitlab:123',
-              name: 'group/project',
-              projectId: '123',
-              projectPath: 'group/project',
-              installationStorageId: 'gitlab-installation',
-              defaultBranch: 'main',
-              sandboxProvider: 'local',
-              sandboxWorkdir: '/workspace/project',
-            },
-          ],
-        }),
-      ),
-    );
-
-    renderStep();
-
-    expect(await screen.findByRole('radio', { name: 'octo/hello' })).toBeInTheDocument();
-    expect(screen.getByRole('radio', { name: 'GitHub' })).toBeChecked();
-
-    await userEvent.click(screen.getByRole('radio', { name: 'GitLab' }));
-
-    expect(await screen.findByRole('radio', { name: 'group/project' })).toBeInTheDocument();
-    expect(screen.getByLabelText('Search repositories')).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: 'octo/hello' })).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('radio', { name: 'GitHub' }));
-
-    expect(await screen.findByRole('radio', { name: 'octo/hello' })).toBeInTheDocument();
-    expect(screen.queryByRole('radio', { name: 'group/project' })).not.toBeInTheDocument();
-  });
-
   it('prefers the deployment GitHub connect flow when it is configured', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
@@ -482,9 +339,6 @@ describe('VCS Factory step', () => {
           installations: [],
           reason: 'not_connected',
         }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: false, configured: false, reauthRequired: false, reason: 'missing_config' }),
       ),
     );
     const onConnect = vi.fn();
@@ -503,9 +357,6 @@ describe('VCS Factory step', () => {
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
         HttpResponse.json({ enabled: true, connected: false, installations: [], reason: 'not_connected' }),
       ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: false, configured: false, reauthRequired: false, reason: 'missing_config' }),
-      ),
     );
 
     renderStep({ initialRepository: repo });
@@ -515,50 +366,7 @@ describe('VCS Factory step', () => {
     expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
   });
 
-  it('starts a Platform connect session when GitLab has no active account yet', async () => {
-    const connectSessions: string[] = [];
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () => HttpResponse.json(connectedGithub)),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({
-          enabled: true,
-          configured: false,
-          mode: 'platform',
-          connections: [],
-          accounts: [],
-          reauthRequired: false,
-          reason: 'not_connected',
-        }),
-      ),
-      http.post(`${TEST_BASE_URL}/web/integrations/platform/gitlab/connect-session`, () => {
-        connectSessions.push('gitlab');
-        return HttpResponse.json(
-          {
-            connectionId: 'conn-new',
-            integrationId: 'gitlab',
-            connectUrl: 'https://connect.nango.dev/session',
-            sessionToken: 'nango-session-token',
-            expiresAt: '2026-09-17T12:30:00.000Z',
-          },
-          { status: 201 },
-        );
-      }),
-    );
-    const open = vi.spyOn(window, 'open').mockImplementation(() => null);
-
-    renderStep();
-
-    await userEvent.click(await screen.findByRole('radio', { name: 'GitLab' }));
-    expect(await screen.findByText('Projects, branches, and merge requests.')).toBeInTheDocument();
-    await userEvent.click(screen.getByRole('button', { name: /Connect GitLab/ }));
-
-    // The button triggers a Nango connect session on the server, not a redirect to projects.mastra.ai.
-    await vi.waitFor(() => expect(connectSessions).toEqual(['gitlab']));
-    expect(open).not.toHaveBeenCalledWith('https://projects.mastra.ai', expect.anything(), expect.anything());
-    expect(screen.queryByText('GITLAB_ACCESS_TOKEN')).not.toBeInTheDocument();
-  });
-
-  it('disables both connect actions without exposing missing provider credentials', async () => {
+  it('disables the connect action without exposing missing provider credentials', async () => {
     server.use(
       http.get(`${TEST_BASE_URL}/web/github/status`, () =>
         HttpResponse.json({
@@ -571,84 +379,16 @@ describe('VCS Factory step', () => {
           },
         }),
       ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({
-          enabled: false,
-          configured: false,
-          reauthRequired: false,
-          reason: 'missing_config',
-        }),
-      ),
     );
     const open = vi.spyOn(window, 'open').mockImplementation(() => null);
 
     renderStep();
 
     const github = await screen.findByRole('button', { name: /Connect GitHub/ });
-    const gitlab = screen.getByRole('button', { name: /Connect GitLab/ });
     expect(github).toBeDisabled();
-    expect(gitlab).toBeDisabled();
     expect(screen.queryByText('GITHUB_APP_ID')).not.toBeInTheDocument();
-    expect(screen.queryByText('GITLAB_ACCESS_TOKEN')).not.toBeInTheDocument();
 
     expect(open).not.toHaveBeenCalledWith('https://projects.mastra.ai', expect.anything(), expect.anything());
-  });
-
-  it('disables the GitLab tile when the account is personal (organization_required)', async () => {
-    const connectSessions: string[] = [];
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () => HttpResponse.json(connectedGithub)),
-      // GitLab returns enabled:true, but the connect-session would 403 with
-      // organization_required, so the tile must not offer a doomed Nango start.
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({
-          enabled: true,
-          configured: false,
-          mode: 'platform',
-          connections: [],
-          accounts: [],
-          reauthRequired: false,
-          reason: 'organization_required',
-        }),
-      ),
-      http.post(`${TEST_BASE_URL}/web/integrations/platform/gitlab/connect-session`, () => {
-        connectSessions.push('gitlab');
-        return HttpResponse.json({ error: 'organization_required' }, { status: 403 });
-      }),
-    );
-
-    renderStep();
-
-    await userEvent.click(await screen.findByRole('radio', { name: 'GitLab' }));
-    expect(await screen.findByText('Join an organization to connect GitLab.')).toBeInTheDocument();
-    const gitlab = screen.getByRole('button', { name: /Connect GitLab/ });
-    expect(gitlab).toBeDisabled();
-    await userEvent.click(gitlab);
-    expect(connectSessions).toEqual([]);
-  });
-
-  it('does not show server environment variables when GitLab authorization must be renewed', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/github/status`, () => HttpResponse.json(connectedGithub)),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({
-          enabled: true,
-          configured: false,
-          mode: 'direct',
-          connections: [],
-          accounts: [],
-          reauthRequired: true,
-          reason: 'auth_required',
-        }),
-      ),
-    );
-
-    renderStep();
-
-    await userEvent.click(await screen.findByRole('radio', { name: 'GitLab' }));
-    expect(await screen.findByText('Projects, branches, and merge requests.')).toBeInTheDocument();
-    expect(screen.queryByText('GITLAB_ACCESS_TOKEN')).not.toBeInTheDocument();
-    expect(screen.queryByText('GITLAB_ACCESS_TOKEN_TYPE')).not.toBeInTheDocument();
   });
 
   it('lists repositories and clears the request once an approval lands and Refresh finds it', async () => {
@@ -658,9 +398,6 @@ describe('VCS Factory step', () => {
         HttpResponse.json(
           approved ? connectedGithub : { enabled: true, connected: false, installations: [], reason: 'not_connected' },
         ),
-      ),
-      http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-        HttpResponse.json({ enabled: false, configured: false, reauthRequired: false, reason: 'missing_config' }),
       ),
     );
     const onDismissGithubCallback = vi.fn();

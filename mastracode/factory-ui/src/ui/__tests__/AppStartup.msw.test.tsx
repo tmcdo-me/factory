@@ -45,7 +45,7 @@ const REREAD_ONCE_THE_FEED_CONNECTS = [
   /^GET \/web\/factory\/projects\/[^/]+\/boards\/[^/]+\/phases\b/,
   /^GET \/web\/factory\/projects\/[^/]+\/decisions\b/,
   /^GET \/api\/agent-controller\/code\/active-runs$/,
-  /^GET \/web\/(github|gitlab)\/subscriptions\b/,
+  /^GET \/web\/github\/subscriptions\b/,
 ];
 const CARDS_URL = 'GET /web/factory/projects/factory-1/work-items';
 // Any page asks for the cards holding a session, which its sidebar marks.
@@ -93,13 +93,12 @@ function renderApp(
       HttpResponse.json({ modelId: null, thinkingLevel: null }),
     ),
     http.get(`${TEST_BASE_URL}/web/intake/config`, () =>
-      HttpResponse.json({ github: { enabled: true, sourceIds: null }, linear: { enabled: false, sourceIds: [] } }),
+      HttpResponse.json({ github: { enabled: true, sourceIds: null } }),
     ),
     http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
     http.get(`${TEST_BASE_URL}/web/github/projects/:repositoryId/issues`, () =>
       HttpResponse.json({ issues: [], nextPage: null }),
     ),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () => HttpResponse.json({ enabled: false, connected: false })),
   );
   const client = createQueryClient();
   const router = createMemoryRouter(createAppRoutes({ queryClient: client, api: TEST_API }), {

@@ -10,16 +10,15 @@ import {
 } from './services/workItems';
 
 interface ChangeRequestTerms {
-  kind: 'PR' | 'MR';
-  sigil: '#' | '!';
+  kind: 'PR';
+  sigil: '#';
   singular: string;
   plural: string;
-  source: 'github-pr' | 'gitlab-pr';
+  source: 'github-pr';
 }
 
 export const CHANGE_REQUEST_TERMS: Record<ChangeRequestProvider, ChangeRequestTerms> = {
   github: { kind: 'PR', sigil: '#', singular: 'pull request', plural: 'pull requests', source: 'github-pr' },
-  gitlab: { kind: 'MR', sigil: '!', singular: 'merge request', plural: 'merge requests', source: 'gitlab-pr' },
 };
 
 const STATUS_WORDS: Record<PullRequestStatus, string> = {
@@ -34,9 +33,8 @@ export function changeRequestStatusLabel(provider: ChangeRequestProvider, status
 }
 
 export function changeRequestsNoun(providers: readonly ChangeRequestProvider[]): string {
-  const [first, ...rest] = providers;
-  if (first === undefined || rest.some(provider => provider !== first)) return 'pull and merge requests';
-  return CHANGE_REQUEST_TERMS[first].plural;
+  const [first] = providers;
+  return CHANGE_REQUEST_TERMS[first ?? 'github'].plural;
 }
 
 export function changeRequestsHeading(providers: readonly ChangeRequestProvider[]): string {
@@ -67,7 +65,7 @@ function fromSource(source: CardPullRequestSource): CardChangeRequest {
   const syncedAt = source.syncedAt ? new Date(source.syncedAt).getTime() : Number.NaN;
   return {
     url: source.url ?? undefined,
-    provider: source.provider === 'gitlab' ? 'gitlab' : 'github',
+    provider: 'github',
     number: sourcePullRequestNumber(source),
     state: source.state ?? undefined,
     metadata: source.metadata ?? {},
@@ -78,7 +76,7 @@ function fromSource(source: CardPullRequestSource): CardChangeRequest {
 function fromLegacyCard(item: ChangeRequestCard): CardChangeRequest {
   return {
     url: item.url ?? undefined,
-    provider: item.source === 'gitlab-pr' ? 'gitlab' : 'github',
+    provider: 'github',
     number: changeRequestNumberForItem(item),
     state: item.workItem?.state ?? undefined,
     metadata: sourceMetadata(item),
@@ -111,7 +109,7 @@ function sourceStatus(request: CardChangeRequest): PullRequestStatus | undefined
   const state = request.state ?? request.metadata.state;
   if (state === 'merged' || request.metadata.merged === true) return 'merged';
   if (state === 'closed') return 'closed';
-  if (state === 'open' || state === 'opened' || state === 'locked') return openStatus(request);
+  if (state === 'open' || state === 'locked') return openStatus(request);
   return undefined;
 }
 

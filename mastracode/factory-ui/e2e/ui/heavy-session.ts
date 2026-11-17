@@ -350,18 +350,23 @@ function workItems() {
     },
   });
   const epic = card('card-epic', {
-    externalSource: { integrationId: 'linear', type: 'issue', externalId: 'linear:FAC-1200' },
+    externalSource: {
+      integrationId: 'github',
+      type: 'issue',
+      externalId: 'github:20200',
+      url: 'https://github.com/mastra-ai/mastra/issues/20200',
+    },
     title: 'Factory session panel v2',
     stages: ['planning'],
-    metadata: { identifier: 'FAC-1200' },
+    metadata: { number: 20200 },
   });
   const children = [
-    ['card-c1', 'linear', 'FAC-1291', 'Tab indicator overshoots on Safari', 'pr-review'],
+    ['card-c1', 'github', '20391', 'Tab indicator overshoots on Safari', 'pr-review'],
     ['card-c2', 'github', '20402', 'Go to file ranks folders above names', 'execute'],
     ['card-c3', 'slack', 'C123:1791936483.798759', 'Panel flickers when the sandbox wakes', 'intake'],
     ['card-c4', 'github', '20415', 'Change marks in the file tree', 'planning'],
-    ['card-c5', 'linear', 'FAC-1302', 'Line numbers in the file viewer', 'done'],
-    ['card-c6', 'jira', 'MC-88', 'Audit panel contrast in light mode', 'intake'],
+    ['card-c5', 'github', '20302', 'Line numbers in the file viewer', 'done'],
+    ['card-c6', 'github', '20388', 'Audit panel contrast in light mode', 'intake'],
     ['card-c7', 'github', '20420', 'Heavy-session fixture for screenshots', 'execute'],
   ].map(([id, integration, external, title, stage]) =>
     card(id, {
@@ -467,7 +472,6 @@ export const heavySessionHandlers = [
   ),
   http.get('*/web/intake/config', () => HttpResponse.json({ config: {} })),
   http.get('*/web/config/default-model', () => HttpResponse.json({ modelId: null, thinkingLevel: null })),
-  http.get('*/web/linear/status', () => HttpResponse.json({ enabled: false, connected: false })),
   http.get('*/web/voice/settings', () =>
     HttpResponse.json({
       scope: 'user',

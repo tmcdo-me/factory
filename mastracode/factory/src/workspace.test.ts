@@ -391,8 +391,6 @@ describe('bundled Factory skill assets', () => {
     expect(assetNames).toEqual([
       'configure-factory-rules',
       'factory-build',
-      'factory-gitlab-rereview',
-      'factory-gitlab-review',
       'factory-plan',
       'factory-rereview',
       'factory-review',
@@ -402,18 +400,6 @@ describe('bundled Factory skill assets', () => {
     await Promise.all(
       assetNames.map(skillName => expect(fs.stat(path.join(assetRoot, skillName, 'SKILL.md'))).resolves.toBeDefined()),
     );
-  });
-
-  it('bundles GitLab review instructions that use the scoped provider tools', async () => {
-    const assetRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'factory-skills');
-    for (const name of ['factory-gitlab-review', 'factory-gitlab-rereview']) {
-      const instructions = await fs.readFile(path.join(assetRoot, name, 'SKILL.md'), 'utf8');
-      expect(instructions).toContain('source_control_get_change_request');
-      expect(instructions).toContain('source_control_list_change_request_reviews');
-      expect(instructions).toContain('source_control_review_change_request');
-      expect(instructions).toContain('factory_record_review_verdict');
-      expect(instructions).not.toMatch(/`gh pr |`glab mr /);
-    }
   });
 
   it('uses work-item-specific artifact paths for Factory handoffs', async () => {
@@ -460,20 +446,8 @@ describe('bundled Factory skill assets', () => {
 
     expect(phase1).toContain('add `status: needs triage` only if no `status:` label is present');
     expect(phase1).toContain('gh issue edit "$ISSUE" --add-label "status: needs triage"');
-    expect(phase1).toContain('For Linear, GitLab, Jira, and incident.io issues, skip this GitHub-only label mutation.');
+    expect(phase1).toContain('For other sources, skip this GitHub-only label mutation.');
     expect(triage).toContain('gh issue edit "$ISSUE" --remove-label "status: needs triage"');
-  });
-
-  it('formats Linear triage comments in Linear markdown instead of HTML', async () => {
-    const assetRoot = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'factory-skills');
-    const triage = await fs.readFile(path.join(assetRoot, 'factory-triage', 'SKILL.md'), 'utf8');
-    const phase1 = triage.slice(triage.indexOf('## Phase 1'), triage.indexOf('## Phase 2'));
-    const phase5 = triage.slice(triage.indexOf('## Phase 5'));
-
-    // Linear shows raw HTML as text, so neither the marker nor <details> may reach it.
-    expect(phase1).toContain('post the pending summary with `linear_create_comment`, leaving out the');
-    expect(triage).toContain('a `+++ Details` line opens it and a lone `+++` line closes it');
-    expect(phase5).toContain('in the Linear form the output contract describes');
   });
 
   it('keeps the autonomous Factory skills on the terminal-handoff contract', async () => {
@@ -715,7 +689,7 @@ describe('bundled Factory skill assets', () => {
       expect(skill).toContain('If the head moved, do not publish');
     }
     // Factory offers no test check tool; the test report comment carries the results.
-    for (const name of ['factory-review', 'factory-rereview', 'factory-gitlab-review', 'factory-gitlab-rereview']) {
+    for (const name of ['factory-review', 'factory-rereview']) {
       const skill = await read(name);
       expect(skill).not.toContain('source_control_publish_test_check');
       expect(skill).not.toContain('The check URL');
@@ -1054,20 +1028,6 @@ describe('bundled Factory skill assets', () => {
     expect(rereviewLoadAt).toBeGreaterThan(rereviewDesignAt);
     expect(rereviewDiffAt).toBeGreaterThan(rereviewLoadAt);
     expect(rereviewPhase1).toContain('from the `factory-review` skill');
-
-    for (const name of ['factory-gitlab-review', 'factory-gitlab-rereview']) {
-      expect(await read(name), `${name} loads the shared category guidance`).toContain(
-        '`references/categories/README.md` from the `factory-review` skill',
-      );
-    }
-
-    // The GitLab re-review recovers the design before inspecting any diff, so
-    // the independent model cannot be a restatement of the push.
-    const gitlabRereview = await read('factory-gitlab-rereview');
-    const gitlabDesignAt = gitlabRereview.indexOf('Before inspecting any diff, recover the required outcome');
-    const gitlabDiffAt = gitlabRereview.indexOf('Identify changes since the previous reviewed head');
-    expect(gitlabDesignAt).toBeGreaterThan(-1);
-    expect(gitlabDiffAt).toBeGreaterThan(gitlabDesignAt);
   });
 
   it('keeps Factory re-reviews aligned with current-head evidence requirements', async () => {
@@ -1306,21 +1266,21 @@ describe('GitHub session workspace preparation', () => {
     expect(mocks.sessions.find(session => session.id === 'session-b')?.sandboxWorkdir).toBe(workdirB);
   });
 
-  it('materializes a GitLab-backed session through its provider storage and clone URL', async () => {
-    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mastracode-web-gitlab-sessions-'));
+  it('materializes a session of another source-control provider through its storage and clone URL', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mastracode-web-forge-sessions-'));
     tempDirs.push(root);
     mocks.localRoot = root;
     const sourceControl = fakeGithubIntegration().sourceControlStorage;
     const getRepositoryAccess = vi.fn(async () => ({
-      cloneUrl: 'https://gitlab.example.com/acme/platform/app.git',
-      authorization: { scheme: 'bearer' as const, token: 'glpat-secret', username: 'oauth2' },
+      cloneUrl: 'https://forge.example.com/acme/platform/app.git',
+      authorization: { scheme: 'bearer' as const, token: 'forge-secret', username: 'oauth2' },
     }));
     const workspace = eager(
       createWorkspaceFactory({
         sandbox: new CallbackFactorySandbox(mocks.createSandbox as any),
         sourceControls: [
           {
-            id: 'gitlab',
+            id: 'acme-forge',
             versionControl: { getRepositoryAccess },
             storage: sourceControl as any,
           },
@@ -1328,7 +1288,7 @@ describe('GitHub session workspace preparation', () => {
       }),
     );
     addProject({ repoFullName: 'acme/platform/app' });
-    addSession({ id: 'session-a', branch: 'factory/gitlab-mr-6-2c3b494988ac' });
+    addSession({ id: 'session-a', branch: 'factory/item-6-2c3b494988ac' });
 
     await workspace({ requestContext: createGithubRequestContext('project-1', 'session-a') });
 
@@ -1337,10 +1297,10 @@ describe('GitHub session workspace preparation', () => {
       expect.objectContaining({
         repoInfo: expect.objectContaining({
           repoFullName: 'acme/platform/app',
-          cloneUrl: 'https://gitlab.example.com/acme/platform/app.git',
+          cloneUrl: 'https://forge.example.com/acme/platform/app.git',
           authUsername: 'oauth2',
         }),
-        token: 'glpat-secret',
+        token: 'forge-secret',
       }),
     );
     expect(mocks.checkoutSessionBranch).toHaveBeenCalledWith(
@@ -1348,9 +1308,8 @@ describe('GitHub session workspace preparation', () => {
       expect.any(String),
       expect.objectContaining({
         repoFullName: 'acme/platform/app',
-        cloneUrl: 'https://gitlab.example.com/acme/platform/app.git',
+        cloneUrl: 'https://forge.example.com/acme/platform/app.git',
         authUsername: 'oauth2',
-        mergeRequestNumber: 6,
       }),
     );
     expect(lastGhToken()).toBeUndefined();
@@ -3814,8 +3773,6 @@ describe('FactorySkillSource layering', () => {
     expect(names).toEqual([
       'configure-factory-rules',
       'factory-build',
-      'factory-gitlab-rereview',
-      'factory-gitlab-review',
       'factory-plan',
       'factory-rereview',
       'factory-review',

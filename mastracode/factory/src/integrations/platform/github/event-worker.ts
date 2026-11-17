@@ -6,8 +6,6 @@ import type { WorkerDeps } from '@mastra/core/worker';
 
 import type { IntegrationStorageHandle } from '../../../storage/domains/integrations/base.js';
 import type { ExternalRepositoryProjectTarget } from '../../../storage/domains/source-control/base.js';
-import { DEFAULT_DEPENDABOT_SYNC_INTERVAL_MS } from '../../dependabot/sync.js';
-import type { DependabotSync } from '../../dependabot/sync.js';
 import type { GithubRepositoryPermission } from '../../github/integration.js';
 import type { GithubIssueReconciler } from '../../github/issue-reconciler.js';
 import { DEFAULT_GITHUB_PR_DISCOVERY_INTERVAL_MS } from '../../github/reconcile-worker.js';
@@ -116,10 +114,6 @@ export interface PlatformGithubEventWorkerConfig {
   reconcileFactoryState?: GithubPullRequestReconciler;
   reconcileIssuesFactoryState?: GithubIssueReconciler;
   discoverPullRequests?: GithubPullRequestDiscovery;
-  /** Files Dependabot alerts on linked repositories as cards. */
-  syncDependabotAlerts?: DependabotSync;
-  /** Defaults to fifteen minutes. */
-  dependabotSyncIntervalMs?: number;
   /** When false the worker skips event tailing and only runs enabled reconciliation sweeps. */
   pollEventsEnabled?: boolean;
   intervalMs?: number;
@@ -144,9 +138,6 @@ export class PlatformGithubEventWorker extends MastraWorker {
   readonly #reconcileFactoryState: GithubPullRequestReconciler | undefined;
   readonly #reconcileIssuesFactoryState: GithubIssueReconciler | undefined;
   readonly #discoverPullRequests: GithubPullRequestDiscovery | undefined;
-  readonly #syncDependabotAlerts: DependabotSync | undefined;
-  readonly #dependabotSyncIntervalMs: number;
-  #lastDependabotSyncAt = Number.NEGATIVE_INFINITY;
   readonly #pollEventsEnabled: boolean;
   readonly #pullRequestReconcileIntervalMs: number;
   readonly #issueReconcileIntervalMs: number;
@@ -186,8 +177,6 @@ export class PlatformGithubEventWorker extends MastraWorker {
     this.#reconcileFactoryState = config.reconcileFactoryState;
     this.#reconcileIssuesFactoryState = config.reconcileIssuesFactoryState;
     this.#discoverPullRequests = config.discoverPullRequests;
-    this.#syncDependabotAlerts = config.syncDependabotAlerts;
-    this.#dependabotSyncIntervalMs = config.dependabotSyncIntervalMs ?? DEFAULT_DEPENDABOT_SYNC_INTERVAL_MS;
     this.#pollEventsEnabled = config.pollEventsEnabled ?? true;
     const legacyReconcileIntervalMs = config.reconcileIntervalMs ?? DEFAULT_RECONCILE_INTERVAL_MS;
     this.#pullRequestReconcileIntervalMs = config.pullRequestReconcileIntervalMs ?? legacyReconcileIntervalMs;
@@ -368,7 +357,6 @@ export class PlatformGithubEventWorker extends MastraWorker {
       this.#reconcileFactoryState ? this.#pullRequestReconcileIntervalMs : undefined,
       this.#reconcileIssuesFactoryState ? this.#issueReconcileIntervalMs : undefined,
       this.#discoverPullRequests ? this.#pullRequestDiscoveryIntervalMs : undefined,
-      this.#syncDependabotAlerts ? this.#dependabotSyncIntervalMs : undefined,
     ].filter((interval): interval is number => interval !== undefined);
     return cadences.length > 0 ? Math.min(...cadences) : this.#intervalMs;
   }
@@ -385,11 +373,7 @@ export class PlatformGithubEventWorker extends MastraWorker {
     const discoverPullRequests = Boolean(
       this.#discoverPullRequests && now - this.#lastPullRequestDiscoveryAt >= this.#pullRequestDiscoveryIntervalMs,
     );
-    const syncDependabot = Boolean(
-      this.#syncDependabotAlerts && now - this.#lastDependabotSyncAt >= this.#dependabotSyncIntervalMs,
-    );
-    if (!reconcilePullRequests && !reconcileIssues && !discoverPullRequests && !syncDependabot) return;
-    if (syncDependabot) this.#lastDependabotSyncAt = now;
+    if (!reconcilePullRequests && !reconcileIssues && !discoverPullRequests) return;
     if (reconcilePullRequests) this.#lastPullRequestReconcileAt = now;
     if (reconcileIssues) this.#lastIssueReconcileAt = now;
     if (discoverPullRequests) this.#lastPullRequestDiscoveryAt = now;
@@ -403,25 +387,6 @@ export class PlatformGithubEventWorker extends MastraWorker {
     if (targets.length === 0) {
       this.deps?.logger.debug('Platform GitHub reconciliation skipped: no named repositories');
       return;
-    }
-
-    if (syncDependabot && this.#syncDependabotAlerts && this.#hasLease) {
-      const startedAt = Date.now();
-      try {
-        const { errors, ...counts } = await this.#syncDependabotAlerts(targets);
-        const context = { ...counts, candidateRepositories: targets.length, durationMs: Date.now() - startedAt };
-        if (counts.failed > 0) {
-          this.deps?.logger.warn('Platform GitHub Dependabot sync completed with failures', { ...context, errors });
-        } else {
-          this.deps?.logger.info('Platform GitHub Dependabot sync completed', context);
-        }
-      } catch (error) {
-        this.deps?.logger.error('Platform GitHub Dependabot sync failed', {
-          repositories: targets.length,
-          durationMs: Date.now() - startedAt,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
     }
 
     if (reconcilePullRequests && this.#reconcileFactoryState) {

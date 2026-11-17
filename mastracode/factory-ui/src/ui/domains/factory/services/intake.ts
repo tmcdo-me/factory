@@ -2,8 +2,7 @@
  * Browser-side helpers for the intake source configuration (Settings › Intake).
  *
  * The config is stored per org on the server. GitHub uses
- * `sourceIds` (connected source ids); Linear keeps `sourceIds`
- * (provider-owned source ids). `null` id lists mean
+ * `sourceIds` (connected source ids). `null` id lists mean
  * "nothing selected" — nothing syncs until the user picks entries.
  */
 
@@ -11,16 +10,11 @@ export interface IntakeSelection {
   enabled: boolean;
   /** Source ids to sync; `null` = nothing selected. */
   sourceIds: string[] | null;
-  repositoryByLinearProject?: Record<string, string>;
 }
 
 /** Built-in providers always present, plus any custom integration ids the server returns. */
 export type IntakeConfig = Record<string, IntakeSelection> & {
   github: IntakeSelection;
-  gitlab: IntakeSelection;
-  linear: IntakeSelection;
-  jira: IntakeSelection;
-  incidentio: IntakeSelection;
 };
 
 /**
@@ -37,10 +31,6 @@ function normalizeIntakeConfig(raw: Partial<Record<string, IntakeSelection>> | n
   return {
     ...raw,
     github: raw?.github ?? { enabled: false, sourceIds: null },
-    gitlab: raw?.gitlab ?? { enabled: false, sourceIds: null },
-    linear: raw?.linear ?? { enabled: false, sourceIds: null },
-    jira: raw?.jira ?? { enabled: false, sourceIds: null },
-    incidentio: raw?.incidentio ?? { enabled: false, sourceIds: null },
   };
 }
 
@@ -92,7 +82,7 @@ export interface IntakeSourceBinding {
   sourceId: string;
   factoryProjectId: string;
   /**
-   * Jira only: labels whose issues this factory takes; `null` takes every issue no other factory's
+   * Labels whose issues this factory takes; `null` takes every issue no other factory's
    * labels claim. Absent from servers that predate label filters, which means `null`.
    */
   labels?: string[] | null;
@@ -162,9 +152,8 @@ export async function fetchIntakeBindings(baseUrl: string): Promise<IntakeSource
 }
 
 /**
- * Route one source to a Factory project, or clear it with `factoryProjectId: null`. Jira sources
- * can feed several factories, each with its own `labels` filter (omitted keeps the current one);
- * remove a Jira binding with {@link deleteIntakeBinding}. Rejects with
+ * Route one source to a Factory project, or clear it with `factoryProjectId: null`. `labels`
+ * omitted keeps the current filter; remove one factory's binding with {@link deleteIntakeBinding}. Rejects with
  * {@link IntakeBindingConflictError} when another factory already takes the same issues.
  */
 export async function saveIntakeBinding(baseUrl: string, binding: IntakeBindingWrite): Promise<IntakeSourceBinding[]> {
@@ -182,11 +171,7 @@ export async function deleteIntakeBinding(
 /** `bindings` as they read once `write` is saved; an edited binding keeps its place. */
 export function withIntakeBinding(bindings: IntakeSourceBinding[], write: IntakeBindingWrite): IntakeSourceBinding[] {
   const current = bindings.find(
-    binding =>
-      binding.integrationId === write.integrationId &&
-      binding.sourceId === write.sourceId &&
-      // Jira sources feed several factories, so a Jira binding is also told apart by factory.
-      (write.integrationId !== 'jira' || binding.factoryProjectId === write.factoryProjectId),
+    binding => binding.integrationId === write.integrationId && binding.sourceId === write.sourceId,
   );
   if (write.factoryProjectId === null) return bindings.filter(binding => binding !== current);
   const next: IntakeSourceBinding = {

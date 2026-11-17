@@ -39,8 +39,8 @@ async function findPendingFactory(baseUrl: string, pendingId: string) {
 
 /**
  * The Factory exists and its repository is linked by now, so an intake failure must not strand the
- * user in onboarding: warn, and leave them to pick sources in Settings › Work Intake. GitHub and
- * GitLab both land here. Only a switch that is on reaches here; with it off, setup writes no intake.
+ * user in onboarding: warn, and leave them to pick sources in Settings › Work Intake. Only a
+ * switch that is on reaches here; with it off, setup writes no intake.
  */
 function warnIntakeNotApplied() {
   toast.warning("Issues won't sync yet", { description: 'Choose sources in Settings › Work Intake.' });
@@ -102,7 +102,7 @@ export function useCompleteFactorySetup({ local }: { local: boolean }) {
       await link.mutateAsync({
         factoryProjectId: factory.id,
         repo,
-        // Setup selects the repository itself after the link, so GitHub and GitLab fail the same way.
+        // Setup selects the repository itself after the link, so its failure warns the same way.
         selectIntake: false,
         onLinked: async linked => {
           const onboardingLinks = [...new Set([...previouslyLinked, linked.projectRepositoryId])];

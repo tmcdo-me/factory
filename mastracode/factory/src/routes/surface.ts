@@ -315,7 +315,7 @@ function reviewBranch(
   if (input.role === REVIEW_CONTEXT && isPullRequestReviewPhase(board, stage)) {
     const change = reviewedChangeRequest({ ...input.item, source });
     if (change && !change.standalone && change.number !== undefined) {
-      return pullRequestBranch({ id: input.item.id, provider: change.provider, number: change.number });
+      return pullRequestBranch({ id: input.item.id, number: change.number });
     }
   }
   return workItemBranch({ id: input.item.id, source, metadata });
@@ -402,7 +402,6 @@ export async function prepareFactoryRuleBinding(
   projects: FactoryProjectsStorage,
   boards: BoardRegistry | ProjectBoardSource,
   input: FactoryBindingPreparationInput,
-  intake?: Pick<IntakeStorage, 'getConfig'>,
   owner?: PhaseSessionOwnerSources,
 ): Promise<void> {
   try {
@@ -455,13 +454,11 @@ export async function prepareFactoryRuleBinding(
     // PR review on each pull request's), so its session is reused only on the branch it holds.
     const boundSession =
       reusable && input.role === REVIEW_CONTEXT && !sameBranch(reusable.branch, branch) ? undefined : reusable;
-    const intakeConfig = await intake?.getConfig({ orgId: input.record.orgId, integrationIds: ['linear'] });
     let repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: input.record.orgId,
       factoryProjectId: input.record.factoryProjectId,
       item: input.item,
-      linearRepositoryMap: intakeConfig?.linear?.repositoryByLinearProject,
     });
     if (repository.status === 'ambiguous' && boundSession) {
       const link = await sourceControl.projectRepositories.get({
@@ -673,13 +670,11 @@ export function buildIntegrationContext(
 }
 
 /**
- * Disabled-status stub for the well-known integration ids. The SPA polls
- * `/web/github/status`, `/web/linear/status`, and `/web/jira/status`
- * unconditionally, so when an integration is absent (or not ready) the status
- * contract must still hold. Unknown custom ids get no stub — the SPA doesn't
- * poll them.
+ * Disabled-status stub for GitHub. The SPA polls `/web/github/status`
+ * unconditionally, so when the integration is absent (or not ready) the status
+ * contract must still hold. Other ids get no stub — the SPA doesn't poll them.
  */
-function disabledIntegrationStatusRoutes(deps: FactoryApiRoutesDeps, id: string, configured = false): ApiRoute[] {
+function disabledIntegrationStatusRoutes(deps: FactoryApiRoutesDeps, id: string): ApiRoute[] {
   if (id === 'github') {
     return [
       registerApiRoute('/web/github/status', {
@@ -702,46 +697,6 @@ function disabledIntegrationStatusRoutes(deps: FactoryApiRoutesDeps, id: string,
       }),
     ];
   }
-  if (id === 'linear') {
-    return [
-      registerApiRoute('/web/linear/status', {
-        method: 'GET',
-        requiresAuth: false,
-        handler: c =>
-          c.json({
-            enabled: false,
-            connected: false,
-            workspace: null,
-            reason: 'missing_config',
-            diagnostics: {
-              linearAppConfigured: configured,
-              factoryAuthEnabled: deps.auth.enabled(),
-              appDbConfigured: true,
-            },
-          }),
-      }),
-    ];
-  }
-  if (id === 'jira') {
-    return [
-      registerApiRoute('/web/jira/status', {
-        method: 'GET',
-        requiresAuth: false,
-        handler: c =>
-          c.json({
-            enabled: false,
-            configured,
-            site: null,
-            reason: 'missing_config',
-            diagnostics: {
-              jiraConfigured: configured,
-              factoryAuthEnabled: deps.auth.enabled(),
-              appDbConfigured: deps.factoryStorage !== undefined,
-            },
-          }),
-      }),
-    ];
-  }
   return [];
 }
 
@@ -755,7 +710,7 @@ function disabledIntegrationStatusRoutes(deps: FactoryApiRoutesDeps, id: string,
  * Mounted only for ABSENT slack — a registered integration owns the path via
  * its connect routes (or, when the state signer is unstable, gets no routes
  * at all and the UI falls back to the generic copy). Static payload, leaks
- * nothing → no auth needed, same posture as the github/linear stubs.
+ * nothing → no auth needed, same posture as the github stub.
  */
 function absentSlackChannelAccountsRoutes(): ApiRoute[] {
   return [
@@ -831,7 +786,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
 
   const integrationRoutes = registrations.flatMap(registration => {
     const { integration } = registration;
-    if (!deps.stateSigner) return disabledIntegrationStatusRoutes(deps, integration.id, true);
+    if (!deps.stateSigner) return disabledIntegrationStatusRoutes(deps, integration.id);
     const context = buildIntegrationContext(
       {
         ...deps,
@@ -881,7 +836,7 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           ...(deps.runtimeSessions ? { runtimeSessions: deps.runtimeSessions } : {}), // fork(claude-agent)
         });
   // Absent known integrations still get their disabled-status stub.
-  const absentStubs = ['github', 'linear', 'jira']
+  const absentStubs = ['github']
     .filter(id => !registrations.some(({ integration }) => integration.id === id))
     .flatMap(id => disabledIntegrationStatusRoutes(deps, id));
   // Absent slack gets the channel-accounts not-registered stub (registered
@@ -911,7 +866,6 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
             factoryProjectId: request.factoryProjectId,
             sessionId: request.sessionId,
           }),
-        deps.domains.intake,
         { projects: deps.domains.projects, modelDefaults: deps.domains.modelDefaults },
         deps.boardRegistry,
         deps.startRuntimes, // fork(claude-agent)
@@ -941,7 +895,6 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
                 deps.domains.projects,
                 deps.boardRegistry,
                 input,
-                deps.domains.intake,
                 {
                   workItems: deps.domains.workItems,
                   modelCredentials: deps.domains.modelCredentials,
@@ -1022,10 +975,9 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
           audit: deps.audit,
           intake: deps.domains.intake,
           projects: deps.domains.projects,
-          integrations: (deps.integrations ?? []).flatMap(({ integration }) => [
-            ...(integration.intake ? [{ id: integration.id, intake: integration.intake }] : []),
-            ...(integration.additionalIntakes ?? []),
-          ]),
+          integrations: (deps.integrations ?? []).flatMap(({ integration }) =>
+            integration.intake ? [{ id: integration.id, intake: integration.intake }] : [],
+          ),
         }).routes()
       : []),
     ...(deps.factoryReady && deps.knowledgeEnabled

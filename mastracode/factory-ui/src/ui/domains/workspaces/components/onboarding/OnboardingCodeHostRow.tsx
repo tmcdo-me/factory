@@ -1,9 +1,7 @@
 import { Switch } from '@mastra/playground-ui/components/Switch';
 import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
 
-import { GitLabIcon } from '../../../../ui/icons';
 import type { SourceControlRepository } from '../../services/github';
-import { HOST_NAMES, repositoryHost } from '../../services/sourceControlHosts';
 import { OnboardingConnectionRow } from './OnboardingConnectionRow';
 
 /**
@@ -20,16 +18,14 @@ export function OnboardingCodeHostRow({
   /** Omitted where the choice cannot be stored, which leaves the switch read-only. */
   onEnabledChange?: (enabled: boolean) => void;
 }) {
-  const host = repositoryHost(repository);
-  const name = HOST_NAMES[host];
   return (
     <OnboardingConnectionRow
-      icon={host === 'gitlab' ? <GitLabIcon /> : <GithubIcon />}
-      name={name}
+      icon={<GithubIcon />}
+      name="GitHub"
       description={`Sync issues from ${repository.fullName}`}
       action={
         <Switch
-          aria-label={`Sync ${name} issues`}
+          aria-label="Sync GitHub issues"
           checked={enabled}
           disabled={onEnabledChange === undefined}
           onCheckedChange={onEnabledChange}

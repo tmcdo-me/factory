@@ -14,10 +14,6 @@ type IdentifiableItem = Pick<WorkItem, 'source' | 'workItem' | 'metadata' | 'sou
 export function workItemNumber(item: IdentifiableItem): string | undefined {
   const githubNumber = githubNumberForItem(item);
   if (githubNumber !== undefined) return String(githubNumber);
-  if (item.source === 'gitlab-pr') {
-    const iid = sourceMetadata(item).gitlabMergeRequestIid;
-    return typeof iid === 'number' && Number.isSafeInteger(iid) && iid > 0 ? String(iid) : undefined;
-  }
 
   const number = sourceMetadata(item).number;
   if (typeof number === 'number' || typeof number === 'string') return String(number);
@@ -69,12 +65,10 @@ export function relatedCardName(item: WorkItem, contextRepository?: string): str
   return workItemReference(item, contextRepository) === undefined ? relation : `${relation}: ${item.title}`;
 }
 
-/** What a person types to find the item: `#20456` on GitHub, `ENG-123` on Linear or Jira. */
+/** What a person types to find the item: `#20456` on GitHub. */
 export function workItemIdentifier(item: IdentifiableItem): string | undefined {
   const key = workItemKey(item);
   if (key !== undefined) return key;
-  // Linear source key already reads `linear:ENG-123` — hashing it would invent `#ENG-123`.
-  if (item.source === 'linear-issue') return workItemNumber(item);
   if (item.source === 'github-pr' || item.source === 'github-issue') {
     const number = workItemNumber(item);
     return number ? `#${number}` : undefined;
@@ -107,9 +101,7 @@ export function referenceLabel(
 
 const CODE_HOST_REFERENCES: Partial<Record<WorkItemSource, Pick<CodeHostReference, 'kind' | 'sigil'>>> = {
   'github-issue': { kind: 'Issue', sigil: '#' },
-  'gitlab-issue': { kind: 'Issue', sigil: '#' },
   'github-pr': CHANGE_REQUEST_TERMS.github,
-  'gitlab-pr': CHANGE_REQUEST_TERMS.gitlab,
 };
 
 export function workItemReference(item: IdentifiableItem, contextRepository?: string): string | undefined {

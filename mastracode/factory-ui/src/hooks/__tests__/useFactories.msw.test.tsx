@@ -7,7 +7,6 @@ import { server } from '../../../e2e/ui/msw-server';
 import { renderHookWithProviders, TEST_BASE_URL, waitForMutationsIdle } from '../../../e2e/ui/render';
 import { queryKeys } from '../../api/keys';
 import type { IntakeConfig, IntakeSelection } from '../../ui/domains/factory/services/intake';
-import type { GitLabRepository } from '../../ui/domains/factory/services/gitlab';
 import type { FactoryProject, GithubRepo } from '../../ui/domains/workspaces/services/github';
 import {
   environmentPayload,
@@ -30,19 +29,6 @@ const repo: GithubRepo = {
   installationStorageId: 'inst-7',
   sandboxProvider: 'local',
   sandboxWorkdir: '/workspace/hello',
-};
-
-const gitlabRepo: GitLabRepository = {
-  provider: 'gitlab',
-  id: 'gitlab-project:encoded',
-  externalId: '10',
-  fullName: 'acme/app',
-  name: 'app',
-  owner: 'acme',
-  defaultBranch: 'main',
-  private: true,
-  sandboxProvider: 'local',
-  sandboxWorkdir: '/workspace/app',
 };
 
 function stubRepositoryLink() {
@@ -79,72 +65,11 @@ function stubIntakeConfig(initial: Partial<IntakeConfig>) {
 }
 
 describe('useLinkRepositoryMutation', () => {
-  it('links a GitLab project through its provider partition and feeds GitLab intake', async () => {
-    const requests: unknown[] = [];
-    server.use(
-      http.post(`${TEST_BASE_URL}/web/gitlab/projects/registration`, async ({ request }) => {
-        requests.push(await request.json());
-        return HttpResponse.json({
-          project: {
-            id: 'gitlab-project:encoded',
-            name: 'acme/app',
-            projectId: '10',
-            projectPath: 'acme/app',
-            installationStorageId: 'gitlab-inst-1',
-            defaultBranch: 'main',
-            sandboxProvider: 'local',
-            sandboxWorkdir: '/workspace/app',
-          },
-        });
-      }),
-      http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections`, () =>
-        HttpResponse.json({ connections: [] }),
-      ),
-      http.post(`${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections`, async ({ request }) => {
-        requests.push(await request.json());
-        return HttpResponse.json({ connection: { id: 'conn-gl-1' } }, { status: 201 });
-      }),
-      http.post(
-        `${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections/conn-gl-1/repositories`,
-        async ({ request }) => {
-          requests.push(await request.json());
-          return HttpResponse.json({
-            projectRepository: {
-              id: 'glp-1',
-              branch: 'main',
-              sandboxWorkdir: '/workspace/app',
-              repository: { slug: 'acme/app', defaultBranch: 'main' },
-            },
-          });
-        },
-      ),
-    );
-    const saved = stubIntakeConfig({ gitlab: { enabled: false, sourceIds: null } });
-    const { client, result } = renderHookWithProviders(() => useLinkRepositoryMutation());
-
-    result.current.mutate({ factoryProjectId: 'fp-1', repo: gitlabRepo });
-
-    await waitForMutationsIdle(client);
-    expect(result.current.isSuccess).toBe(true);
-    expect(requests).toEqual([
-      { sourceId: 'gitlab-project:encoded' },
-      { integrationId: 'gitlab', installationId: 'gitlab-inst-1' },
-      {
-        repository: { externalId: '10', slug: 'acme/app' },
-        branch: 'main',
-        sandboxProvider: 'local',
-        sandboxWorkdir: '/workspace/app',
-      },
-    ]);
-    expect(saved).toEqual([{ gitlab: { enabled: true, sourceIds: ['gitlab-project:encoded'] } }]);
-  });
-
   it('given a repository outside issue intake, when it is linked, then its issues feed the caller’s intake', async () => {
     stubRepositoryLink();
     const saved = stubIntakeConfig({
       github: { enabled: true, sourceIds: null },
       linear: { enabled: false, sourceIds: null },
-      gitlab: { enabled: false, sourceIds: null },
       jira: { enabled: false, sourceIds: null },
       incidentio: { enabled: false, sourceIds: null },
     });
@@ -168,7 +93,6 @@ describe('useLinkRepositoryMutation', () => {
     const saved = stubIntakeConfig({
       github: { enabled: false, sourceIds: ['octo/other'] },
       linear: { enabled: false, sourceIds: null },
-      gitlab: { enabled: false, sourceIds: null },
       jira: { enabled: false, sourceIds: null },
       incidentio: { enabled: false, sourceIds: null },
     });
@@ -187,7 +111,6 @@ describe('useLinkRepositoryMutation', () => {
     const saved = stubIntakeConfig({
       github: { enabled: true, sourceIds: ['octo/hello'] },
       linear: { enabled: false, sourceIds: null },
-      gitlab: { enabled: false, sourceIds: null },
       jira: { enabled: false, sourceIds: null },
       incidentio: { enabled: false, sourceIds: null },
     });
@@ -320,9 +243,8 @@ describe('useFactoriesQuery', () => {
               name: 'Acme',
               repositories: [
                 listedRepository('ghp_1', 'octo/hello', { branch: 'release', externalId: '99' }),
-                listedRepository('glp_1', 'acme/app', {
-                  integrationId: 'gitlab',
-                  connectionId: 'conn-gl-1',
+                listedRepository('ghp_3', 'acme/app', {
+                  connectionId: 'conn-2',
                   defaultBranch: 'trunk',
                   externalId: '10',
                 }),
@@ -351,8 +273,8 @@ describe('useFactoriesQuery', () => {
             sandboxWorkdir: '/workspace/octo/hello',
           },
           {
-            projectRepositoryId: 'glp_1',
-            provider: 'gitlab',
+            projectRepositoryId: 'ghp_3',
+            provider: 'github',
             externalId: '10',
             slug: 'acme/app',
             gitBranch: 'trunk',

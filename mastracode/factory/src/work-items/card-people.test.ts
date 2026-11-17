@@ -43,36 +43,17 @@ describe('providerPeople', () => {
 
   it('names a single assignee once when the source lists them both ways', () => {
     const people = providerPeople({
-      source: 'gitlab-issue',
+      source: 'github-issue',
       metadata: { assignees: ['hubot'], assignee: 'hubot' },
     });
 
-    expect(people.assigned).toEqual([{ id: 'gitlab:hubot', name: 'hubot', source: 'gitlab' }]);
+    expect(people.assigned).toEqual([{ id: 'github:hubot', name: 'hubot', source: 'github' }]);
   });
 
   it('asks no review of an issue, whatever its metadata says', () => {
     const people = providerPeople({ source: 'github-issue', metadata: { requestedReviewers: ['defunkt'] } });
 
     expect(people['review-requested']).toEqual([]);
-  });
-
-  it.each([
-    ['its creator', { creator: 'Ada', linearCreator: 'Grace', author: 'Linus' }, 'Ada'],
-    ['its Linear creator when it names no creator', { linearCreator: 'Grace', author: 'Linus' }, 'Grace'],
-    ['its author when it names neither', { author: 'Linus' }, 'Linus'],
-  ])('reads the author of a Linear issue from %s', (_case, metadata, name) => {
-    expect(providerPeople({ source: 'linear-issue', metadata }).authored).toEqual([
-      { id: `linear:${name.toLowerCase()}`, name, source: 'linear' },
-    ]);
-  });
-
-  it('reads the one assignee of a Jira issue or an incident.io follow-up', () => {
-    expect(providerPeople({ source: 'jira-issue', metadata: { assignee: 'Ada' } }).assigned).toEqual([
-      { id: 'jira:ada', name: 'Ada', source: 'jira' },
-    ]);
-    expect(providerPeople({ source: 'incidentio-follow-up', metadata: { linearAssignee: 'Grace' } }).assigned).toEqual([
-      { id: 'incidentio:grace', name: 'Grace', source: 'incidentio' },
-    ]);
   });
 
   it('drops blank and non-text names, and trims the others', () => {
@@ -85,7 +66,7 @@ describe('providerPeople', () => {
     expect(people.assigned).toEqual([{ id: 'github:hubot', name: 'hubot', source: 'github' }]);
   });
 
-  it.each(['manual', 'slack-thread'] as const)('names no one for a %s card', source => {
+  it.each(['manual', 'slack-thread', 'detail-finding'] as const)('names no one for a %s card', source => {
     expect(providerPeople({ source, metadata: { author: 'octocat', assignee: 'hubot' } })).toEqual(NO_ONE);
   });
 });

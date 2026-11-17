@@ -4,16 +4,10 @@ import { CommandPaletteItem } from '@mastra/playground-ui/components/CommandPale
 import { Spinner } from '@mastra/playground-ui/components/Spinner';
 import { useDebouncedValue } from '@mastra/playground-ui/hooks/use-debounced-value';
 import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
-import { toast } from '@mastra/playground-ui/components/Toaster';
 
-import { useGitLabProjectsQuery, useGitLabStatusQuery } from '../../../../../hooks/useGitLabData';
 import { useGithubReposQuery } from '../../../../../hooks/useGithubRepos';
 import { useGithubStatusQuery } from '../../../../../hooks/useGithubStatus';
-import { useConnectPlatformProviderMutation } from '../../../../../hooks/usePlatformConnections';
 import { PaletteRowsSkeleton } from '../../../../ui/PaletteRowsSkeleton';
-import { GitLabIcon } from '../../../../ui/icons';
-import { gitLabProjectRepository } from '../../../factory/services/gitlab';
-import type { GitLabRepository } from '../../../factory/services/gitlab';
 import type { GithubRepo, GithubStatus, SourceControlRepository } from '../../services/github';
 import { CreateFactoryPaletteAlert, CreateFactoryPaletteMessage } from './CreateFactoryPalette';
 import { IconSettingsSliderHor } from '@mastra/playground-ui/icons/central/IconSettingsSliderHor';
@@ -48,21 +42,7 @@ export function CreateFactoryRepositoryRows({
 }: CreateFactoryRepositoryRowsProps) {
   const githubStatus = useGithubStatusQuery();
   const connected = githubStatus.data?.connected === true;
-  const gitlabStatus = useGitLabStatusQuery();
-  const gitlabConfigured = Boolean(gitlabStatus.data?.enabled && gitlabStatus.data.configured);
-  const gitlabProjects = useGitLabProjectsQuery(gitlabConfigured);
-  const gitlabConnect = useConnectPlatformProviderMutation('gitlab');
-  const gitlabConnecting = gitlabConnect.isPending;
-  const startGitlabConnect = async () => {
-    try {
-      await gitlabConnect.mutateAsync({});
-      toast.success('GitLab connected');
-    } catch (err) {
-      toast.error(err instanceof Error ? err.message : 'Failed to connect GitLab');
-    }
-  };
-
-  if (githubStatus.isPending || gitlabStatus.isPending) {
+  if (githubStatus.isPending) {
     return <PaletteRowsSkeleton label="Loading repositories" rows={3} />;
   }
 
@@ -99,47 +79,7 @@ export function CreateFactoryRepositoryRows({
     </>
   );
 
-  return (
-    <>
-      {githubRows}
-      {gitlabConfigured ? (
-        <GitLabRepositoryResults
-          query={query}
-          projects={gitlabProjects.data?.flatMap(project => {
-            const repository = gitLabProjectRepository(project);
-            return repository ? [repository] : [];
-          })}
-          pending={gitlabProjects.isPending}
-          error={gitlabProjects.error}
-          onSelectRepository={onSelectRepository}
-        />
-      ) : (
-        (() => {
-          // Personal GitLab accounts see `enabled: true` from the status endpoint but the
-          // connect-session request answers 403 with `organization_required`, so gate the
-          // button here to keep it from starting a doomed Nango session.
-          const gitlabUnavailable = !gitlabStatus.data?.enabled || gitlabStatus.data.reason === 'organization_required';
-          const gitlabSubtitle = !gitlabStatus.data?.enabled
-            ? 'GitLab is not available for this deployment.'
-            : gitlabStatus.data.reason === 'organization_required'
-              ? 'Join an organization to connect GitLab repositories.'
-              : 'Sign in to GitLab to grant access to your projects.';
-          return (
-            <CommandGroup heading="GitLab">
-              <CommandPaletteItem
-                icon={gitlabConnecting ? <Spinner size="sm" aria-label="Connecting to GitLab" /> : <GitLabIcon />}
-                title={gitlabUnavailable ? 'GitLab unavailable' : 'Connect GitLab'}
-                subtitle={gitlabSubtitle}
-                value="connect-gitlab"
-                disabled={gitlabUnavailable || gitlabConnecting}
-                onSelect={() => void startGitlabConnect()}
-              />
-            </CommandGroup>
-          );
-        })()
-      )}
-    </>
-  );
+  return githubRows;
 }
 
 function GithubRepositoryResults({
@@ -172,50 +112,6 @@ function GithubRepositoryResults({
           onSelect={() => onSelectRepository(repo)}
         />
       ))}
-    </CommandGroup>
-  );
-}
-
-function GitLabRepositoryResults({
-  query,
-  projects,
-  pending,
-  error,
-  onSelectRepository,
-}: {
-  query: string;
-  projects: GitLabRepository[] | undefined;
-  pending: boolean;
-  error: Error | null;
-  onSelectRepository: (repository: SourceControlRepository) => void;
-}) {
-  const normalizedQuery = query.trim().toLowerCase();
-  const matches = (projects ?? []).filter(project => project.fullName.toLowerCase().includes(normalizedQuery));
-  if (pending) {
-    return <PaletteRowsSkeleton label="Loading GitLab repositories" rows={3} />;
-  }
-  if (error) return <CreateFactoryPaletteAlert>{error.message}</CreateFactoryPaletteAlert>;
-  return (
-    <CommandGroup heading="GitLab repositories">
-      {matches.length === 0 ? (
-        <CreateFactoryPaletteMessage>No GitLab repositories found.</CreateFactoryPaletteMessage>
-      ) : (
-        matches.map(repo => (
-          <CommandPaletteItem
-            key={repo.id}
-            icon={<GitLabIcon />}
-            title={repo.fullName}
-            subtitle={
-              <Metadata singleLine>
-                <Metadata.Item className="shrink-0">GitLab</Metadata.Item>
-                <Metadata.Item>{repo.defaultBranch}</Metadata.Item>
-              </Metadata>
-            }
-            value={`gitlab-repo-${repo.id}`}
-            onSelect={() => onSelectRepository(repo)}
-          />
-        ))
-      )}
     </CommandGroup>
   );
 }

@@ -19,31 +19,26 @@ function integration(id: string, connected?: boolean | Error): FactoryIntegratio
 describe('describeIntegrations', () => {
   it('separates connected providers from ones that are only available', async () => {
     await expect(
-      describeIntegrations([
-        integration('github', true),
-        integration('jira', false),
-        integration('linear', false),
-        integration('incidentio', false),
-      ]),
-    ).resolves.toBe('Intake: GitHub connected · Jira, Linear, incident.io available');
+      describeIntegrations([integration('github', true), integration('tracker', false), integration('pager', false)]),
+    ).resolves.toBe('Intake: GitHub connected · tracker, pager available');
   });
 
   it('says none are connected on a fresh project', async () => {
-    await expect(describeIntegrations([integration('github', false), integration('gitlab', false)])).resolves.toBe(
-      'Intake: none connected · GitHub, GitLab available',
+    await expect(describeIntegrations([integration('github', false), integration('tracker', false)])).resolves.toBe(
+      'Intake: none connected · GitHub, tracker available',
     );
   });
 
   it('reports a failed check as unknown instead of failing', async () => {
     await expect(
-      describeIntegrations([integration('github', true), integration('linear', new Error('timeout'))]),
-    ).resolves.toBe('Intake: GitHub connected · Linear status unknown');
+      describeIntegrations([integration('github', true), integration('tracker', new Error('timeout'))]),
+    ).resolves.toBe('Intake: GitHub connected · tracker status unknown');
   });
 
   it('does not claim none are connected when a check failed', async () => {
     await expect(
-      describeIntegrations([integration('github', new Error('timeout')), integration('jira', false)]),
-    ).resolves.toBe('Intake: Jira available · GitHub status unknown');
+      describeIntegrations([integration('github', new Error('timeout')), integration('tracker', false)]),
+    ).resolves.toBe('Intake: tracker available · GitHub status unknown');
   });
 
   it('prints nothing when no integration can report connections', async () => {

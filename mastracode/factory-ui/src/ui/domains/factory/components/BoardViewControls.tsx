@@ -46,14 +46,13 @@ export function BoardViewControls({
   aside?: ReactNode;
 }) {
   const { savedViews } = view;
-  const { connectedSources, linearProjects } = useBoardFilterSources();
+  const { connectedSources } = useBoardFilterSources();
   const fields = boardFilterFields({
     reviewsPullRequests,
     filters: view.filters,
     participants,
     availableLabels,
     connectedSources,
-    linearProjects,
     currentUserId,
   });
 

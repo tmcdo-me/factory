@@ -76,12 +76,12 @@ describe('Factory rule validation', () => {
       idempotencyKey: 'release:claimed',
       board: 'release',
       stage: 'queued',
-      source: 'linear-issue',
-      sourceKey: 'linear:ENG-1',
-      title: 'ENG-1: claimed',
+      source: 'github-issue',
+      sourceKey: 'github:acme/app#1',
+      title: 'Issue #1: claimed',
       url: null,
     };
-    for (const claimKey of ['linear:issue:1', '', 42]) {
+    for (const claimKey of ['github:issue:1', '', 42]) {
       const validated = validateFactoryRuleDecision({ ...unclaimed, claimKey });
       expect(validated).toEqual(unclaimed);
       expect(validated).not.toHaveProperty('claimKey');
@@ -549,9 +549,9 @@ describe('Factory activity signal validation', () => {
     expect(validateFactoryRuleDecision(signal)).toEqual(signal);
   });
 
-  it('accepts GitLab names that start with an underscore, and a signal that only persists', () => {
-    const gitlab = { ...signal, reference: '_team/app#3', author: '_jane', idleBehavior: 'persist' };
-    expect(validateFactoryRuleDecision(gitlab)).toEqual(gitlab);
+  it('accepts names that start with an underscore, and a signal that only persists', () => {
+    const underscored = { ...signal, reference: '_team/app#3', author: '_jane', idleBehavior: 'persist' };
+    expect(validateFactoryRuleDecision(underscored)).toEqual(underscored);
   });
 
   // A signal can carry nothing a provider user wrote: every field is a pointer with a fixed shape.

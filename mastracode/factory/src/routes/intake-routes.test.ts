@@ -544,8 +544,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('intake route ma
         {
           operator: 'AND',
           conditions: [
-            { field: 'source.provider', operator: 'equals', value: 'linear' },
-            { field: 'item.key', operator: 'contains', value: 'ENG-' },
+            { field: 'source.provider', operator: 'equals', value: 'github' },
+            { field: 'item.key', operator: 'contains', value: 'acme/docs#' },
             { field: 'item.state', operator: 'not_equals', value: 'Backlog' },
             { field: 'item.assignees', operator: 'contains', value: 'ada' },
           ],

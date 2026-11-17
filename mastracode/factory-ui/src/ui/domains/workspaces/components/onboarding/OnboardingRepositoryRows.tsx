@@ -5,23 +5,11 @@ import { cn } from '@mastra/playground-ui/utils/cn';
 
 import { SkeletonRows } from '../../../../ui/SkeletonRows';
 import type { SourceControlRepository } from '../../services/github';
-import type { SourceControlHost } from '../../services/sourceControlHosts';
 
-const EMPTY_REPOSITORIES = {
-  github: 'No repositories are shared with the Mastra GitHub App yet. Use Manage access to add some.',
-  gitlab: 'No GitLab projects found.',
-} as const;
-
-/** GitHub searches on the server; GitLab lists every project, so its search filters here. */
-function visibleRepositories(repositories: SourceControlRepository[], host: SourceControlHost, search: string) {
-  const filter = search.trim().toLowerCase();
-  if (host === 'github' || !filter) return repositories;
-  return repositories.filter(repository => repository.fullName.toLowerCase().includes(filter));
-}
+const EMPTY_REPOSITORIES = 'No repositories are shared with the Mastra GitHub App yet. Use Manage access to add some.';
 
 export function OnboardingRepositoryRows({
   repositories,
-  host,
   search,
   pending,
   selectedRepositoryId,
@@ -29,7 +17,6 @@ export function OnboardingRepositoryRows({
   onPreviewRepository,
 }: {
   repositories: SourceControlRepository[];
-  host: SourceControlHost;
   /** The search the list reflects; empty when there is none. */
   search: string;
   pending: boolean;
@@ -37,12 +24,13 @@ export function OnboardingRepositoryRows({
   onSelectRepository: (repository: SourceControlRepository) => void;
   onPreviewRepository?: (repository: SourceControlRepository | undefined) => void;
 }) {
-  if (pending) return <SkeletonRows label={`Loading ${host} repositories`} rows={3} rowClassName="h-12 w-full" />;
-  const visible = visibleRepositories(repositories, host, search);
+  if (pending) return <SkeletonRows label="Loading github repositories" rows={3} rowClassName="h-12 w-full" />;
+  // GitHub searches on the server, so the list is already the search's.
+  const visible = repositories;
   if (visible.length === 0) {
     return (
       <Txt tone="muted" as="p" variant="caption" className="m-0 px-3 py-4">
-        {search ? 'No matching repositories.' : EMPTY_REPOSITORIES[host]}
+        {search ? 'No matching repositories.' : EMPTY_REPOSITORIES}
       </Txt>
     );
   }

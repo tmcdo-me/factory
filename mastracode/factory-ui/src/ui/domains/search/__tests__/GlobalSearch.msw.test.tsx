@@ -161,12 +161,8 @@ function stubSearchApi(options: StubSearchOptions = {}): SearchRequestState {
       HttpResponse.json({
         config: {
           github: { enabled: true, sourceIds: ['mastra-ai/mastra'] },
-          linear: { enabled: false, sourceIds: null },
         },
       }),
-    ),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-      HttpResponse.json({ enabled: false, connected: false, workspace: null }),
     ),
     http.get(`${TEST_BASE_URL}/web/github/projects/:projectRepositoryId/issues`, ({ params, request }) => {
       state.intakeRequests += 1;
@@ -231,12 +227,7 @@ function stubSearchApi(options: StubSearchOptions = {}): SearchRequestState {
       state.created.push(body);
       // Like the server, the filed card carries the source it was filed from.
       const external = body.externalSource as { integrationId?: string; type?: string } | undefined;
-      const source =
-        external?.type === 'pull-request'
-          ? external.integrationId === 'gitlab'
-            ? ('gitlab-pr' as const)
-            : ('github-pr' as const)
-          : workItems[0].source;
+      const source = external?.type === 'pull-request' ? ('github-pr' as const) : workItems[0].source;
       return HttpResponse.json({
         workItem: toWireWorkItem({
           ...workItems[0],
@@ -405,30 +396,24 @@ afterEach(() => {
 
 describe('Global search', () => {
   describe.each(['board', 'search'] as const)('%s entry point', entryPoint => {
-    describe.each(['github', 'gitlab'] as const)('%s source-provider repository choices', provider => {
-      it.each([0, 1, 2])('offers usable choices with %s matching repositories', async count => {
+    describe.each(['github'] as const)('%s source-provider repository choices', provider => {
+      it.each([1, 2])('offers usable choices with %s matching repositories', async count => {
         const sourceRepositories: LinkedRepositoryPayload[] = Array.from({ length: count }, (_, index) => ({
           projectRepositoryId: `${provider}-repo-${index}`,
           provider,
           externalId: String(index),
           slug: `${provider}-org/repo-${index}`,
         }));
-        const otherProvider = provider === 'github' ? 'gitlab' : 'github';
-        const otherRepository: LinkedRepositoryPayload = {
-          projectRepositoryId: 'other-provider-repo',
-          provider: otherProvider,
-          slug: 'other-provider/repo',
-        };
         const item: WorkItem = {
           ...workItems[3],
-          source: provider === 'github' ? 'github-issue' : 'gitlab-issue',
+          source: 'github-issue',
           board: 'release',
           stages: ['shipped'],
           metadata: {},
         };
         const requests = stubSearchApi({
           workItems: [item],
-          activeRepositories: [otherRepository, ...sourceRepositories],
+          activeRepositories: sourceRepositories,
         });
         const patches: unknown[] = [];
         const starts: unknown[] = [];
@@ -436,10 +421,6 @@ describe('Global search', () => {
           http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
           http.get(`${TEST_BASE_URL}/web/factory/projects/${ACTIVE_FACTORY_ID}/boards`, () =>
             HttpResponse.json({ boards: [releaseBoard] }),
-          ),
-          http.get(`${TEST_BASE_URL}/web/gitlab/issues`, () => HttpResponse.json({ issues: [], nextCursor: null })),
-          http.get(`${TEST_BASE_URL}/web/gitlab/projects/:projectRepositoryId/prs`, () =>
-            HttpResponse.json({ pullRequests: [], nextPage: null }),
           ),
           http.patch(`${TEST_BASE_URL}/web/factory/work-items/${item.id}`, async ({ request }) => {
             patches.push(await request.json());
@@ -457,19 +438,8 @@ describe('Global search', () => {
         if (search) await user.click(await results.findByText(item.title));
         else await user.click(await screen.findByRole('button', { name: 'Start session' }));
 
-        if (count === 0) {
-          expect(
-            await screen.findByText("No repository matching this card's provider is linked to this Factory."),
-          ).toBeInTheDocument();
-          expect(screen.queryByRole('dialog', { name: 'Choose a repository' })).not.toBeInTheDocument();
-          expect(requests.createSessionRequests).toBe(0);
-          expect(patches).toEqual([]);
-          expect(starts).toEqual([]);
-          return;
-        }
         if (count > 1) {
           const picker = await screen.findByRole('dialog', { name: 'Choose a repository' });
-          expect(within(picker).queryByRole('button', { name: /other-provider\/repo/ })).not.toBeInTheDocument();
           expect(within(picker).getAllByRole('button', { name: new RegExp(`${provider}-org/repo-`) })).toHaveLength(
             count,
           );
@@ -769,15 +739,15 @@ describe('Global search', () => {
       workItems: [
         {
           ...unstartedCard('numbered-card', 'Rotate the signing keys', '2026-07-01'),
-          source: 'gitlab-issue',
-          sourceKey: 'gitlab-issue:9001',
-          url: 'https://gitlab.com/group/repo/-/issues/9001',
+          source: 'slack-thread',
+          sourceKey: 'C1:1.000',
+          url: 'https://acme.slack.com/archives/C1/p1000',
           workItem: {
-            provider: 'gitlab',
+            provider: 'slack',
             key: null,
-            url: 'https://gitlab.com/group/repo/-/issues/9001',
+            url: 'https://acme.slack.com/archives/C1/p1000',
             title: 'Rotate the signing keys',
-            state: 'opened',
+            state: 'open',
             labels: [],
             author: null,
             metadata: { number: 42 },

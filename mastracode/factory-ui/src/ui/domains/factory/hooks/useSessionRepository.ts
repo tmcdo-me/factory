@@ -22,7 +22,7 @@ export function useSessionRepository(): SessionRepository {
   );
   return {
     repository,
-    provider: repository?.provider === 'gitlab' ? 'gitlab' : 'github',
+    provider: 'github' as const,
     loading: session.isLoading || factory.isLoading,
     failed: session.isLoadingError || factory.isLoadingError,
   };

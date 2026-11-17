@@ -4,7 +4,21 @@ import { describe, expect, it } from 'vitest';
 import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL } from '../../../../../../e2e/ui/render';
 import { queryKeys } from '../../../../../api/keys';
+import type { GithubRepo } from '../../services/github';
 import { OnboardingPreview } from '../onboarding/preview/OnboardingPreview';
+
+const githubRepository: GithubRepo = {
+  id: 99,
+  fullName: 'acme/widgets',
+  name: 'widgets',
+  owner: 'acme',
+  defaultBranch: 'main',
+  private: false,
+  installationId: 7,
+  installationStorageId: 'inst-7',
+  sandboxProvider: 'local',
+  sandboxWorkdir: '/workspace/widgets',
+};
 
 describe('contextual onboarding previews', () => {
   it('shows the personal Factory model when shared access is absent', async () => {
@@ -16,9 +30,6 @@ describe('contextual onboarding previews', () => {
         HttpResponse.json({
           providers: [{ provider: 'anthropic', source: 'stored-user', userCredential: 'api_key' }],
         }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
       ),
     );
     renderWithProviders(
@@ -37,31 +48,17 @@ describe('contextual onboarding previews', () => {
     expect(await personal.findByText('Your account is connected')).toBeVisible();
   });
 
-  it('shows the selected tracker’s issue becoming a backlog card and uses its connection state', async () => {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/integrations/platform/incident-io/connections`, () =>
-        HttpResponse.json({
-          connections: [{ id: 'incident-1', integrationId: 'incident-io', status: 'active', accountLabel: 'acme' }],
-        }),
-      ),
-    );
-    const { container, rerender } = renderWithProviders(
-      <OnboardingPreview step="project-management" source="linear" />,
-    );
+  it('shows a GitHub issue becoming a backlog card and reads Connected once a repository is picked', async () => {
+    const { container, rerender } = renderWithProviders(<OnboardingPreview step="project-management" />);
     const intakeFields = () =>
       Array.from(container.querySelectorAll('[data-slot="metadata-item"]'), item => item.textContent);
-    expect(intakeFields()).toEqual(['ENG-124', 'Issue']);
+    expect(intakeFields()).toEqual(['#412', 'Issue']);
     expect(screen.getByText('Example')).toBeInTheDocument();
     expect(screen.getByText('Choose what to bring in after setup.')).toBeInTheDocument();
 
-    rerender(<OnboardingPreview step="project-management" source="incident-io" />);
+    rerender(<OnboardingPreview step="project-management" repository={githubRepository} />);
     expect(await screen.findByText('Connected')).toBeInTheDocument();
-    expect(intakeFields()).toEqual(['INC-124', 'Follow-up']);
-    expect(screen.getAllByText('Add a health check')).toHaveLength(2);
-    expect(screen.queryByText('ENG-124')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Add team invitations')).toHaveLength(2);
   });
 
   it('keeps the shared model while personal access changes from a proposed connection to a saved credential', async () => {
@@ -81,9 +78,6 @@ describe('contextual onboarding previews', () => {
             },
           ],
         }),
-      ),
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
       ),
       http.get(`${TEST_BASE_URL}/web/config/default-model`, () =>
         HttpResponse.json({ modelId: null, thinkingLevel: null }),

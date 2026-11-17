@@ -13,7 +13,7 @@ export interface OnboardingWorkRowProps extends ChangeSectionProps {
 /** Work while closed: the connected sources once the user moved past Work, or a preview before that. */
 export function OnboardingWorkRow({ confirmed, repository, codeHostSync, ...change }: OnboardingWorkRowProps) {
   if (!confirmed) {
-    return <OnboardingNextRow section="project-management" hint="GitHub, GitLab, Linear, Jira or incident.io" />;
+    return <OnboardingNextRow section="project-management" hint="GitHub" />;
   }
   return <OnboardingWorkDoneRow repository={repository} codeHostSync={codeHostSync} {...change} />;
 }

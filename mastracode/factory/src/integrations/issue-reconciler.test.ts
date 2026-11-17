@@ -14,21 +14,19 @@ import { createGithubIssueReconciler } from './github/issue-reconciler.js';
 import { reconciledIssueRelabeledEvent } from './github/rules.js';
 import type { GithubIssueFetcher, GithubOpenIssueLister, ReconcileIssueState } from './github/rules.js';
 import { createIssueReconciler, EXTERNAL_SOURCE_MISSING_KEY } from './issue-reconciler.js';
-import { resolveLinearRules } from './linear/default-rules.js';
-import { attachLinearIssueReconciler } from './linear/issue-reconciler.js';
 
 function issue(overrides: Partial<IntakeIssueDetail> = {}): IntakeIssueDetail {
   return {
-    id: 'linear-uuid',
+    id: 'tracker-uuid',
     identifier: 'ENG-42',
     title: 'Issue',
-    url: 'https://linear.app/acme/issue/ENG-42',
-    author: 'Linear Ada',
+    url: 'https://tracker.example.com/acme/issue/ENG-42',
+    author: 'Ada',
     state: 'In Progress',
     stateType: 'started',
     priority: 'High',
-    assignee: 'Linear Grace',
-    assignees: ['Linear Grace'],
+    assignee: 'Grace',
+    assignees: ['Grace'],
     source: 'ENG',
     labels: ['triage'],
     commentCount: 0,
@@ -146,10 +144,10 @@ describe('issue reconcilers', () => {
       factoryProjectId: project.id,
       input: {
         externalSource: {
-          integrationId: 'gitlab',
+          integrationId: 'tracker',
           type: 'issue',
-          externalId: 'gitlab-issue:42',
-          url: 'https://gitlab.example.com/acme/app/-/issues/42',
+          externalId: 'tracker-issue:42',
+          url: 'https://tracker.example.com/acme/app/issues/42',
         },
         title: 'Issue 42',
         stages: ['intake'],
@@ -158,11 +156,11 @@ describe('issue reconcilers', () => {
       },
     });
     const intake = {
-      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'gitlab-project:1' }),
+      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'tracker-project:1' }),
       getIssue: vi.fn().mockResolvedValue(issue()),
     } as unknown as Intake;
     const reconcile = createIssueReconciler({
-      integrationId: 'gitlab',
+      integrationId: 'tracker',
       intake,
       projects: seeded.projects,
       storage: seeded.workItems,
@@ -187,10 +185,10 @@ describe('issue reconcilers', () => {
       factoryProjectId: project.id,
       input: {
         externalSource: {
-          integrationId: 'gitlab',
+          integrationId: 'tracker',
           type: 'issue',
-          externalId: 'gitlab-issue:42',
-          url: 'https://gitlab.example.com/acme/app/-/issues/42',
+          externalId: 'tracker-issue:42',
+          url: 'https://tracker.example.com/acme/app/issues/42',
         },
         title: 'Issue 42',
         stages: ['intake'],
@@ -201,11 +199,11 @@ describe('issue reconcilers', () => {
     let currentTime = new Date('2026-09-24T12:00:00Z');
     const getIssue = vi.fn().mockResolvedValue(null);
     const intake = {
-      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'gitlab-project:1' }),
+      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'tracker-project:1' }),
       getIssue,
     } as unknown as Intake;
     const reconcile = createIssueReconciler({
-      integrationId: 'gitlab',
+      integrationId: 'tracker',
       intake,
       projects: seeded.projects,
       storage: seeded.workItems,
@@ -258,10 +256,10 @@ describe('issue reconcilers', () => {
       factoryProjectId: project.id,
       input: {
         externalSource: {
-          integrationId: 'gitlab',
+          integrationId: 'tracker',
           type: 'issue',
-          externalId: 'gitlab-issue:42',
-          url: 'https://gitlab.example.com/acme/app/-/issues/42',
+          externalId: 'tracker-issue:42',
+          url: 'https://tracker.example.com/acme/app/issues/42',
         },
         title: 'Issue 42',
         stages: ['intake'],
@@ -271,11 +269,11 @@ describe('issue reconcilers', () => {
     });
     const getIssue = vi.fn().mockRejectedValue(new Error('upstream 502'));
     const intake = {
-      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'gitlab-project:1' }),
+      resolveIntakeDispatch: vi.fn().mockResolvedValue({ issueId: '42', sourceId: 'tracker-project:1' }),
       getIssue,
     } as unknown as Intake;
     const reconcile = createIssueReconciler({
-      integrationId: 'gitlab',
+      integrationId: 'tracker',
       intake,
       projects: seeded.projects,
       storage: seeded.workItems,
@@ -736,63 +734,4 @@ describe('issue reconcilers', () => {
     await expect(done.reconciler([repository])).resolves.toMatchObject({ checked: 1 });
     expect(doneFetch).toHaveBeenCalledTimes(1);
   });
-
-  it.each(['default', 'replacement', 'disabled'] as const)(
-    'replays canceled Linear issues with %s instance rules',
-    async mode => {
-      const seeded = await createFactoryStorageForTests();
-      const project = await seeded.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Factory' } });
-      await seeded.workItems.upsert({
-        orgId: project.orgId,
-        userId: project.createdBy,
-        factoryProjectId: project.id,
-        input: {
-          externalSource: {
-            integrationId: 'linear',
-            type: 'issue',
-            externalId: 'linear:ENG-42',
-            url: 'https://linear.app/acme/issue/ENG-42',
-          },
-          title: 'ENG-42: Issue',
-          stages: ['planning'],
-          sessions: {},
-          metadata: { linearIssueId: 'linear-uuid' },
-        },
-      });
-      const intake = {
-        resolveIntakeDispatch: vi
-          .fn()
-          .mockResolvedValue({ connection: { type: 'oauth', accessToken: 'token' }, issueId: 'linear-uuid' }),
-        getIssue: vi.fn().mockResolvedValue(issue({ state: 'Canceled', stateType: 'canceled' })),
-      } as unknown as Intake;
-      const replacement = vi.fn(() => ({
-        type: 'notify' as const,
-        idempotencyKey: 'reconciled-linear',
-        title: 'Closed issue',
-      }));
-      const reconcile = attachLinearIssueReconciler(
-        {
-          intake,
-          rules: resolveLinearRules(
-            mode === 'default' ? undefined : { issueClosed: mode === 'disabled' ? null : replacement },
-          ),
-          loadConnection: async () => null,
-          getFreshAccessToken: async () => 'token',
-        },
-        {
-          storage: { projects: seeded.projects, intake: seeded.intake },
-          runtime: { configVersion: 'factory-config-v1', workItems: seeded.workItems, boards: createTriageWorkRegistry() },
-        } as never,
-      );
-
-      await expect(reconcile?.()).resolves.toMatchObject({ checked: 1, closed: 1, updated: 0 });
-      const decisions = await seeded.workItems.listDeferredDecisions('org-1', project.id);
-      expect(decisions).toHaveLength(mode === 'disabled' ? 0 : 1);
-      if (mode === 'default') expect(decisions[0]?.decision).toMatchObject({ type: 'transition', stage: 'canceled' });
-      if (mode === 'replacement') {
-        expect(replacement).toHaveBeenCalledOnce();
-        expect(decisions[0]?.decision).toMatchObject({ type: 'notify', title: 'Closed issue' });
-      }
-    },
-  );
 });
