@@ -62,6 +62,17 @@ describe('createWaitingNotices', () => {
     ]);
   });
 
+  it('names a call by the thread its run window opened on, not the one the session has moved to', async () => {
+    const { announce, reports, windows } = notices();
+    let thread = 'thread-old';
+    windows.watch('s1', () => thread)(new Date('2030-01-01T00:00:00.000Z'));
+    thread = 'thread-new';
+
+    await announce(held({}));
+
+    expect(reports[0]?.threadId).toBe('thread-old');
+  });
+
   it('tells of a gate as an approval, quoting its call, and of nothing the board answers itself', async () => {
     const { announce, reports, approvals } = notices(toolCallId => toolCallId === 'call-plan');
 

@@ -602,6 +602,33 @@ describe('factory_message_origin', () => {
     );
   });
 
+  // fork(claude-agent): with no runtime keeping claims, the right to answer is still taken atomically.
+  it('lets only one of two simultaneous replies through when the runtime keeps no claims', async () => {
+    const env = setup();
+    const messageId = await messaged(env);
+    const results = await Promise.allSettled([
+      env.run(WORKER, 'factory_message_origin', { message: 'one', inReplyTo: messageId }),
+      env.run(WORKER, 'factory_message_origin', { message: 'two', inReplyTo: messageId }),
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.message).toBe(
+      `You already answered ${messageId}.`,
+    );
+    const replies = await env.notifications.listNotifications({ threadId: 'thread-session-1' });
+    expect(replies.filter(record => record.kind === 'reply')).toHaveLength(1);
+  });
+
+  it('gives the in-process claim back when the answer could not be sent', async () => {
+    const env = setup();
+    const messageId = await messaged(env);
+    env.dropThreads();
+    await expect(env.run(WORKER, 'factory_message_origin', { message: 'one', inReplyTo: messageId })).rejects.toThrow();
+    env.restoreThreads();
+    await expect(
+      env.run(WORKER, 'factory_message_origin', { message: 'one', inReplyTo: messageId }),
+    ).resolves.toMatchObject({ delivered: expect.any(String) });
+  });
+
   it('refuses a second reply to the same message', async () => {
     const env = setup();
     const messageId = await messaged(env);
@@ -1344,5 +1371,74 @@ describe('factory_message_origin in a Claude Agent session', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('keeps a queued answer whose delivery throws and sends it on the next tick', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { deliverAt: string };
+    const runtime = (await env.deps.messaging())!.runtime!;
+    env.agent.sendNotificationSignal.mockRejectedValueOnce(new Error('inbox failed'));
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 1000) });
+    try {
+      await vi.waitFor(
+        () => expect(runtime.deliveries!.confirmReply).toHaveBeenCalledWith('session-claude', notificationId),
+        { timeout: QUEUE_WAIT_MS * 4 },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(env.agent.sendNotificationSignal.mock.calls.length).toBe(2);
+    expect(runtime.deliveries!.releaseReply).not.toHaveBeenCalled();
+  });
+
+  it('gives the claim back when a queued answer keeps failing to go out', async () => {
+    const env = setup({ claude: ['session-claude'] });
+    const { notificationId } = await messaged(env);
+    for (let i = 0; i < SIGNAL_RATE_LIMIT; i += 1) {
+      await env.notifications.createNotification({
+        threadId: 'thread-session-1',
+        resourceId: 'session-1',
+        source: 'factory-session',
+        kind: 'message',
+        summary: `ping ${i}`,
+        priority: 'medium',
+        sourceId: 'session-claude',
+        attributes: { 'from-session': 'session-claude', 'from-thread': 'session-claude' },
+      });
+    }
+    const queued = (await env.run(CLAUDE, 'factory_message_origin', {
+      message: 'Green.',
+      inReplyTo: notificationId,
+    })) as { deliverAt: string };
+    const runtime = (await env.deps.messaging())!.runtime!;
+    env.agent.sendNotificationSignal.mockRejectedValue(new Error('inbox failed'));
+
+    vi.useFakeTimers({ toFake: ['Date'], now: new Date(Date.parse(queued.deliverAt) + 1000) });
+    try {
+      await vi.waitFor(
+        () => expect(runtime.deliveries!.releaseReply).toHaveBeenCalledWith('session-claude', notificationId),
+        { timeout: QUEUE_WAIT_MS * 5 },
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(runtime.deliveries!.confirmReply).not.toHaveBeenCalled();
   });
 });

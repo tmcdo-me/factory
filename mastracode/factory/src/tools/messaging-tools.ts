@@ -59,7 +59,12 @@ interface PendingMessage {
   settled?: (delivered: boolean) => Promise<void>;
 }
 
+/** How many times a queued answer's delivery may throw before it is dropped and its claim given back. */
+const MAX_FLUSH_ATTEMPTS = 3;
+
 interface QueuedDelivery extends PendingMessage {
+  /** Deliveries that threw so far; the message stays at the head of its queue until one goes out. */
+  failures?: number;
   /** The moment a slot in the window is expected to free. Set once, when it joins the queue. */
   deliverAt: number;
   target: { sessionId: string; threadId: string };
@@ -73,6 +78,11 @@ interface QueuedDelivery extends PendingMessage {
  */
 const pendingQueues = new Map<string, QueuedDelivery[]>();
 const flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+/**
+ * fork(claude-agent): in-process claims to answer a message, used when the runtime keeps none
+ * (`runtime.deliveries` absent), keyed by answering session and message id.
+ */
+const localReplyClaims = new WeakMap<object, Set<string>>();
 
 const queueOwners = new WeakMap<object, number>();
 let nextQueueOwnerId = 0;
@@ -293,16 +303,32 @@ export function createFactoryMessagingTools(
       scheduleFlush(key);
       return;
     }
-    queue.shift();
-    if (queue.length === 0) pendingQueues.delete(key);
-    const result = await deliverFactorySessionNotification({
-      controller: messaging.controller,
-      ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
-      sessions: deps.sessions,
-      runs: deps.workItems,
-      target: head.target,
-      notification: head.notification,
-    });
+    const removeHead = () => {
+      const at = queue.indexOf(head);
+      if (at >= 0) queue.splice(at, 1);
+      if (queue.length === 0) pendingQueues.delete(key);
+    };
+    let result: Awaited<ReturnType<typeof deliverFactorySessionNotification>>;
+    try {
+      result = await deliverFactorySessionNotification({
+        controller: messaging.controller,
+        ...(messaging.runtime ? { runtime: messaging.runtime } : {}), // fork(claude-agent)
+        sessions: deps.sessions,
+        runs: deps.workItems,
+        target: head.target,
+        notification: head.notification,
+      });
+    } catch (error) {
+      // fork(claude-agent): the message stays at the head to be retried, so a failed delivery doesn't
+      // lose it; one that keeps failing is dropped and its claim to answer given back.
+      head.failures = (head.failures ?? 0) + 1;
+      if (head.failures >= MAX_FLUSH_ATTEMPTS) {
+        removeHead();
+        await head.settled?.(false).catch(() => undefined);
+      }
+      throw error;
+    }
+    removeHead();
     await head.settled?.(result.delivered !== 'skipped').catch(() => undefined); // fork(claude-agent)
     await deps.auditRecorder.record({
       orgId: scope.orgId,
@@ -507,9 +533,23 @@ export function createFactoryMessagingTools(
       // answer already sent, which two answers at once both pass). The claim is leased until the
       // answer goes out: confirmed then, given back when it can't be sent, and lapsing if the server
       // stops first (a queued answer is lost with it), so a later answer isn't refused for good.
-      const deliveries = messaging.runtime?.deliveries;
-      if (!deliveries) return answer();
       const sessionId = scope.sessionId;
+      const claimKey = `${sessionId}\0${inReplyTo}`;
+      let local = localReplyClaims.get(deps);
+      if (!local) localReplyClaims.set(deps, (local = new Set()));
+      const localClaims = local;
+      // Without a runtime that keeps claims, the same right is held in this process.
+      const deliveries: Pick<
+        NonNullable<FactoryMessaging['runtime']>['deliveries'] & object,
+        'claimReply' | 'confirmReply' | 'releaseReply' | 'extendReply'
+      > = messaging.runtime?.deliveries ?? {
+        claimReply: async () => !localClaims.has(claimKey) && (localClaims.add(claimKey), true),
+        confirmReply: async () => undefined,
+        releaseReply: async () => {
+          localClaims.delete(claimKey);
+        },
+        extendReply: async () => undefined,
+      };
       if (!(await deliveries.claimReply(sessionId, inReplyTo, new Date(Date.now() + REPLY_LEASE_MS)))) {
         throw new Error(`You already answered ${inReplyTo}.`);
       }
