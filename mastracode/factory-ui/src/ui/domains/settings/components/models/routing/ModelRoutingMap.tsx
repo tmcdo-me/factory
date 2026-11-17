@@ -1,9 +1,7 @@
 import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
-import { LinearIcon } from '@mastra/playground-ui/icons/LinearIcon';
 import { SlackIcon } from '@mastra/playground-ui/icons/SlackIcon';
 import { useState } from 'react';
 
-import { GitLabIcon, IncidentIoIcon, JiraIcon } from '../../../../../ui/icons';
 import type { FactoryModelScope } from '../../../../workspaces/services/github';
 import { FactoryDefaultModel } from '../defaults/FactoryDefaultModel';
 import { PersonalDefaultModel } from '../defaults/PersonalDefaultModel';
@@ -35,18 +33,6 @@ export function ModelRoutingMap({ factoryId, modelScope }: { factoryId: string; 
           <LaneCard lane="runs" destination={routes.runs} anchorRef={anchors.runs}>
             <LaneSource label="GitHub">
               <GithubIcon />
-            </LaneSource>
-            <LaneSource label="GitLab">
-              <GitLabIcon />
-            </LaneSource>
-            <LaneSource label="Linear">
-              <LinearIcon />
-            </LaneSource>
-            <LaneSource label="Jira">
-              <JiraIcon />
-            </LaneSource>
-            <LaneSource label="incident.io">
-              <IncidentIoIcon />
             </LaneSource>
           </LaneCard>
         </>

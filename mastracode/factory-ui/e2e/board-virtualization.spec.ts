@@ -36,11 +36,10 @@ test.describe('Factory board virtualization', () => {
       http.get('*/web/factory/projects/fp-1/sessions', () => HttpResponse.json({ sessions: [] })),
       http.get('*/web/intake/config', () =>
         HttpResponse.json({
-          config: { github: { enabled: false, sourceIds: null }, linear: { enabled: false, sourceIds: null } },
+          config: { github: { enabled: false, sourceIds: null } },
         }),
       ),
       http.get('*/web/intake/bindings', () => HttpResponse.json({ bindings: [] })),
-      http.get('*/web/linear/status', () => HttpResponse.json({ enabled: false, connected: false })),
       http.get('*/api/agent-controller/code/sessions/fp-1/permissions', () => HttpResponse.json({ permissions: [] })),
       // The feed sends nothing here: the board is read once and scrolled.
       http.get('*/web/factory/projects/fp-1/feed-events', () => new HttpResponse(null, { status: 404 })),

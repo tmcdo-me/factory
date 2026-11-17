@@ -68,31 +68,7 @@ export const queryKeys = {
     ['github', 'pr', githubProjectId ?? null, number ?? null] as const,
   repositorySettings: (projectRepositoryId: string | undefined) =>
     ['source-control', 'repository-settings', projectRepositoryId ?? null] as const,
-  gitlabStatus: (baseUrl: string) => ['gitlab', 'status', baseUrl] as const,
-  gitlabProjects: (baseUrl: string) => ['gitlab', 'projects', baseUrl] as const,
-  gitlabIssue: (baseUrl: string, factoryProjectId: string | undefined, issueId: string | undefined) =>
-    ['gitlab', 'issue', baseUrl, factoryProjectId ?? null, issueId ?? null] as const,
-  gitlabPull: (
-    baseUrl: string,
-    factoryProjectId: string | undefined,
-    projectRepositoryId: string | undefined,
-    number: number | undefined,
-  ) => ['gitlab', 'pr', baseUrl, factoryProjectId ?? null, projectRepositoryId ?? null, number ?? null] as const,
-  linearStatus: () => ['linear', 'status'] as const,
-  linearProjects: () => ['linear', 'projects'] as const,
-  linearTeams: () => ['linear', 'teams'] as const,
-  linearIssue: (factoryProjectId: string | undefined, identifier: string | undefined, issueId: string | undefined) =>
-    ['linear', 'issue', factoryProjectId ?? null, identifier ?? null, issueId ?? null] as const,
-  jiraStatus: () => ['jira', 'status'] as const,
-  platformConnections: (provider: string) => ['platform-connections', provider] as const,
   connectTools: () => ['connect-tools'] as const,
-  jiraProjects: () => ['jira', 'projects'] as const,
-  jiraIssue: (factoryProjectId: string | undefined, identifier: string | undefined, issueRef: string | undefined) =>
-    ['jira', 'issue', factoryProjectId ?? null, identifier ?? null, issueRef ?? null] as const,
-  incidentioSources: () => ['incidentio', 'sources'] as const,
-  incidentioStatus: () => ['incidentio', 'status'] as const,
-  incidentioIssue: (factoryProjectId: string | undefined, issueRef: string | undefined) =>
-    ['incidentio', 'issue', factoryProjectId ?? null, issueRef ?? null] as const,
   intakeConfig: () => ['intake', 'config'] as const,
   intakeBindings: () => ['intake', 'bindings'] as const,
   intakeRoutes: (factoryProjectId: string | undefined) => ['intake', 'routes', factoryProjectId ?? null] as const,

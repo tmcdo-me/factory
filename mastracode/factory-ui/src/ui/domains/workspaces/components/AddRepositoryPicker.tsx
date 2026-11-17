@@ -18,13 +18,10 @@ import { IconArrowRotateCounterClockwise } from '@mastra/playground-ui/icons/cen
 import { IconCrossMedium } from '@mastra/playground-ui/icons/central/IconCrossMedium';
 import { useRef, useState } from 'react';
 
-import { useGitLabProjectsQuery, useGitLabStatusQuery } from '../../../../hooks/useGitLabData';
 import { useGithubReposQuery, useRefreshGithubReposMutation } from '../../../../hooks/useGithubRepos';
 import { useGithubStatusQuery } from '../../../../hooks/useGithubStatus';
-import { gitLabProjectRepository } from '../../factory/services/gitlab';
 import { IntegrationItemIcon } from '../../settings/components/IntegrationItem';
 import type { FactoryProject, GithubStatus, SourceControlRepository } from '../services/github';
-import { isGitLabRepository } from '../services/github';
 import { IconPlusMedium } from '@mastra/playground-ui/icons/central/IconPlusMedium';
 
 export function AddRepositoryPicker({
@@ -43,42 +40,21 @@ export function AddRepositoryPicker({
   const searchQuery = (query && debouncedQuery) || undefined;
   const searchInput = useRef<HTMLInputElement>(null);
   const githubStatus = useGithubStatusQuery();
-  const gitlabStatus = useGitLabStatusQuery();
   const githubConnected = githubStatus.data?.connected === true;
-  const gitlabConfigured = gitlabStatus.data?.enabled === true && gitlabStatus.data.configured;
   const reposQuery = useGithubReposQuery(searchQuery, githubConnected);
-  const gitlabProjects = useGitLabProjectsQuery(gitlabConfigured);
   const refreshRepos = useRefreshGithubReposMutation(searchQuery);
 
   const linkedKeys = new Set(factory.repositories.map(repo => `${repo.provider ?? 'github'}:${repo.slug}`));
-  const repositories: SourceControlRepository[] = [
-    ...(reposQuery.data ?? []),
-    ...(gitlabProjects.data ?? []).flatMap(project => {
-      const repository = gitLabProjectRepository(project);
-      return repository ? [repository] : [];
-    }),
-  ];
+  const repositories: SourceControlRepository[] = reposQuery.data ?? [];
   const normalizedQuery = query.trim().toLowerCase();
-  const available = repositories.filter(repo => {
-    const provider = isGitLabRepository(repo) ? 'gitlab' : 'github';
-    return !linkedKeys.has(`${provider}:${repo.fullName}`) && repo.fullName.toLowerCase().includes(normalizedQuery);
-  });
-  const pending =
-    githubStatus.isPending ||
-    gitlabStatus.isPending ||
-    (githubConnected && reposQuery.isPending) ||
-    (gitlabConfigured && gitlabProjects.isPending);
-  const error =
-    githubStatus.error ??
-    reposQuery.error ??
-    gitlabStatus.error ??
-    gitlabProjects.error ??
-    refreshRepos.error ??
-    linkError;
+  const available = repositories.filter(
+    repo => !linkedKeys.has(`github:${repo.fullName}`) && repo.fullName.toLowerCase().includes(normalizedQuery),
+  );
+  const pending = githubStatus.isPending || (githubConnected && reposQuery.isPending);
+  const error = githubStatus.error ?? reposQuery.error ?? refreshRepos.error ?? linkError;
   const githubUnavailable = githubStatus.data?.reason === 'unavailable';
-  const gitlabUnavailable = gitlabStatus.data?.reason === 'unavailable';
-  const statusUnavailable = githubUnavailable || gitlabUnavailable;
-  const canSearch = githubConnected || gitlabConfigured;
+  const statusUnavailable = githubUnavailable;
+  const canSearch = githubConnected;
   const waitingForSearch =
     githubConnected && (query !== (searchQuery ?? '') || reposQuery.isPlaceholderData || reposQuery.isFetching);
   const loadingResults = pending || (available.length === 0 && waitingForSearch && !error && !statusUnavailable);
@@ -124,25 +100,18 @@ export function AddRepositoryPicker({
             onRetry={() => void githubStatus.refetch()}
           />
         )}
-        {gitlabUnavailable && (
-          <StatusUnavailableNotice
-            provider="GitLab"
-            retrying={gitlabStatus.isFetching}
-            onRetry={() => void gitlabStatus.refetch()}
-          />
-        )}
         {loadingResults ? (
           <SettingsSkeleton label="Loading available repositories" variant="item" rows={3} />
         ) : canSearch ? (
           <div className="divide-border flex flex-col divide-y *:py-3">
             {available.map(repo => (
               <SettingsItem
-                key={`${isGitLabRepository(repo) ? 'gitlab' : 'github'}:${repo.id}`}
-                media={<IntegrationItemIcon provider={isGitLabRepository(repo) ? 'gitlab' : 'github'} />}
+                key={`github:${repo.id}`}
+                media={<IntegrationItemIcon provider="github" />}
                 title={<span title={repo.fullName}>{repo.fullName}</span>}
                 description={
                   <Metadata>
-                    {!isGitLabRepository(repo) && <Metadata.Item>{repo.private ? 'Private' : 'Public'}</Metadata.Item>}
+                    <Metadata.Item>{repo.private ? 'Private' : 'Public'}</Metadata.Item>
                     <Metadata.Item>Default branch: {repo.defaultBranch}</Metadata.Item>
                   </Metadata>
                 }
@@ -191,7 +160,7 @@ function StatusUnavailableNotice({
   retrying,
   onRetry,
 }: {
-  provider: 'GitHub' | 'GitLab';
+  provider: 'GitHub';
   retrying: boolean;
   onRetry: () => void;
 }) {
@@ -225,5 +194,5 @@ function githubUnavailableMessage(status: GithubStatus | undefined): string {
       ? `GitHub is disabled on the server. Missing env vars: ${missing.join(', ')}.`
       : 'No source-control provider is configured on this server.';
   }
-  return 'Connect GitHub or GitLab to add repositories.';
+  return 'Connect GitHub to add repositories.';
 }

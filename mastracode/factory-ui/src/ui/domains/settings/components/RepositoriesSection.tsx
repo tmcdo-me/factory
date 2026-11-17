@@ -33,8 +33,7 @@ export function RepositoriesSection() {
     return <Notice variant="info">Select a factory to manage its repositories.</Notice>;
   }
 
-  const githubRelevant =
-    githubConnected || activeFactory.repositories.some(repository => repository.provider !== 'gitlab');
+  const githubRelevant = githubConnected || activeFactory.repositories.length > 0;
 
   return (
     <>

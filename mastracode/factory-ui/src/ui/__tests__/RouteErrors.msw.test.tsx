@@ -22,10 +22,7 @@ beforeEach(() => {
     ),
     http.get(`${TEST_BASE_URL}/web/factory/projects/fp-1/sessions`, () => HttpResponse.json({ sessions: [] })),
     http.get(`${TEST_BASE_URL}/api/agent-controller/code/sessions/:sessionId/permissions`, () => HttpResponse.json({})),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () => HttpResponse.json({ enabled: false, connected: false })),
-    http.get(`${TEST_BASE_URL}/web/intake/config`, () =>
-      HttpResponse.json({ config: { github: { enabled: false }, linear: { enabled: false } } }),
-    ),
+    http.get(`${TEST_BASE_URL}/web/intake/config`, () => HttpResponse.json({ config: { github: { enabled: false } } })),
     http.get(`${TEST_BASE_URL}/web/intake/bindings`, () => HttpResponse.json({ bindings: [] })),
   );
 });

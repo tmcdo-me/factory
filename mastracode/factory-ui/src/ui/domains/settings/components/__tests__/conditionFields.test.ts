@@ -71,7 +71,7 @@ describe('condition rows', () => {
 
     expect(label('author.trusted', false)).toBe('Outside author');
     expect(label('source.kind', 'pull_request')).toBe('Pull request');
-    expect(label('source.integration', 'incidentio')).toBe('incident.io');
+    expect(label('source.integration', 'github')).toBe('GitHub');
     expect(label('event.reason', 'canceled')).toBe('Not planned');
   });
 

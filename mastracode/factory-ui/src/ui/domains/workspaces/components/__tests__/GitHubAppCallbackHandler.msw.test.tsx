@@ -71,11 +71,6 @@ describe('GitHubAppCallbackHandler', () => {
 
 describe('OnboardingPage GitHub callback', () => {
   function renderOnboarding(initialEntry: string) {
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ enabled: true, connected: false, reason: 'not_connected' }),
-      ),
-    );
     const router = createMemoryRouter(
       [
         {

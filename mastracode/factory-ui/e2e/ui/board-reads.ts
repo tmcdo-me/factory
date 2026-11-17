@@ -173,7 +173,6 @@ export function answerBoardPhases(request: Request, project: StubbedProject, boa
     sort: url.searchParams.get('sort') ?? undefined,
     q: url.searchParams.get('q') ?? undefined,
     source: queryValues(url, 'source'),
-    linearProject: queryValues(url, 'linearProject'),
     label: queryValues(url, 'label'),
     teammate: queryValues(url, 'teammate'),
     author: queryValues(url, 'author'),

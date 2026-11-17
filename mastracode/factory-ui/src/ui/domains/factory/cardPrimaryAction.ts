@@ -85,15 +85,7 @@ export function cardMoves(item: MovableCard, columnStage: BoardStageId, board: B
       { label: 'Prepare approval', role: loop.triage.context, stage: loop.triage.phase, awaitsHumanDecision: true },
     ];
   }
-  if (
-    item.source === 'github-issue' ||
-    item.source === 'gitlab-issue' ||
-    item.source === 'linear-issue' ||
-    item.source === 'jira-issue' ||
-    item.source === 'incidentio-follow-up'
-  ) {
-    return issueMoves(loop, columnStage);
-  }
+  if (item.source === 'github-issue') return issueMoves(loop, columnStage);
   return isPullRequestSource(item.source) ? reviewMove(loop, 'Review') : [];
 }
 

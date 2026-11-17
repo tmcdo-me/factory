@@ -1,24 +1,19 @@
 import { Button } from '@mastra/playground-ui/components/Button';
 import { SearchInput } from '@mastra/playground-ui/components/SearchInput';
-import { SegmentedControl, SegmentedControlItem } from '@mastra/playground-ui/components/SegmentedControl';
 import { useDebouncedValue } from '@mastra/playground-ui/hooks/use-debounced-value';
 import { cn } from '@mastra/playground-ui/utils/cn';
 import { IconArrowRotateClockwise } from '@mastra/playground-ui/icons/central/IconArrowRotateClockwise';
 import { useState } from 'react';
 
-import { useGitLabProjectsQuery, useGitLabStatusQuery } from '../../../../hooks/useGitLabData';
 import { useGithubReposQuery, useRefreshGithubReposMutation } from '../../../../hooks/useGithubRepos';
 import { useGithubStatusQuery } from '../../../../hooks/useGithubStatus';
 import { SkeletonRows } from '../../../ui/SkeletonRows';
-import { gitLabProjectRepository } from '../../factory/services/gitlab';
 import type { SourceControlRepository } from '../services/github';
 import { githubCallbackAwaitsAccess } from '../services/githubCallbackRecovery';
-import { gitLabUnavailableReason, githubUnavailableReason, repositoryHost } from '../services/sourceControlHosts';
-import type { SourceControlHost } from '../services/sourceControlHosts';
+import { githubUnavailableReason } from '../services/sourceControlHosts';
 import type { GitHubAppCallbackResult } from './GitHubAppCallbackHandler';
 import { OnboardingGithubHostRow } from './onboarding/OnboardingGithubHostRow';
 import { OnboardingGithubNotice } from './onboarding/OnboardingGithubNotice';
-import { OnboardingGitlabHostRow } from './onboarding/OnboardingGitlabHostRow';
 import { OnboardingInset } from './onboarding/OnboardingInset';
 import { OnboardingRepositoryError } from './onboarding/OnboardingRepositoryError';
 import { OnboardingRepositoryRows } from './onboarding/OnboardingRepositoryRows';
@@ -46,13 +41,6 @@ export function VcsFactoryStep({
   onSelectRepository,
   onPreviewRepository,
 }: VcsFactoryStepProps) {
-  // Decided once on arrival: a GitHub App result is about GitHub, so it opens there even over a GitLab
-  // repository or a ready GitLab, and stays there when the result is dismissed. Undefined follows the
-  // connection status, so an OAuth return lands on the connected host.
-  const [pinnedHost, setPinnedHost] = useState<SourceControlHost | undefined>(() => {
-    if (githubCallback) return 'github';
-    return initialRepository && repositoryHost(initialRepository);
-  });
   const [chosenRepository, setChosenRepository] = useState(initialRepository);
   const [query, setQuery] = useState('');
   const debouncedQuery = useDebouncedValue(query, 750);
@@ -60,26 +48,15 @@ export function VcsFactoryStep({
   const search = query === '' ? '' : debouncedQuery;
   const githubStatus = useGithubStatusQuery();
   const connected = githubStatus.data?.connected === true;
-  const gitlabStatus = useGitLabStatusQuery();
-  const gitlabConfigured = Boolean(gitlabStatus.data?.enabled && gitlabStatus.data.configured);
-  const anyHostReady = connected || gitlabConfigured;
-  const host = pinnedHost ?? (connected ? 'github' : 'gitlab');
-  const hostReady = host === 'github' ? connected : gitlabConfigured;
-  const repositoryForProvider =
-    chosenRepository && repositoryHost(chosenRepository) === host ? chosenRepository : undefined;
+  const repositoryForProvider = chosenRepository;
   const repositorySearch = search || undefined;
-  const repos = useGithubReposQuery(repositorySearch, connected && host === 'github');
+  const repos = useGithubReposQuery(repositorySearch, connected);
   const refreshRepos = useRefreshGithubReposMutation(repositorySearch);
-  const gitlabProjects = useGitLabProjectsQuery(gitlabConfigured && host === 'gitlab');
-  const gitlabRepos = (gitlabProjects.data ?? []).flatMap(project => {
-    const repository = gitLabProjectRepository(project);
-    return repository ? [repository] : [];
-  });
-  const repositoryQuery = host === 'gitlab' ? gitlabProjects : repos;
+  const repositoryQuery = repos;
   // A failed first load has no list; its empty-list text would wrongly blame repository access.
   const repositoriesFailed = repositoryQuery.isError && repositoryQuery.data === undefined;
-  const refreshFailed = host === 'github' && refreshRepos.isError;
-  const statusPending = githubStatus.isPending || gitlabStatus.isPending;
+  const refreshFailed = refreshRepos.isError;
+  const statusPending = githubStatus.isPending;
   const chooseRepository = (repository: SourceControlRepository) => {
     setChosenRepository(repository);
     onPreviewRepository?.(repository);
@@ -90,10 +67,8 @@ export function VcsFactoryStep({
     // A refresh failure was about the list it refreshed.
     refreshRepos.reset();
   };
-  const showRepositories = !statusPending && hostReady;
-  // With no host ready both rows show; otherwise only the selected host's row, so it can be connected.
-  const showGithubRow = !statusPending && !hostReady && (!anyHostReady || host === 'github');
-  const showGitlabRow = !statusPending && !hostReady && (!anyHostReady || host === 'gitlab');
+  const showRepositories = !statusPending && connected;
+  const showGithubRow = !statusPending && !connected;
   const refreshGithub = () => {
     // The repository refresh re-syncs status itself; refetching here too cancels and repeats it.
     if (connected) {
@@ -115,46 +90,20 @@ export function VcsFactoryStep({
   return (
     <OnboardingStepCard
       section="vcs"
-      headerEnd={
-        !statusPending &&
-        anyHostReady && (
-          <SegmentedControl
-            aria-label="Source control host"
-            value={host}
-            onValueChange={next => {
-              setPinnedHost(next);
-              setQuery('');
-              resetChoice();
-            }}
-            className="max-[899px]:w-full"
-          >
-            <SegmentedControlItem value="github" className="max-[899px]:min-w-0 max-[899px]:flex-1">
-              GitHub
-            </SegmentedControlItem>
-            <SegmentedControlItem value="gitlab" className="max-[899px]:min-w-0 max-[899px]:flex-1">
-              GitLab
-            </SegmentedControlItem>
-          </SegmentedControl>
-        )
-      }
       notice={
-        // With no host ready both host rows show, so GitHub's notice belongs there too.
-        (host === 'github' || !anyHostReady) && (
-          <OnboardingGithubNotice
-            callback={githubCallback}
-            statusReason={githubStatus.data?.reason}
-            statusChecked={githubStatus.isFetchedAfterMount}
-            redirecting={githubRedirecting}
-            refreshing={githubStatus.isFetching || refreshRepos.isPending}
-            onConnect={onConnect}
-            onRefresh={refreshGithub}
-            onDismiss={onDismissGithubCallback}
-          />
-        )
+        <OnboardingGithubNotice
+          callback={githubCallback}
+          statusReason={githubStatus.data?.reason}
+          statusChecked={githubStatus.isFetchedAfterMount}
+          redirecting={githubRedirecting}
+          refreshing={githubStatus.isFetching || refreshRepos.isPending}
+          onConnect={onConnect}
+          onRefresh={refreshGithub}
+          onDismiss={onDismissGithubCallback}
+        />
       }
       actions={
-        showRepositories &&
-        host === 'github' && (
+        showRepositories && (
           <>
             <Button variant="ghost" size="sm" onClick={onManageConnection}>
               Manage access
@@ -194,28 +143,15 @@ export function VcsFactoryStep({
           <SkeletonRows label="Loading source control status" rows={2} rowClassName="h-15 w-full" />
         </OnboardingInset>
       )}
-      {(showGithubRow || showGitlabRow) && (
+      {showGithubRow && (
         <OnboardingInset>
-          {showGithubRow && (
-            <OnboardingGithubHostRow
-              redirecting={githubRedirecting}
-              unavailableReason={githubUnavailableReason(githubStatus.data?.reason)}
-              retrying={githubStatus.isFetching}
-              onConnect={onConnect}
-              onRetry={() => void githubStatus.refetch()}
-            />
-          )}
-          {showGitlabRow && (
-            <OnboardingGitlabHostRow
-              unavailableReason={gitLabUnavailableReason(gitlabStatus.data)}
-              retrying={gitlabStatus.isFetching}
-              onConnected={() => {
-                setPinnedHost('gitlab');
-                void gitlabStatus.refetch();
-              }}
-              onRetry={() => void gitlabStatus.refetch()}
-            />
-          )}
+          <OnboardingGithubHostRow
+            redirecting={githubRedirecting}
+            unavailableReason={githubUnavailableReason(githubStatus.data?.reason)}
+            retrying={githubStatus.isFetching}
+            onConnect={onConnect}
+            onRetry={() => void githubStatus.refetch()}
+          />
         </OnboardingInset>
       )}
       {showRepositories && (
@@ -255,8 +191,7 @@ export function VcsFactoryStep({
               }}
             >
               <OnboardingRepositoryRows
-                repositories={host === 'github' ? (repos.data ?? []) : gitlabRepos}
-                host={host}
+                repositories={repos.data ?? []}
                 search={search}
                 pending={repositoryQuery.isPending}
                 selectedRepositoryId={repositoryForProvider?.id}

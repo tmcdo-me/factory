@@ -7,7 +7,7 @@ export interface ChangeTreeNode {
   children: ChangeTreeNode[];
 }
 
-export type RepositoryProvider = 'github' | 'gitlab';
+export type RepositoryProvider = 'github';
 
 export type RepositoryProviders = Record<string, RepositoryProvider | undefined>;
 

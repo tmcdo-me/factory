@@ -330,7 +330,7 @@ export default defineConfig(({ mode }) => {
     server: {
       host: uiHost,
       port: uiPort,
-      // OAuth callback URLs (WorkOS/GitHub/Linear) are registered against the
+      // OAuth callback URLs (WorkOS/GitHub) are registered against the
       // configured UI origin ahead of time. Silently hopping to a free port
       // would keep the UI working while every OAuth redirect breaks — fail
       // instead so the port stays consistent with MASTRACODE_PUBLIC_URL.

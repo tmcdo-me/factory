@@ -54,7 +54,7 @@ const SETTINGS_GROUPS: SettingsNavGroup[] = [
         id: 'connections',
         label: SETTINGS_SECTION_LABELS.connections,
         icon: Cable,
-        searchText: 'personal organization connections connected accounts slack integrations github gitlab tokens pat',
+        searchText: 'personal organization connections connected accounts slack integrations github tokens pat',
       },
     ],
   },
@@ -92,14 +92,14 @@ const SETTINGS_GROUPS: SettingsNavGroup[] = [
         label: SETTINGS_SECTION_LABELS.repositories,
         icon: IconBranch,
         searchText:
-          'repositories source control git branches remotes code worktrees clone order pre-clone setup teardown github gitlab',
+          'repositories source control git branches remotes code worktrees clone order pre-clone setup teardown github',
       },
       {
         id: 'intake',
         label: SETTINGS_SECTION_LABELS.intake,
         icon: IconInboxEmpty,
         searchText:
-          'work intake sources tasks issues pull requests github gitlab linear jira incident feed sync connect routes routing new cards board catch-all',
+          'work intake sources tasks issues pull requests github feed sync connect routes routing new cards board catch-all',
       },
       {
         id: 'factory',

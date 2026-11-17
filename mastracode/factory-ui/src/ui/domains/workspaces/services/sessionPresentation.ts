@@ -4,7 +4,6 @@ import { SLACK_SESSION_BRANCH_PREFIX, USER_SESSION_BRANCH_PREFIX } from './user-
 import type { FactoryUserSession } from './user-sessions';
 
 const GITHUB_REVIEW_BRANCH = /^factory\/pr-([1-9]\d*)$/;
-const GITLAB_REVIEW_BRANCH = /^factory\/gitlab-mr-([1-9]\d*)-[a-z0-9]+$/;
 
 export interface SessionOwnerDetails {
   name: string;
@@ -52,16 +51,13 @@ export type SessionSource = WorkItemSource | 'user';
 export function getFactorySessionSource(session: FactoryUserSession, workItem: WorkItem | undefined): WorkItemSource {
   if (workItem) return workItem.source;
   if (GITHUB_REVIEW_BRANCH.test(session.branch)) return 'github-pr';
-  if (GITLAB_REVIEW_BRANCH.test(session.branch)) return 'gitlab-pr';
   if (session.branch.startsWith(SLACK_SESSION_BRANCH_PREFIX)) return 'slack-thread';
   return 'manual';
 }
 
 export function getReviewBranchIdentifier(branch: string): string | undefined {
   const github = GITHUB_REVIEW_BRANCH.exec(branch);
-  if (github) return `#${github[1]}`;
-  const gitlab = GITLAB_REVIEW_BRANCH.exec(branch);
-  return gitlab ? `!${gitlab[1]}` : undefined;
+  return github ? `#${github[1]}` : undefined;
 }
 
 export function isAutomaticUserSessionBranch(session: FactoryUserSession): boolean {

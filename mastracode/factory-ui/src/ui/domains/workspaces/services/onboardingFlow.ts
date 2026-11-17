@@ -1,7 +1,7 @@
 /**
  * Session-scoped markers for the `/onboarding` page (`EmptyFactoryState`).
  * The draft and open section survive full-page OAuth redirects
- * (GitHub/Linear) so the flow can resume where it left off. The
+ * (GitHub) so the flow can resume where it left off. The
  * create-Factory wizard uses separate keys (`useCreateFactoryFlow`) so
  * the two flows never collide.
  *
@@ -42,16 +42,12 @@ const repositoryFields = {
   sandboxProvider: z.string(),
   sandboxWorkdir: z.string(),
 };
-const repositorySchema: z.ZodType<SourceControlRepository> = z.union([
-  z.object({ ...repositoryFields, id: z.number(), installationId: z.number(), installationStorageId: z.string() }),
-  z.object({
-    ...repositoryFields,
-    provider: z.literal('gitlab'),
-    id: z.string(),
-    externalId: z.string(),
-    installationStorageId: z.string().optional(),
-  }),
-]);
+const repositorySchema: z.ZodType<SourceControlRepository> = z.object({
+  ...repositoryFields,
+  id: z.number(),
+  installationId: z.number(),
+  installationStorageId: z.string(),
+});
 const connectionSchema = z.object({ providerId: z.string(), method: z.enum(['api_key', 'oauth']) });
 const modelChoiceSchema = connectionSchema.extend({ modelId: z.string().min(1) });
 // An empty model id keeps a connected provider before a model is explicitly picked.
@@ -208,7 +204,7 @@ export function clearOnboardingFlow(): void {
  * Whether an onboarding flow is mid-way with its factory already created —
  * the only case where `/onboarding` may stay open (and `/` must route back
  * into it) even though a factory exists. A failed final confirmation can leave
- * a Factory to finish configuring. GitHub/Linear OAuth callbacks land on `/`, so
+ * a Factory to finish configuring. GitHub OAuth callbacks land on `/`, so
  * without this check onboarding would be abandoned at the factory home.
  *
  * Three gates, all required:

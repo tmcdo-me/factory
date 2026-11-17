@@ -12,7 +12,6 @@ import { GithubIcon } from '@mastra/playground-ui/icons/GithubIcon';
 import { focusRingInset } from '@mastra/playground-ui/primitives/transitions';
 import { useState } from 'react';
 
-import { GitLabIcon } from '../../../ui/icons';
 import type { LinkedRepositoryPayload } from '../../workspaces/services/github';
 
 export function RepositoryPickerDialog({
@@ -56,11 +55,7 @@ export function RepositoryPickerDialog({
               >
                 <span className="min-w-0 flex-1">
                   <Txt as="span" tone="ink" className="flex items-center gap-1.5">
-                    {repository.provider === 'gitlab' ? (
-                      <GitLabIcon className="text-muted-foreground size-3.5 shrink-0" />
-                    ) : (
-                      <GithubIcon className="text-muted-foreground size-3.5 shrink-0" />
-                    )}
+                    <GithubIcon className="text-muted-foreground size-3.5 shrink-0" />
                     <span className="min-w-0 truncate">{repository.slug}</span>
                   </Txt>
                   {repository.gitBranch && (

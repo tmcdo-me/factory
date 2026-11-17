@@ -10,8 +10,6 @@ import { server } from '../../../../../../e2e/ui/msw-server';
 import { renderWithProviders, TEST_BASE_URL } from '../../../../../../e2e/ui/render';
 import type { GithubRepo, FactoryProjectPayload } from '../../services/github';
 import { fetchIntakeConfig } from '../../../factory/services/intake';
-import { gitLabProjectRepository } from '../../../factory/services/gitlab';
-import type { GitLabProject } from '../../../factory/services/gitlab';
 import {
   ONBOARDING_FACTORY_KEY,
   persistOnboardingDraft,
@@ -38,16 +36,6 @@ const repo: GithubRepo = {
 };
 const otherRepo: GithubRepo = { ...repo, id: 100, fullName: 'octo/other', name: 'other', defaultBranch: 'develop' };
 const thirdRepo: GithubRepo = { ...repo, id: 101, fullName: 'octo/third', name: 'third' };
-const gitlabProject: GitLabProject = {
-  id: 'gitlab-source',
-  name: 'backend',
-  projectId: '42',
-  projectPath: 'team/backend',
-  installationStorageId: 'gitlab-inst',
-  defaultBranch: 'develop',
-  sandboxProvider: 'local',
-  sandboxWorkdir: '/workspace/backend',
-};
 const model = { providerId: 'openai', modelId: 'openai/gpt-5.6-sol', method: 'api_key' as const };
 const personalModel = { providerId: 'anthropic', modelId: 'anthropic/claude-fable-5', method: 'api_key' as const };
 
@@ -95,13 +83,6 @@ function registerSetup(failure?: 'connection' | 'intake' | 'model') {
       HttpResponse.json({ enabled: true, connected: true, reason: 'ready', installations: [] }),
     ),
     http.get(`${TEST_BASE_URL}/web/github/repos`, () => HttpResponse.json({ repos: [repo, otherRepo] })),
-    http.get(`${TEST_BASE_URL}/web/gitlab/status`, () =>
-      HttpResponse.json({ enabled: true, configured: true, reauthRequired: false }),
-    ),
-    http.get(`${TEST_BASE_URL}/web/gitlab/projects`, () => HttpResponse.json({ projects: [gitlabProject] })),
-    http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-      HttpResponse.json({ enabled: false, connected: false, reason: 'missing_config' }),
-    ),
     http.get(`${TEST_BASE_URL}/web/config/providers`, () =>
       HttpResponse.json({
         orgKeyAdmin: true,
@@ -140,10 +121,6 @@ function registerSetup(failure?: 'connection' | 'intake' | 'model') {
       project = undefined;
       return new HttpResponse(null, { status: 204 });
     }),
-    http.post(`${TEST_BASE_URL}/web/gitlab/projects/registration`, async ({ request }) => {
-      writes.push({ path: 'registration', body: await request.json() });
-      return HttpResponse.json({ project: gitlabProject });
-    }),
     http.post(`${TEST_BASE_URL}/web/factory/projects/fp-1/source-control-connections`, async ({ request }) => {
       writes.push({ path: 'connection', body: await request.json() });
       if (failure === 'connection' && !failed) {
@@ -176,7 +153,6 @@ function registerSetup(failure?: 'connection' | 'intake' | 'model') {
       }
       return HttpResponse.json({ config: body });
     }),
-    // A GitLab project is routed to the new Factory on its way in, which is what the board reads.
     http.put(`${TEST_BASE_URL}/web/intake/bindings`, async ({ request }) => {
       writes.push({ path: 'routing', body: await request.json() });
       return HttpResponse.json({ bindings: [] });
@@ -227,30 +203,6 @@ beforeEach(() => sessionStorage.clear());
 afterEach(() => sessionStorage.clear());
 
 describe('Draft Factory onboarding', () => {
-  it('reopens a GitLab pick on GitLab after a GitHub install result was shown', async () => {
-    seedOnboarding('vcs');
-    registerSetup();
-    const user = userEvent.setup();
-    renderWithProviders(
-      <MemoryRouter initialEntries={['/onboarding?github_app_installed=true']}>
-        <Routes>
-          <Route path="/onboarding" element={<OnboardingPage />} />
-        </Routes>
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByRole('radio', { name: 'GitHub' })).toBeChecked();
-    await user.click(screen.getByRole('radio', { name: 'GitLab' }));
-    await user.click(await screen.findByRole('radio', { name: 'team/backend' }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await findActiveSection('Work');
-
-    await user.click(screen.getByRole('button', { name: 'Change codebase' }));
-    expect(await screen.findByRole('radio', { name: 'team/backend' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: 'GitLab' })).toBeChecked();
-    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
-  });
-
   it('lets users change repository, VCS and model, then commits only the confirmed choices', async () => {
     seedOnboarding('vcs');
     const writes = registerSetup();
@@ -279,13 +231,12 @@ describe('Draft Factory onboarding', () => {
     expect(within(screen.getByRole('region', { name: 'Work' })).getByText('GitHub')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Change codebase' }));
-    await user.click(await screen.findByRole('radio', { name: 'GitLab' }));
-    await user.click(await screen.findByRole('radio', { name: 'team/backend' }));
+    await user.click(await screen.findByRole('radio', { name: 'octo/hello' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     const reopened = await findActiveSection('Model');
     const codebase = within(screen.getByRole('region', { name: 'Codebase' }));
-    expect(codebase.getByText('team/backend')).toBeInTheDocument();
-    expect(codebase.getByText('develop')).toBeInTheDocument();
+    expect(codebase.getByText('octo/hello')).toBeInTheDocument();
+    expect(codebase.getByText('main')).toBeInTheDocument();
 
     expect(await reopened.findByRole('combobox')).toHaveValue('GPT-5.6 Sol');
     await chooseProvider(user, 'Anthropic', reopened);
@@ -295,24 +246,19 @@ describe('Draft Factory onboarding', () => {
     await user.click(screen.getByRole('button', { name: 'Create factory' }));
     expect(await screen.findByRole('heading', { name: 'Factory ready' })).toBeInTheDocument();
     expect(writes.filter(item => item.path === 'create')).toEqual([
-      { path: 'create', body: { name: 'backend', modelScope: 'factory' } },
+      { path: 'create', body: { name: 'hello', modelScope: 'factory' } },
     ]);
-    expect(writes.find(item => item.path === 'registration')?.body).toEqual({ sourceId: 'gitlab-source' });
     expect(writes.find(item => item.path === 'connection')?.body).toEqual({
-      installationId: 'gitlab-inst',
-      integrationId: 'gitlab',
+      installationId: 'inst-7',
+      integrationId: 'github',
     });
     expect(writes.find(item => item.path === 'repository')?.body).toMatchObject({
-      repository: { externalId: '42', slug: 'team/backend' },
-      branch: 'develop',
+      repository: { externalId: '99', slug: 'octo/hello' },
+      branch: 'main',
     });
     expect(writes.find(item => item.path === 'model')?.body).toEqual({ defaultModelId: 'anthropic/claude-fable-5' });
-    // A GitLab project only feeds the board once it is routed to the Factory it was picked for.
-    expect(writes.find(item => item.path === 'routing')?.body).toEqual({
-      integrationId: 'gitlab',
-      sourceId: 'gitlab-source',
-      factoryProjectId: 'fp-1',
-    });
+    // A GitHub repository needs no routing: its linked repository scopes its issues.
+    expect(writes.some(item => item.path === 'routing')).toBe(false);
     expect(readOnboardingDraft()).toEqual({});
     expect(sessionStorage.getItem(ONBOARDING_FACTORY_KEY)).toBeNull();
   }, 20_000);
@@ -370,30 +316,22 @@ describe('Draft Factory onboarding', () => {
     expect((await fetchIntakeConfig(TEST_BASE_URL)).github.sourceIds).toBeNull();
   });
 
-  it.each([
-    ['GitHub', 'intake'],
-    ['GitLab', 'routing'],
-  ] as const)('finishes setup with a warning when the %s issue source cannot be saved', async (host, failing) => {
+  it('finishes setup with a warning when the GitHub issue source cannot be saved', async () => {
     const writes = registerSetup();
     server.use(
-      http.put(`${TEST_BASE_URL}/web/intake/${failing === 'intake' ? 'config' : 'bindings'}`, async ({ request }) => {
-        writes.push({ path: failing, body: await request.json() });
+      http.put(`${TEST_BASE_URL}/web/intake/config`, async ({ request }) => {
+        writes.push({ path: 'intake', body: await request.json() });
         return HttpResponse.json({ error: 'unavailable' }, { status: 502 });
       }),
     );
-    seedOnboarding('model', {
-      modelScope: 'factory',
-      repository: host === 'GitLab' ? gitLabProjectRepository(gitlabProject)! : repo,
-      workConfirmed: true,
-      model,
-    });
+    seedOnboarding('model', { modelScope: 'factory', repository: repo, workConfirmed: true, model });
     const user = userEvent.setup();
     renderOnboarding();
     await user.click(await enabledCreateButton());
-    // The Factory and its link exist by now, so both hosts finish setup and point to Settings.
+    // The Factory and its link exist by now, so setup finishes and points to Settings.
     expect(await screen.findByRole('heading', { name: 'Factory ready' })).toBeInTheDocument();
     expect(await screen.findByText("Issues won't sync yet")).toBeInTheDocument();
-    expect(writes.some(item => item.path === failing)).toBe(true);
+    expect(writes.some(item => item.path === 'intake')).toBe(true);
   });
 
   it('restores repository and model choices after a redirect or reload without writing them', async () => {
@@ -470,21 +408,6 @@ describe('Draft Factory onboarding', () => {
     expect(
       within(screen.getByRole('region', { name: 'Model' })).getByText(`${model.modelId} · ${personalModel.modelId}`),
     ).toBeInTheDocument();
-  });
-
-  it('says connections could not be checked, not "Set up later", while Linear status is down', async () => {
-    registerSetup();
-    server.use(
-      http.get(`${TEST_BASE_URL}/web/linear/status`, () =>
-        HttpResponse.json({ error: 'Temporary outage' }, { status: 503 }),
-      ),
-    );
-    seedOnboarding('model', { modelScope: 'factory', repository: repo, workConfirmed: true, model });
-    renderOnboarding();
-
-    const work = within(await screen.findByRole('region', { name: 'Work' }));
-    expect(await work.findByText("Couldn't check connections")).toBeInTheDocument();
-    expect(work.queryByText('Set up later')).not.toBeInTheDocument();
   });
 
   it('moves keyboard focus to the section that opens instead of dropping it', async () => {

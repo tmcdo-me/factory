@@ -72,28 +72,11 @@ export const server = setupServer(
   http.get('*/web/factory/projects/:id/intake-routes', () => HttpResponse.json({ intakeRoutes: [], canEdit: false })),
   http.get('*/web/factory/projects', () => HttpResponse.json({ projects: [] })),
   http.get('*/web/intake/bindings', () => HttpResponse.json({ bindings: [] })),
-  // A server without the JIRA_* env group mounts no Jira routes; the ambient
-  // 404 mirrors that and the Jira service degrades to a disabled status.
-  // Jira-specific tests override these with `server.use(...)`.
-  http.get('*/web/jira/status', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
-  http.get('*/web/jira/projects', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
-  // incident.io intake is optional; feature tests override this ambient 404.
-  http.get('*/web/incidentio/status', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
-  // A server without Platform machine credentials mounts no platform connect
-  // routes; the ambient 404 hides the provider sections. Provider connection
-  // tests override these with `server.use(...)`.
-  http.get('*/web/integrations/platform/:provider/connections', () =>
-    HttpResponse.json({ error: 'not_found' }, { status: 404 }),
-  ),
   // Board filters read connection status even when no provider is configured.
   http.get('*/web/github/status', () => HttpResponse.json({ enabled: false, connected: false, installations: [] })),
   // Ambient pull requests: Work and Review both list their linked repositories'
   // open pull requests. Pull-request tests override these with `server.use(...)`.
   http.get('*/web/github/projects/:id/prs', () => HttpResponse.json({ pullRequests: [], nextPage: null })),
-  http.get('*/web/gitlab/projects/:id/prs', () => HttpResponse.json({ pullRequests: [], nextPage: null })),
-  // GitLab intake is optional; feature tests override these ambient 404s.
-  http.get('*/web/gitlab/status', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
-  http.get('*/web/gitlab/projects', () => HttpResponse.json({ error: 'not_found' }, { status: 404 })),
   http.get('*/web/factory/projects/:id/source-control-connections', () => HttpResponse.json({ connections: [] })),
   // Ambient sandbox environment variables (Manage Factory); variable tests override it with `server.use(...)`.
   http.get('*/web/factory/projects/:id/sandbox-envs', () => HttpResponse.json({ envs: [], writable: true })),

@@ -38,13 +38,12 @@ function renderBoard(
   workItems: unknown[] = [],
   boards = [releaseBoard],
   githubSourceIds: string[] = ['acme/app'],
-  linear: { sourceIds: string[]; bindings: unknown[] } | null = null,
   intakeRoutes: IntakeRoute[] | (() => Response) = [intakeRouteTo('release')],
 ) {
   const intakeRequest = vi.fn(() => HttpResponse.json({ issues: [], pullRequests: [] }));
   server.use(
     http.get('*/api/agent-controller/code/sessions/:id/permissions', () => HttpResponse.json({ permissions: [] })),
-    http.get('*/web/intake/bindings', () => HttpResponse.json({ bindings: linear?.bindings ?? [] })),
+    http.get('*/web/intake/bindings', () => HttpResponse.json({ bindings: [] })),
     http.get('*/auth/me', () =>
       HttpResponse.json({ authenticated: true, authEnabled: true, user: { userId: 'user-1' } }),
     ),
@@ -70,12 +69,8 @@ function renderBoard(
       HttpResponse.json({
         config: {
           github: { enabled: true, sourceIds: githubSourceIds },
-          linear: { enabled: Boolean(linear), sourceIds: linear?.sourceIds ?? null },
         },
       }),
-    ),
-    http.get('*/web/linear/status', () =>
-      HttpResponse.json({ enabled: Boolean(linear), connected: Boolean(linear), workspace: null }),
     ),
     http.get('*/web/factory/projects/:factoryId/sessions', () => HttpResponse.json({ sessions: [] })),
     http.get('*/web/github/projects/:id/issues', intakeRequest),
@@ -141,7 +136,7 @@ describe('custom-only board routing', () => {
       [intakeRouteTo('release', { target: { boardKey: 'release', phaseKey: null, joinClosedIssue: true } })],
     ],
   ])('asks for an intake route, not a source, while a source is connected but %s', async (_case, intakeRoutes) => {
-    const { client } = renderBoard(undefined, undefined, undefined, undefined, null, intakeRoutes);
+    const { client } = renderBoard(undefined, undefined, undefined, undefined, intakeRoutes);
     await waitForMutationsIdle(client);
 
     const queued = await screen.findByTestId('board-column-queued');
@@ -159,7 +154,7 @@ describe('custom-only board routing', () => {
   // promises issues nor asks to connect a source: it says the lookup failed and offers a retry.
   it('reports a failed intake route lookup with a retry instead of an empty state', async () => {
     let fail = true;
-    const { client } = renderBoard(undefined, undefined, undefined, undefined, null, () =>
+    const { client } = renderBoard(undefined, undefined, undefined, undefined, () =>
       fail
         ? HttpResponse.json({ error: 'Intake routes are unavailable' }, { status: 500 })
         : HttpResponse.json({
@@ -178,35 +173,6 @@ describe('custom-only board routing', () => {
     await userEvent.setup().click(within(queued).getByRole('button', { name: 'Retry' }));
     expect(await within(queued).findByText('Intake is clear')).toBeVisible();
     expect(within(queued).queryByRole('alert')).not.toBeInTheDocument();
-  });
-
-  // Selected sources are shared across factories; a source bound only to another project's board
-  // files nothing here, so this project still has nothing connected.
-  it('offers intake setup while the only selected source feeds another project', async () => {
-    const { client } = renderBoard(undefined, undefined, undefined, [], {
-      sourceIds: ['team-1'],
-      bindings: [{ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: 'fp-other', labels: null }],
-    });
-    await waitForMutationsIdle(client);
-
-    const queued = await screen.findByTestId('board-column-queued');
-    expect(await within(queued).findByText(/No intake sources/)).toBeVisible();
-    expect(within(queued).getByRole('link', { name: 'Connect issue source' })).toHaveAttribute(
-      'href',
-      '/factories/fp-1/settings/intake',
-    );
-  });
-
-  it("offers no intake setup while a selected source feeds one of this project's boards", async () => {
-    const { client } = renderBoard(undefined, undefined, undefined, [], {
-      sourceIds: ['team-1'],
-      bindings: [{ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: 'fp-1', labels: null }],
-    });
-    await waitForMutationsIdle(client);
-
-    const queued = await screen.findByTestId('board-column-queued');
-    expect(await within(queued).findByText('Intake is clear')).toBeVisible();
-    expect(screen.queryByRole('link', { name: 'Connect issue source' })).not.toBeInTheDocument();
   });
 
   it('renders declaration-ordered custom groups without built-in intake or automation', async () => {
@@ -249,7 +215,6 @@ describe('custom-only board routing', () => {
 
   it.each([
     ['github pull request', { integrationId: 'github', type: 'pull-request', externalId: 'github:1', url: null }],
-    ['gitlab merge request', { integrationId: 'gitlab', type: 'pull-request', externalId: 'gitlab:1', url: null }],
     ['slack thread', { integrationId: 'slack', type: 'slack-thread', externalId: 'slack:1', url: null }],
     ['manual', null],
   ])('renders a %s card in the initial phase', async (_label, externalSource) => {

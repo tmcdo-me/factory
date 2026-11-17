@@ -26,7 +26,6 @@ describe('changeRequestStatus', () => {
   it('reads the source alone when no subscription matches', () => {
     expect(changeRequestStatus(request())).toBe('open');
     expect(changeRequestStatus(request({ metadata: { draft: true } }))).toBe('draft');
-    expect(changeRequestStatus(request({ provider: 'gitlab', state: 'opened' }))).toBe('open');
     expect(changeRequestStatus(request({ state: 'closed' }))).toBe('closed');
   });
 

@@ -13,12 +13,8 @@ import { providersQueryOptions } from '../hooks/use-providers';
 import { factoriesQueryOptions } from '../hooks/useFactories';
 import { factoryDecisionHistoryQueryOptions, runQueueQueryOptions } from '../hooks/useFactoryDecisions';
 import { factoryProjectQueryOptions } from '../hooks/useFactoryDefaultModel';
-import { gitLabStatusQueryOptions } from '../hooks/useGitLabData';
 import { githubStatusQueryOptions } from '../hooks/useGithubStatus';
-import { incidentioStatusQueryOptions } from '../hooks/useIncidentioData';
 import { intakeBindingsQueryOptions, intakeConfigQueryOptions } from '../hooks/useIntakeConfig';
-import { jiraStatusQueryOptions } from '../hooks/useJiraData';
-import { linearStatusQueryOptions } from '../hooks/useLinearData';
 import { serverFeaturesQueryOptions } from '../hooks/useServerFeatures';
 import {
   boardPhasesQueryOptions,
@@ -132,10 +128,6 @@ export const prefetchBoard: Prefetch = (services, { params, request }) => {
     void queryClient.query(intakeConfigQueryOptions(api.baseUrl)).catch(noop);
     void queryClient.query(intakeBindingsQueryOptions(api.baseUrl)).catch(noop);
     void queryClient.query(githubStatusQueryOptions(api.baseUrl)).catch(noop);
-    void queryClient.query(gitLabStatusQueryOptions(api.baseUrl)).catch(noop);
-    void queryClient.query(linearStatusQueryOptions(api.baseUrl)).catch(noop);
-    void queryClient.query(jiraStatusQueryOptions(api.baseUrl)).catch(noop);
-    void queryClient.query(incidentioStatusQueryOptions(api.baseUrl)).catch(noop);
   });
 };
 

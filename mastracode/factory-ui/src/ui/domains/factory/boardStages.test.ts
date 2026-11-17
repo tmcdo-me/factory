@@ -89,13 +89,11 @@ describe('currentItemStageLabel', () => {
     expect(currentItemStageLabel(workItem('manual', ['execute', 'obsolete']), work)).toBe('Building');
     // A pull request's own card never sits in the build lanes, so only Review counts.
     expect(currentItemStageLabel(workItem('github-pr', ['execute', 'pr-review']), work)).toBe('Review');
-    expect(currentItemStageLabel(workItem('gitlab-pr', ['execute', 'pr-review']), work)).toBe('Review');
   });
 
   it('falls back to Intake when no stage belongs to the item board', () => {
     expect(currentItemStageLabel(workItem('manual', []), work)).toBe('Intake');
     expect(currentItemStageLabel(workItem('github-pr', ['execute']), work)).toBe('Intake');
-    expect(currentItemStageLabel(workItem('gitlab-pr', ['execute']), work)).toBe('Intake');
   });
 });
 
@@ -109,7 +107,7 @@ describe('itemAppearsInStage', () => {
 });
 
 describe('pull request cards on the Work board', () => {
-  it.each(['github-pr', 'gitlab-pr'] as const)('moves a %s card only through the lanes that review it', source => {
+  it.each(['github-pr'] as const)('moves a %s card only through the lanes that review it', source => {
     const card = { ...workItem(source, ['intake']), board: 'work' };
     expect(itemStageOptions(card, work).map(stage => stage.id)).toEqual(['intake', 'pr-review', 'done', 'canceled']);
     expect(itemStageOptions(card, work).find(stage => stage.id === 'pr-review')?.label).toBe('Review');

@@ -4,42 +4,22 @@ import { limitedProviders } from '../services/rules';
 import { narrowSuggestions, sourceSuggestions } from './sourceSuggestions';
 
 describe('sourceSuggestions', () => {
-  it("offers the project's repositories, then the keys of its own Linear and Jira sources, once each", () => {
+  it("offers the project's repositories, once each", () => {
     const options = sourceSuggestions({
-      factoryProjectId: 'fp-1',
       repositories: [
         { projectRepositoryId: 'r1', slug: 'acme/app' },
-        { projectRepositoryId: 'r2', slug: 'acme/platform/api', provider: 'gitlab' },
-      ],
-      bindings: [
-        { integrationId: 'linear', sourceId: 'lp-1', factoryProjectId: 'fp-1' },
-        { integrationId: 'linear', sourceId: 'linear-team:t-eng', factoryProjectId: 'fp-1' },
-        { integrationId: 'linear', sourceId: 'linear-team:t-ops', factoryProjectId: 'fp-2' },
-        { integrationId: 'jira', sourceId: 'j-10', factoryProjectId: 'fp-1' },
-        { integrationId: 'jira', sourceId: 'j-11', factoryProjectId: 'fp-2' },
-      ],
-      linearProjects: [
-        { id: 'lp-1', name: 'Billing', state: 'started', teams: [{ id: 't-eng', key: 'ENG', name: 'Eng' }] },
-      ],
-      linearTeams: [
-        { id: 't-eng', key: 'eng', name: 'Eng' },
-        { id: 't-ops', key: 'OPS', name: 'Ops' },
-      ],
-      jiraProjects: [
-        { id: 'j-10', key: 'PLAT', name: 'Platform' },
-        { id: 'j-11', key: 'OTHER', name: 'Other' },
+        { projectRepositoryId: 'r2', slug: 'acme/api', provider: 'github' },
+        { projectRepositoryId: 'r3', slug: 'ACME/app' },
       ],
     });
     expect(options).toEqual([
       { value: 'acme/app', provider: 'github' },
-      { value: 'acme/platform/api', provider: 'gitlab' },
-      { value: 'ENG', provider: 'linear' },
-      { value: 'PLAT', provider: 'jira' },
+      { value: 'acme/api', provider: 'github' },
     ]);
   });
 
   it('offers nothing before anything has loaded', () => {
-    expect(sourceSuggestions({ factoryProjectId: 'fp-1' })).toEqual([]);
+    expect(sourceSuggestions({})).toEqual([]);
   });
 });
 
@@ -65,7 +45,7 @@ describe('limitedProviders', () => {
 describe('narrowSuggestions', () => {
   const field = {
     id: 'source.repository',
-    label: 'Repository, team or project',
+    label: 'Repository',
     suggestions: [
       { value: 'acme/app', provider: 'github' },
       { value: 'ENG', provider: 'linear' },

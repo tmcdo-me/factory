@@ -138,7 +138,6 @@ function factorySessionName(session: FactoryUserSession, item: WorkItem | undefi
 
 function sessionExternalLinkLabel(source: WorkItemSource): string {
   if (source === 'github-pr') return 'Open pull request';
-  if (source === 'gitlab-pr') return 'Open merge request';
   return externalLinkLabel(source);
 }
 

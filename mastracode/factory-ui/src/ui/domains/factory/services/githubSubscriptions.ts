@@ -1,7 +1,7 @@
 import { queryOptions, skipToken } from '@tanstack/react-query';
 
 /** Which source-control provider serves the subscriptions route. */
-export type ChangeRequestProvider = 'github' | 'gitlab';
+export type ChangeRequestProvider = 'github';
 
 export interface PullRequestSubscription {
   id: string;
@@ -58,8 +58,7 @@ function isPullRequestSubscription(value: unknown): value is PullRequestSubscrip
 }
 
 /**
- * Change-request subscriptions for a thread. GitHub and GitLab serve the same
- * wire shape from their own routes, so the provider only picks the route.
+ * Change-request subscriptions for a thread, from the provider's subscriptions route.
  */
 export async function listPullRequestSubscriptions(
   baseUrl: string,

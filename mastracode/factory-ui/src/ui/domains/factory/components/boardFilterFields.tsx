@@ -8,12 +8,10 @@ import { boardFilterFieldIds } from '../boardFilters';
 import type { BoardFilterFieldId, BoardFilterState } from '../boardFilters';
 import type { BoardParticipant } from '../boardPeople';
 import { BOARD_SOURCE_OPTIONS } from '../boardSourceFilters';
-import type { LinearProject } from '../services/linear';
 import { BoardSourceIcon } from './BoardSourceIcon';
 import { IconElectrocardiogram } from '@mastra/playground-ui/icons/central/IconElectrocardiogram';
 import { IconInboxEmpty } from '@mastra/playground-ui/icons/central/IconInboxEmpty';
 import { IconTag } from '@mastra/playground-ui/icons/central/IconTag';
-import { IconKanbanView } from '@mastra/playground-ui/icons/central/IconKanbanView';
 import { IconUserAdded } from '@mastra/playground-ui/icons/central/IconUserAdded';
 import { IconUserDuo } from '@mastra/playground-ui/icons/central/IconUserDuo';
 import { IconUserEdit } from '@mastra/playground-ui/icons/central/IconUserEdit';
@@ -27,7 +25,6 @@ export type BoardFilterField = FilterBarField & { id: BoardFilterFieldId; sugges
 
 const FIELD_PRESENTATION: Record<BoardFilterFieldId, { label: string; icon: LucideIcon }> = {
   source: { label: 'Intake source', icon: IconInboxEmpty },
-  linearProject: { label: 'Linear project', icon: IconKanbanView },
   teammate: { label: 'Involves', icon: IconUserDuo },
   author: { label: 'Author', icon: IconUserEdit },
   assignee: { label: 'Assignee', icon: IconUserAdded },
@@ -60,7 +57,6 @@ interface BoardFilterFieldsOptions {
   availableLabels: readonly string[];
   currentUserId?: string;
   connectedSources?: ReadonlySet<string>;
-  linearProjects?: readonly LinearProject[];
 }
 
 export function boardFilterFields({
@@ -70,7 +66,6 @@ export function boardFilterFields({
   availableLabels,
   currentUserId,
   connectedSources,
-  linearProjects = [],
 }: BoardFilterFieldsOptions): BoardFilterField[] {
   const people = peopleOptions(participants, currentUserId);
   const suggestions: Record<BoardFilterFieldId, FilterBarOption[]> = {
@@ -80,15 +75,9 @@ export function boardFilterFields({
         option.value === 'manual' ||
         option.value === 'detail' ||
         connectedSources?.has(option.value) ||
-        (option.value === PULL_REQUEST_SOURCE_FILTER &&
-          (connectedSources?.has('github') === true || connectedSources?.has('gitlab') === true)) ||
+        (option.value === PULL_REQUEST_SOURCE_FILTER && connectedSources?.has('github') === true) ||
         filters.source.has(option.value),
     ).map(option => ({ ...option, start: <BoardSourceIcon source={option.value} /> })),
-    linearProject: linearProjects.map(project => ({
-      value: project.id,
-      label: project.name,
-      start: <IconKanbanView aria-hidden />,
-    })),
     teammate: people,
     author: people,
     assignee: people,
@@ -96,14 +85,12 @@ export function boardFilterFields({
     worked: people,
     label: availableLabels.map(label => ({ value: label, start: <IconTag aria-hidden /> })),
   };
-  const linearProjectOffered = filters.source.has('linear') || filters.linearProject.size > 0;
 
   return boardFilterFieldIds(reviewsPullRequests).map(fieldId => ({
     id: fieldId,
     ...FIELD_PRESENTATION[fieldId],
     operators: ['in'],
     strict: true,
-    hidden: fieldId === 'linearProject' && !linearProjectOffered,
     suggestions: suggestions[fieldId],
   }));
 }

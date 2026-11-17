@@ -182,7 +182,6 @@ function stubThreadRoute(workItems: unknown[], subscriptions: unknown[]) {
     http.get(`${TEST_BASE_URL}/web/github/projects/:repository/prs/:number`, ({ params }) =>
       HttpResponse.json({ number: Number(params.number), description: null }),
     ),
-    http.get(`${TEST_BASE_URL}/web/linear/issues/:identifier`, () => HttpResponse.json({ description: null })),
   );
 }
 
@@ -551,24 +550,6 @@ describe('ThreadPage pull request link placement', () => {
         );
       },
     );
-
-    it('links a Linear issue by its identifier', async () => {
-      const url = 'https://linear.app/acme/issue/ENG-123/fix-sandbox-setup';
-      stubThreadRoute(
-        [
-          {
-            ...issueCard(),
-            externalSource: { integrationId: 'linear', type: 'issue', externalId: 'linear-issue:ENG-123', url },
-            metadata: { identifier: 'ENG-123' },
-          },
-        ],
-        [],
-      );
-      renderThreadRoute();
-
-      const panel = await findSessionPanel();
-      expect(within(panel).getByRole('link', { name: 'Open ENG-123' })).toHaveAttribute('href', url);
-    });
 
     it('draws nothing in the card section for a card with no URL, labels or description', async () => {
       stubThreadRoute([{ ...issueCard(null), description: null }], []);

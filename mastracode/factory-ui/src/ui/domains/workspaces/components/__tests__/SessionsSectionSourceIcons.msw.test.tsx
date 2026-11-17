@@ -37,7 +37,7 @@ function session(sessionId: string, title: string, branch: string): FactoryUserS
 const sessions = [
   session('user-chat', 'Plan the migration', 'user/plan'),
   session('issue-run', 'Fix flaky login', 'factory/issue-3'),
-  session('linear-run', 'Add audit log', 'factory/issue-4'),
+  session('slack-run', 'Add audit log', 'factory/issue-4'),
   session('pr-review', 'Review PR 12', 'factory/pr-12'),
   session('slack-run', 'Answer deploy question', 'slack/1700-42'),
 ];
@@ -68,10 +68,10 @@ const cards = [
     type: 'issue',
     externalId: '3',
   }),
-  workItem('linear-item', 'linear-run', 'factory/issue-4', {
-    integrationId: 'linear',
-    type: 'issue',
-    externalId: 'ENG-4',
+  workItem('slack-item', 'slack-run', 'factory/issue-4', {
+    integrationId: 'slack',
+    type: 'slack-thread',
+    externalId: 'C1:4.000',
   }),
 ];
 
@@ -109,7 +109,7 @@ describe('Sessions sidebar source icons', () => {
 
     expect(await iconFor('Plan the migration')).toBe('user');
     expect(await iconFor('Fix flaky login')).toBe('github-issue');
-    expect(await iconFor('Add audit log')).toBe('linear-issue');
+    expect(await iconFor('Add audit log')).toBe('slack-thread');
     expect(await iconFor('Review PR 12')).toBe('github-pr');
     expect(await iconFor('Answer deploy question')).toBe('slack-thread');
   });
@@ -126,7 +126,7 @@ describe('Sessions sidebar source icons', () => {
     renderSection();
 
     expect(await iconFor('Fix flaky login')).toBe('github-issue');
-    expect(await iconFor('Add audit log')).toBe('linear-issue');
+    expect(await iconFor('Add audit log')).toBe('slack-thread');
     expect(await iconFor('Plan the migration')).toBe('user');
   });
 });

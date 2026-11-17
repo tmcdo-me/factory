@@ -5,14 +5,11 @@ import { useLocation, useNavigate, useParams } from 'react-router';
 import { useApiConfig } from '../../../../../api/config';
 import { useGithubReposQuery } from '../../../../../hooks/useGithubRepos';
 import { useGithubStatusQuery } from '../../../../../hooks/useGithubStatus';
-import { connectLinear } from '../../../factory/services/linear';
 import { useCreateFactoryFlow } from '../../hooks/useCreateFactoryFlow';
 import type { CreateFactoryFlowStep } from '../../hooks/useCreateFactoryFlow';
 import { useCreateFactoryFromDraft } from '../../hooks/useCreateFactoryFromDraft';
 import { factoryHomePath } from '../../services/factoryPaths';
 import { connectGithub, manageGithubConnection } from '../../services/github';
-import { CreateFactoryJiraRows } from './CreateFactoryJiraRows';
-import { CreateFactoryLinearRows } from './CreateFactoryLinearRows';
 import { CreateFactoryModelStep } from './CreateFactoryModelStep';
 import { CreateFactoryNameRows } from './CreateFactoryNameRows';
 import { CreateFactoryPalette } from './CreateFactoryPalette';
@@ -34,10 +31,6 @@ const STEP_CHROME: Record<CreateFactoryFlowStep, StepChrome> = {
     title: 'Choose your codebase',
     placeholder: 'Search repositories',
   },
-  'project-management': {
-    title: 'Connect the work behind the code',
-    placeholder: 'Search options',
-  },
   'model-provider': {
     title: 'Choose your Factory model',
     placeholder: 'Search models and providers',
@@ -49,7 +42,7 @@ function errorMessage(error: unknown): string {
 }
 
 /**
- * Name → VCS → Project management → Model provider. Every pick stays in the
+ * Name → VCS → Model provider. Every pick stays in the
  * draft until the model step commits it, so the Factory only exists once the
  * user finished the wizard.
  */
@@ -111,7 +104,6 @@ export function CreateFactoryWizard() {
                 void flow.back();
               }
         }
-        onSkip={step === 'project-management' ? () => void flow.skipProjectManagement() : undefined}
       >
         {step === 'name' && <CreateFactoryNameRows name={value} onSubmit={flow.startVcs} />}
         {step === 'vcs' && (
@@ -129,23 +121,6 @@ export function CreateFactoryWizard() {
             }}
             onSelectRepository={repository => void flow.chooseRepository(repository)}
           />
-        )}
-        {step === 'project-management' && (
-          <>
-            <CreateFactoryLinearRows
-              query={value}
-              onConnect={() => {
-                flow.persistBeforeRedirect(factoryId);
-                connectLinear(baseUrl);
-              }}
-              onSelectProject={projectId => void flow.chooseLinearProject(projectId)}
-              onSkip={() => void flow.skipProjectManagement()}
-            />
-            <CreateFactoryJiraRows
-              query={value}
-              onSelectProject={projectId => void flow.chooseJiraProject(projectId)}
-            />
-          </>
         )}
         {step === 'model-provider' && (
           <CreateFactoryModelStep

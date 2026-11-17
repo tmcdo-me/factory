@@ -1,19 +1,7 @@
 import { SkeletonText } from '@mastra/playground-ui/components/Skeleton';
 
 import { useGitHubIssueDetail, useGitHubPullRequestDetail } from '../../../../hooks/useFactoryData';
-import { useGitLabIssueDetail, useGitLabMergeRequestDetail } from '../../../../hooks/useGitLabData';
-import { useIncidentioIssueDetail } from '../../../../hooks/useIncidentioData';
-import { useJiraIssueDetail } from '../../../../hooks/useJiraData';
-import { useLinearIssueDetail } from '../../../../hooks/useLinearData';
-import {
-  changeRequestNumberForItem,
-  githubNumberForItem,
-  incidentioIssueRefForItem,
-  jiraIdentifierForItem,
-  jiraIssueRefForItem,
-  linearIdentifierForItem,
-  linearIssueIdForItem,
-} from '../boardItems';
+import { githubNumberForItem } from '../boardItems';
 import type { WorkItem } from '../services/workItems';
 import { DescriptionMarkdown } from './DescriptionMarkdown';
 import { Txt } from '@mastra/playground-ui/components/Txt';
@@ -21,18 +9,10 @@ import { Txt } from '@mastra/playground-ui/components/Txt';
 /** The card's source and metadata — a work item or an unfiled candidate. */
 type SourceItem = Pick<WorkItem, 'source' | 'sourceKey' | 'workItem' | 'metadata'>;
 
-function descriptionSource(
-  item: SourceItem,
-): 'issue' | 'pull' | 'gitlab' | 'gitlab-pr' | 'linear' | 'jira' | 'incidentio' | undefined {
-  if (githubNumberForItem(item) !== undefined) {
-    if (item.source === 'github-issue') return 'issue';
-    if (item.source === 'github-pr') return 'pull';
-  }
-  if (item.source === 'gitlab-issue' && item.sourceKey) return 'gitlab';
-  if (item.source === 'gitlab-pr' && changeRequestNumberForItem(item) !== undefined) return 'gitlab-pr';
-  if (linearIdentifierForItem(item) !== undefined) return 'linear';
-  if (jiraIdentifierForItem(item) !== undefined && jiraIssueRefForItem(item) !== undefined) return 'jira';
-  if (incidentioIssueRefForItem(item) !== undefined) return 'incidentio';
+function descriptionSource(item: SourceItem): 'issue' | 'pull' | undefined {
+  if (githubNumberForItem(item) === undefined) return undefined;
+  if (item.source === 'github-issue') return 'issue';
+  if (item.source === 'github-pr') return 'pull';
   return undefined;
 }
 
@@ -40,15 +20,9 @@ function descriptionSource(
 export function useSourceDescription(
   item: SourceItem,
   projectRepositoryId: string | undefined,
-  factoryProjectId: string | undefined,
+  _factoryProjectId: string | undefined,
 ) {
   const number = githubNumberForItem(item);
-  const identifier = linearIdentifierForItem(item);
-  const linearIssueId = linearIssueIdForItem(item);
-  const jiraIdentifier = jiraIdentifierForItem(item);
-  const jiraIssueRef = jiraIssueRefForItem(item);
-  const incidentioIssueRef = incidentioIssueRefForItem(item);
-  const gitlabIssueId = item.source === 'gitlab-issue' ? (item.sourceKey ?? undefined) : undefined;
   const source = descriptionSource(item);
   const issue = useGitHubIssueDetail(
     source === 'issue' ? projectRepositoryId : undefined,
@@ -58,32 +32,7 @@ export function useSourceDescription(
     source === 'pull' ? projectRepositoryId : undefined,
     source === 'pull' ? number : undefined,
   );
-  const gitlab = useGitLabIssueDetail(
-    source === 'gitlab' ? factoryProjectId : undefined,
-    source === 'gitlab' ? gitlabIssueId : undefined,
-  );
-  const gitlabPull = useGitLabMergeRequestDetail(
-    source === 'gitlab-pr' ? factoryProjectId : undefined,
-    source === 'gitlab-pr' ? projectRepositoryId : undefined,
-    source === 'gitlab-pr' ? changeRequestNumberForItem(item) : undefined,
-  );
-  const linear = useLinearIssueDetail(
-    source === 'linear' ? factoryProjectId : undefined,
-    source === 'linear' ? identifier : undefined,
-    source === 'linear' ? linearIssueId : undefined,
-  );
-  const jira = useJiraIssueDetail(
-    source === 'jira' ? factoryProjectId : undefined,
-    source === 'jira' ? jiraIdentifier : undefined,
-    source === 'jira' ? jiraIssueRef : undefined,
-  );
-  const incidentio = useIncidentioIssueDetail(
-    source === 'incidentio' ? factoryProjectId : undefined,
-    source === 'incidentio' ? incidentioIssueRef : undefined,
-  );
-  return source === undefined
-    ? undefined
-    : { issue, pull, gitlab, 'gitlab-pr': gitlabPull, linear, jira, incidentio }[source];
+  return source === undefined ? undefined : { issue, pull }[source];
 }
 
 export function SourceDescriptionLoading() {

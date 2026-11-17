@@ -7,7 +7,6 @@ import {
   connectInstallation,
   createFactoryProject,
   deleteFactoryProject,
-  isGitLabRepository,
   linkRepository,
   listFactoryProjects,
   unlinkRepository,
@@ -17,7 +16,6 @@ import type {
   LinkedRepositoryPayload,
   SourceControlRepository,
 } from '../ui/domains/workspaces/services/github';
-import { registerGitLabRepository } from '../ui/domains/factory/services/gitlab';
 import { fetchIntakeConfig, selectIntakeSource } from '../ui/domains/factory/services/intake';
 import { useSaveIntakeSelectionMutation } from './useIntakeConfig';
 
@@ -82,7 +80,6 @@ export function useLinkRepositoryMutation() {
   const { baseUrl } = useApiConfig();
   const queryClient = useQueryClient();
   const saveGithubSelection = useSaveIntakeSelectionMutation('github');
-  const saveGitlabSelection = useSaveIntakeSelectionMutation('gitlab');
   return useMutation({
     mutationFn: async ({
       factoryProjectId,
@@ -96,15 +93,8 @@ export function useLinkRepositoryMutation() {
       selectIntake?: boolean;
       onLinked?: (linked: LinkedRepositoryPayload) => Promise<void>;
     }) => {
-      const gitlab = isGitLabRepository(repo);
-      const linkableRepo = gitlab ? await registerGitLabRepository(baseUrl, repo.id) : repo;
-      const connectionId = await connectInstallation(
-        baseUrl,
-        factoryProjectId,
-        linkableRepo.installationStorageId,
-        gitlab ? 'gitlab' : 'github',
-      );
-      const linked = await linkRepository(baseUrl, factoryProjectId, connectionId, linkableRepo);
+      const connectionId = await connectInstallation(baseUrl, factoryProjectId, repo.installationStorageId);
+      const linked = await linkRepository(baseUrl, factoryProjectId, connectionId, repo);
       await onLinked?.(linked);
       // Refresh the list alongside the intake write and wait for both, so the row
       // goes straight from "Linking…" to linked instead of flashing "Link" first.
@@ -112,13 +102,8 @@ export function useLinkRepositoryMutation() {
       try {
         if (selectIntake) {
           const config = await fetchIntakeConfig(baseUrl);
-          if (gitlab) {
-            const gitlabSelection = selectIntakeSource(config.gitlab, repo.id);
-            if (gitlabSelection !== config.gitlab) await saveGitlabSelection.mutateAsync(gitlabSelection);
-          } else {
-            const githubSelection = selectIntakeSource(config.github, repo.fullName);
-            if (githubSelection !== config.github) await saveGithubSelection.mutateAsync(githubSelection);
-          }
+          const githubSelection = selectIntakeSource(config.github, repo.fullName);
+          if (githubSelection !== config.github) await saveGithubSelection.mutateAsync(githubSelection);
         }
       } finally {
         await refreshed;
