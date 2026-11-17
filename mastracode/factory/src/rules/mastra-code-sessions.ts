@@ -221,6 +221,7 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
   ): Promise<{
     ended: Promise<RuntimeRunEnd>;
     observedEnd: () => 'complete' | 'aborted' | 'error' | 'suspended' | undefined;
+    close: () => void;
   }> {
     const options = this.#kickoffOptions;
     if (!options) throw new Error('Mastra Code kickoffs are not configured.');
@@ -356,7 +357,7 @@ export class MastraCodeRuntimeSessions implements MastraCodeSessionQueries {
         run.close();
       }
     })();
-    return { ended, observedEnd: run.endReason };
+    return { ended, observedEnd: run.endReason, close: run.close };
   }
 
   /** Stop the run in flight in the session, if its stream is active. */

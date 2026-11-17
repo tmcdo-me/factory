@@ -775,7 +775,12 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `#dispatchPendingStart`. Small differences: the skill is resolved when the kickoff is sent (an
      unknown skill now fails after the open-run wait, not before), the goal is held just before the preface
      rather than after it, and the working-phase `run_incomplete` check also accepts a pull request attached
-     to the card, as for Claude Agent.
+     to the card, as for Claude Agent. Review fixes: the kickoff result has `close()` (the dispatcher calls it
+     when recording the run's start or its first status fails before it follows the run, so the watch does
+     not stay subscribed to answer a plan or time out beside a retry's own; a closed `watchRun` ends its wait
+     at once and answers nothing more); a kickoff found stale after its preface ends the goal the dispatcher
+     had already held; the replay guards run on the binding's thread (`#requireSession` moves the session
+     there first, pinned by a test).
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

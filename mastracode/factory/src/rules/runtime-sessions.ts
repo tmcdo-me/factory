@@ -133,6 +133,8 @@ export interface FactoryRuntimeSessions {
     ended: Promise<RuntimeRunEnd>;
     /** The run's end as the adapter has seen it so far, for a run record that starts after the run may have ended. */
     observedEnd?: () => 'complete' | 'aborted' | 'error' | 'suspended' | undefined;
+    /** Stop watching the run (it answers nothing more, its `ended` settles): called when the caller fails before it follows the run. */
+    close?: () => void;
   }>;
   /**
    * Tell the session something from Factory (a rule's message, activity on the card's source).

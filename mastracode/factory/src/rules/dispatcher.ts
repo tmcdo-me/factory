@@ -2578,62 +2578,79 @@ export class FactoryDecisionDispatcher {
       );
     }
     const autoApprovedTool = await this.#autoApprovedExitTool(record);
-    await this.#runOnSeam({
-      seam,
-      ...(mastra ? { session: mastra.session } : {}),
-      binding,
-      startedBy,
-      orgId: record.orgId,
-      attempts: record.attempts,
-      label,
-      kickoff: {
-        runId: deliveryId,
-        ...(decision.skillName !== undefined
-          ? {
-              skill: {
-                name: decision.skillName,
-                ...(decision.arguments !== undefined ? { arguments: decision.arguments } : {}),
-                ...(decision.resume ? { resume: true } : {}),
-              },
-            }
-          : { prompt: decision.prompt }),
-        description: current?.description ?? null,
-        ...(decision.precedingMessage ? { preface: decision.precedingMessage } : {}),
-        ...(mastra
-          ? {
-              thread: { id: binding.threadId, resourceId: binding.resourceId },
-              ...(decision.cancelInFlight ? { cancelInFlight: true } : {}),
-              ...(autoApprovedTool ? { autoApprovedTool } : {}),
-              prefaceKeys: {
-                sourceId: `${record.id}:stage-transition`,
-                dedupeKey: `${record.idempotencyKey}:stage-transition`,
-              },
-              stillWanted: async () => !(await kickoffStale()),
-              superseded: () => this.#roleSuperseded(record, decision.role),
-              ...(sessionGoal
-                ? {
-                    delivered: () =>
-                      this.#remindPhaseGoal(record, sessionGoal, mastra.session, binding, mastra.requestContext),
-                  }
-                : {}),
-            }
-          : {}),
-      },
-      ...(mastra ? {} : { autoApprovedTool }),
-      superseded: () => this.#roleSuperseded(record, decision.role),
-      ...(workingPhase ? { workingPhase } : {}),
-      ...(seamGoal && workingPhase ? { goal: seamGoal } : {}),
-      approvedBy: record.approvedBy ?? undefined,
-      workItemName: mastra ? item?.title : current?.title,
-      onStarted: async () => {
-        this.#reviewWatched.add(record);
-        await this.#reviewStatus(record, decision, { phase: 'reviewing', startedAt: since });
-      },
-      onSuperseded: async () => {
-        this.#reviewWatched.delete(record);
-        await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
-      },
-    });
+    try {
+      await this.#runOnSeam({
+        seam,
+        ...(mastra ? { session: mastra.session } : {}),
+        binding,
+        startedBy,
+        orgId: record.orgId,
+        attempts: record.attempts,
+        label,
+        kickoff: {
+          runId: deliveryId,
+          ...(decision.skillName !== undefined
+            ? {
+                skill: {
+                  name: decision.skillName,
+                  ...(decision.arguments !== undefined ? { arguments: decision.arguments } : {}),
+                  ...(decision.resume ? { resume: true } : {}),
+                },
+              }
+            : { prompt: decision.prompt }),
+          description: current?.description ?? null,
+          ...(decision.precedingMessage ? { preface: decision.precedingMessage } : {}),
+          ...(mastra
+            ? {
+                thread: { id: binding.threadId, resourceId: binding.resourceId },
+                ...(decision.cancelInFlight ? { cancelInFlight: true } : {}),
+                ...(autoApprovedTool ? { autoApprovedTool } : {}),
+                prefaceKeys: {
+                  sourceId: `${record.id}:stage-transition`,
+                  dedupeKey: `${record.idempotencyKey}:stage-transition`,
+                },
+                stillWanted: async () => !(await kickoffStale()),
+                superseded: () => this.#roleSuperseded(record, decision.role),
+                ...(sessionGoal
+                  ? {
+                      delivered: () =>
+                        this.#remindPhaseGoal(record, sessionGoal, mastra.session, binding, mastra.requestContext),
+                    }
+                  : {}),
+              }
+            : {}),
+        },
+        ...(mastra ? {} : { autoApprovedTool }),
+        superseded: () => this.#roleSuperseded(record, decision.role),
+        ...(workingPhase ? { workingPhase } : {}),
+        ...(seamGoal && workingPhase ? { goal: seamGoal } : {}),
+        approvedBy: record.approvedBy ?? undefined,
+        workItemName: mastra ? item?.title : current?.title,
+        onStarted: async () => {
+          this.#reviewWatched.add(record);
+          await this.#reviewStatus(record, decision, { phase: 'reviewing', startedAt: since });
+        },
+        onSuperseded: async () => {
+          this.#reviewWatched.delete(record);
+          await this.#reviewStatus(record, decision, { phase: 'cancelled', endedAt: new Date() });
+        },
+      });
+    } catch (error) {
+      // The card moved on after the goal was held (the kickoff was found stale after its preface): the goal
+      // ends with the decision, rather than waiting on a run nobody started.
+      if (error instanceof FactoryDecisionSuperseded && mastra && sessionGoal) {
+        const latest = record.workItemId
+          ? await this.#storage.get({ orgId: record.orgId, id: record.workItemId })
+          : null;
+        const phaseKey =
+          phaseGoalOf(latest?.metadata)?.goalId === record.id ? phaseGoalOf(latest?.metadata)?.phaseKey : undefined;
+        await endPhaseGoal(
+          { phaseKey: phaseKey ?? '', goalId: record.id, threadId: binding.threadId, sessionId: binding.sessionId },
+          { agentFor: async () => mastra.session.machinery.getAgent(), store: async () => undefined },
+        ).catch(() => undefined);
+      }
+      throw error;
+    }
   }
 
   /**
@@ -2846,23 +2863,29 @@ export class FactoryDecisionDispatcher {
     });
     // A Mastra Code run is on its session's open-run ledger, and its end recorded by the session's own listener.
     let record: RuntimeRunLedger | undefined;
-    if (session) {
-      await this.#recordRunStart(
-        session,
-        binding,
-        kickoffId,
-        run.approvedBy,
-        started.observedEnd ?? (() => undefined),
-        run.workItemName,
-      );
-    } else {
-      record = await this.#openSeamRun(run, kickoffId);
-    }
     const steps: FactoryRunUsageCounts[] = [];
     // How the run ended, once it has; a parked or overdue run is followed instead.
     let ended: 'complete' | 'aborted' | 'error' | undefined;
     let following: Promise<RuntimeRunEnd> | undefined;
-    await run.onStarted?.();
+    try {
+      if (session) {
+        await this.#recordRunStart(
+          session,
+          binding,
+          kickoffId,
+          run.approvedBy,
+          started.observedEnd ?? (() => undefined),
+          run.workItemName,
+        );
+      } else {
+        record = await this.#openSeamRun(run, kickoffId);
+      }
+      await run.onStarted?.();
+    } catch (error) {
+      // Nobody follows the run now: its watch must not go on answering for it (a retry starts its own).
+      started.close?.();
+      throw error;
+    }
     // Whether the role had handed the card on when its run ended; a move after that keeps the run's verdict.
     let supersededAtEnd: Promise<boolean> | undefined;
     const handedOn = async () => (await supersededAtEnd) ?? (await run.superseded?.()) ?? false;

@@ -121,6 +121,7 @@ export function watchRun(
   let supersededAtEnd: Promise<boolean> | undefined;
   let parked: { toolName: string; toolCallId: string } | undefined;
   let approvals = 0;
+  let closed = false;
   const announced = new Set<string>();
   // Latest observational-memory failure seen on this run. The stream aborts the
   // run when observation/reflection fails, but the abort itself carries no
@@ -173,8 +174,9 @@ export function watchRun(
   const wait = async () => {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
+      if (closed) return false;
       const heartbeatMs = Math.min(RUN_REGISTRY_HEARTBEAT_MS, deadline - Date.now());
-      if (await waitForAgentEndOrTimeout(agentEnd, heartbeatMs)) return true;
+      if (await waitForAgentEndOrTimeout(agentEnd, heartbeatMs)) return !closed;
       if (!runStillActive()) return false;
     }
     throw new FactoryDispatchError(
@@ -193,13 +195,22 @@ export function watchRun(
     close: () => {
       // A watch that gives up answers nothing more, so its pauses wait for a person again.
       for (const toolCallId of announced) autoApproving?.delete(toolCallId);
+      closed = true;
       unsubscribe();
+      // A wait in progress ends at once instead of running to its deadline.
+      resolveAgentEnd();
     },
     /** The run's own verdict, thrown as what the dispatcher should record. */
     async settle(): Promise<void> {
       let observed = await wait();
       // Past the cap the plan stays parked: the person it waits for sees it in the inbox.
-      while (approve && autoApprovedTool && parked?.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
+      while (
+        !closed &&
+        approve &&
+        autoApprovedTool &&
+        parked?.toolName === autoApprovedTool &&
+        approvals < MAX_PLAN_APPROVALS
+      ) {
         const { toolCallId, toolName } = parked;
         // fork(claude-agent): answered through its broker record (slice 5d); one it can't answer waits for a person.
         let approval: (() => Promise<void>) | undefined;

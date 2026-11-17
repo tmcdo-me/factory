@@ -240,6 +240,28 @@ describe('MastraCodeRuntimeSessions.kickoff', () => {
     expect(live.listeners.size).toBe(0);
   });
 
+  it('closing a kickoff that nobody follows drops its watch and settles it, answering nothing more', async () => {
+    const live = liveSession();
+    const approve = vi.fn(async () => async () => {});
+    const sessions = new MastraCodeRuntimeSessions(
+      { getSession: vi.fn(async () => live.session as never), listActiveThreadRuns: vi.fn(() => [] as never) },
+      { timeoutMs: 60_000, autoApproving: new Set(), approver: () => approve },
+    );
+    const started = await sessions.kickoff('s', { ...prompt, autoApprovedTool: 'submit_plan' }, ctx());
+    expect(live.listeners.size).toBe(1);
+
+    started.close();
+
+    expect(live.listeners.size).toBe(0);
+    const end = await started.ended;
+    expect(end.reason).toBe('error');
+    expect(end.failure).toMatchObject({ code: 'run_terminal_event_missing' });
+    // A pause the dead watch would have answered after the close is no longer seen.
+    live.emit({ type: 'tool_suspended', toolName: 'submit_plan', toolCallId: 'c1' });
+    live.emit({ type: 'agent_end', reason: 'suspended' });
+    expect(approve).not.toHaveBeenCalled();
+  });
+
   it('a run that ends suspended resolves as awaiting a person', async () => {
     const live = liveSession();
     const started = await kickoffSetup(live).kickoff('s', prompt, ctx());
