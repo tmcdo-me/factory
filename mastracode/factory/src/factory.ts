@@ -1864,7 +1864,8 @@ export class MastraFactory {
         const controller = this.#prepared?.base.controller;
         if (!controller) return { ok: false, reason: 'unavailable', message: 'Factory has not started yet' };
         const session = await mastraCodeSessionToAnswer(controller, record.sessionId, context as RequestContext);
-        if (!session) return { ok: false, reason: 'session_not_found' };
+        // Never started (no thread to recover): nothing waits on it any more, so the record settles.
+        if (!session) return { ok: false, reason: 'not_pending' };
         return answerMastraCodeCall(session as unknown as MastraCodeAnswerSession, record, response, context);
       },
     });
@@ -1877,7 +1878,10 @@ export class MastraFactory {
     this.#interactionsLoaded = pendingInteractions.load().then(
       () => true,
       error => {
-        console.warn('[factory] Unable to read the questions sessions wait on.', error);
+        console.warn(
+          '[factory] Unable to read what sessions were waiting on a person for when the server last stopped.',
+          error,
+        );
         return false;
       },
     );

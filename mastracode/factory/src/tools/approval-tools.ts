@@ -139,6 +139,8 @@ async function answerHeld(
   response: InteractionResponse,
   requestContext: RequestContext,
   answeredBy: string | undefined,
+  /** What the session is told, when it is more than the answer the record keeps. */
+  delivered?: InteractionResponse,
 ): Promise<void> {
   const interactions = messaging.interactions;
   if (!interactions) throw new Error(NOTHING_WAITING_ON_CALL);
@@ -147,6 +149,7 @@ async function answerHeld(
     outcome = await interactions.resolve(record.id, response, {
       ...(answeredBy ? { resolvedBy: answeredBy } : {}),
       context: requestContext,
+      ...(delivered ? { delivered } : {}),
     });
   } catch (error) {
     if (!(error instanceof InteractionAnswerRefusedError)) throw error;
@@ -251,7 +254,15 @@ export async function answerParkedQuestion(
     input.answeredBy && input.answeredBy !== session.userId
       ? `Answered by ${input.answeredByName ?? input.answeredBy}: ${Array.isArray(checked) ? checked.join(', ') : checked}`
       : checked;
-  await answerHeld(messaging, question.record, { kind: 'question', answer: reply }, requestContext, input.answeredBy);
+  // The record keeps the answer as given, and who gave it.
+  await answerHeld(
+    messaging,
+    question.record,
+    { kind: 'question', answer: checked },
+    requestContext,
+    input.answeredBy,
+    reply === checked ? undefined : { kind: 'question', answer: reply },
+  );
   return idsOf(question);
 }
 

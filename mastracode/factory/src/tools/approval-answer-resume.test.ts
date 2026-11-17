@@ -17,6 +17,7 @@ import {
   setCredentialStoreProvider,
 } from '@mastra/code-sdk/agents/credential-resolver';
 import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
+import { Agent } from '@mastra/core/agent'; // fork(claude-agent)
 import { EventEmitterPubSub } from '@mastra/core/events';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -554,7 +555,6 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         ownerContext, // fork(claude-agent)
         interactionStore, // fork(claude-agent)
         pendingInteractions, // fork(claude-agent)
-        controller: code.controller, // fork(claude-agent)
         liveSessions, // fork(claude-agent)
         controller: code.controller, // fork(claude-agent)
         /**
@@ -658,6 +658,10 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         expect(restarted.index.parked(phase.sessionId)).toBeUndefined();
         const id = `${parkedOn === 'plan' ? 'plan_approval' : 'question'}:${PARKED[parkedOn].toolCallId}`;
         expect(await interactionStore.get(id)).toMatchObject({ status: 'resolved', resolvedBy: REQUESTER });
+        // fork(claude-agent): the record keeps the answer as given; only the model is told who gave it.
+        if (parkedOn === 'question') {
+          expect((await interactionStore.get(id))?.response).toEqual({ kind: 'question', answer: 'main' });
+        }
       },
     );
 
@@ -918,6 +922,46 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         expect(errors).toEqual([]);
         expect([...new Set(resolved.map(tenant => tenant?.userId))]).toEqual([OWNER]);
         expect(audit.map(event => event.actorId)).toEqual([REQUESTER]);
+      },
+    );
+
+    // fork(claude-agent): slice 5c review. The controller drops the call from its state as it resumes it;
+    // something else the session says meanwhile publishes that, then the resume fails and the call is put
+    // back. The call still waits, so its record must too, and a second answer carries the run on.
+    it.each(['plan', 'question'] as const)(
+      'keeps the call and its record waiting when the resume fails after the session let it go (%s)',
+      async parkedOn => {
+        const { broker, phase, ownerContext, session, interactionStore, waitingOn, liveSessions } =
+          await parkedPhaseSession({ parkedOn });
+        const id = `${parkedOn === 'plan' ? 'plan_approval' : 'question'}:${PARKED[parkedOn].toolCallId}`;
+        const response =
+          parkedOn === 'plan'
+            ? ({ kind: 'plan_approval', action: 'approved' } as const)
+            : ({ kind: 'question', answer: 'main' } as const);
+        const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+        const resume = vi.spyOn(Agent.prototype, 'sendStreamResume').mockImplementationOnce(async () => {
+          session.emit({ type: 'state_changed', state: {}, changedKeys: [] });
+          await new Promise(resolve => setTimeout(resolve, 50));
+          throw new Error('The model provider is unreachable');
+        });
+
+        await expect(broker.resolve(id, response, { resolvedBy: OWNER, context: ownerContext() })).rejects.toThrow(
+          /still waits on it/,
+        );
+        expect(resume).toHaveBeenCalledTimes(1);
+        expect(waitingOn()).toBe(PARKED[parkedOn].toolName);
+        await new Promise(resolve => setTimeout(resolve, 100));
+        expect(await interactionStore.get(id)).toMatchObject({ status: 'pending' });
+        expect(liveSessions.parked(phase.sessionId)).toMatchObject({ toolName: PARKED[parkedOn].toolName });
+        resume.mockRestore();
+        warn.mockRestore();
+
+        const requestsBefore = mock.getRequests().length;
+        expect((await broker.resolve(id, response, { resolvedBy: OWNER, context: ownerContext() })).status).toBe(
+          'delivered',
+        );
+        await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+        expect(await interactionStore.get(id)).toMatchObject({ status: 'resolved', resolvedBy: OWNER });
       },
     );
 

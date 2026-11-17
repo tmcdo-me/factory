@@ -509,6 +509,13 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Checked on aimock Mastra Code sessions: two answers at once resume once (the other is told it
      was answered), and a session parked on its plan or question before a restart is answered from
      outside it after one, the run carrying on as its owner.
+     After review: an answer to a session that was never started (no thread to recover) settles its
+     record (`not_pending`), while one Factory can't deliver yet (`unavailable`) is refused; a resume
+     that fails after the controller let the call go keeps the call and its record waiting (checked
+     on aimock with a failing `sendStreamResume`); the record keeps a question's answer as given (the
+     model alone is told `Answered by …`, `delivered`). Factory runs as one server process: recovering a
+     session from storage while another process holds it live is not guarded against (several
+     replicas would need the controller's thread lease first).
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's

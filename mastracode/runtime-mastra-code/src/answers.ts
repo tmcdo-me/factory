@@ -129,6 +129,7 @@ export async function answerMastraCodeCall(
     return {
       ok: false,
       reason: 'invalid',
+      waiting: true,
       message: `The answer did not reach ${toolNameOf(record.request)}: the session could not carry on and still waits on it. Open the session to see why.`,
     };
   }

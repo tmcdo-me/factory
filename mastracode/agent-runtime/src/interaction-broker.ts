@@ -160,7 +160,15 @@ export class InteractionBroker {
   async resolve(
     id: string,
     response: InteractionResponse,
-    options: { resolvedBy?: string; context?: unknown } = {},
+    options: {
+      resolvedBy?: string;
+      context?: unknown;
+      /**
+       * fork(claude-agent): what a runtime that holds the interaction is handed, when it is told more
+       * than the answer the record keeps (who gave it, say).
+       */
+      delivered?: InteractionResponse;
+    } = {},
   ): Promise<ResolveOutcome> {
     const existing = await this.#store.get(id);
     if (!existing || existing.status !== 'pending') return { status: 'not_pending' };
@@ -282,7 +290,7 @@ export class InteractionBroker {
   async #resolveHeld(
     existing: InteractionRecord,
     response: InteractionResponse,
-    options: { resolvedBy?: string; context?: unknown },
+    options: { resolvedBy?: string; context?: unknown; delivered?: InteractionResponse },
   ): Promise<ResolveOutcome> {
     const { id } = existing;
     if (!this.#answerHeld) throw new Error(`Nothing delivers answers to ${existing.heldBy} sessions`);
@@ -291,7 +299,7 @@ export class InteractionBroker {
     try {
       let result: CommandResult;
       try {
-        result = await this.#answerHeld(existing, response, {
+        result = await this.#answerHeld(existing, options.delivered ?? response, {
           ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
           ...(options.context !== undefined ? { context: options.context } : {}),
         });
