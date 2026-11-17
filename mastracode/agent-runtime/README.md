@@ -11,18 +11,18 @@ runtimes (Mastra Code, Claude Agent, …) implement it as adapters. Design:
 | `runtime.ts`      | `AgentRuntime`, `RuntimeSession`, `SessionSpec`, `TurnInput`, `ContextProvider`                                                                                                       |
 | `events.ts`       | `FactoryEvent` — the one runtime-neutral event format — and `EventEnvelope` (`seq` per session)                                                                                       |
 | `tools.ts`        | `FactoryToolDef` / `FactoryToolContext` — Factory tools defined once, adapted per runtime (Mastra Code: `mastraTool` in `@factory/runtime-mastra-code`; Claude Agent: its MCP server) |
-| `interactions.ts` | Questions, plan approvals, tool approvals; `InteractionStore`                                                                                                                         |
+| `interactions.ts` | Questions, plan approvals, tool approvals, a tool's own input (`tool_input`, answered only in its session); `heldBy` for a call its runtime holds; `InteractionStore`                 |
 | `workspace.ts`    | `SessionWorkspace` (checkout, sandbox API, filesystem, env, `spawn`) and `SandboxProcess`                                                                                             |
 
 ## Factory-owned services
 
-| Module                  | What                                                                                        |
-| ----------------------- | ------------------------------------------------------------------------------------------- |
-| `event-log.ts`          | `EventLog` interface (append-only per session) + in-memory reference impl                   |
-| `event-hub.ts`          | `SessionEventHub` — ordered publish, replay-then-live subscribe (SSE resume by `seq`)       |
-| `transcript.ts`         | Pure reducer `FactoryEvent` → `Transcript`; shared by server (board rules, audits) and UI   |
-| `interaction-broker.ts` | `InteractionBroker` — request/resolve/cancel; re-delivery after restart via `onUndelivered` |
-| `registry.ts`           | `RuntimeRegistry` — enabled runtimes and the default                                        |
+| Module                  | What                                                                                                                                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event-log.ts`          | `EventLog` interface (append-only per session) + in-memory reference impl                                                                                                                          |
+| `event-hub.ts`          | `SessionEventHub` — ordered publish, replay-then-live subscribe (SSE resume by `seq`)                                                                                                              |
+| `transcript.ts`         | Pure reducer `FactoryEvent` → `Transcript`; shared by server (board rules, audits) and UI                                                                                                          |
+| `interaction-broker.ts` | `InteractionBroker` — request/resolve/cancel; re-delivery after restart via `onUndelivered`; `track`/`settleHeld` record calls a runtime holds itself (Mastra Code), answered through `answerHeld` |
+| `registry.ts`           | `RuntimeRegistry` — enabled runtimes and the default                                                                                                                                               |
 
 Storage-backed `EventLog` / `InteractionStore` implementations live in `@mastra/factory`'s
 storage domains.

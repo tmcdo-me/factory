@@ -1,8 +1,14 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import type { CommandResult } from './commands';
 import { SessionEventHub } from './event-hub';
 import { InMemoryEventLog } from './event-log';
-import { InteractionBroker, InteractionCancelledError } from './interaction-broker';
+import {
+  HELD_INTERACTION_GONE,
+  InteractionAnswerRefusedError,
+  InteractionBroker,
+  InteractionCancelledError,
+} from './interaction-broker';
 import { InMemoryInteractionStore } from './interaction-store-memory';
 import type { InteractionRecord } from './interactions';
 
@@ -100,5 +106,141 @@ describe('InteractionBroker', () => {
     expect(await broker.cancelSession('a', 'closed')).toBe(1);
     await expect(a).rejects.toMatchObject({ reason: 'closed' });
     expect(await broker.listPending({ sessionId: 'b' })).toHaveLength(1);
+  });
+});
+
+/**
+ * A runtime that holds its own interactions (Mastra Code's controller resumes its suspended and gated
+ * calls): the broker records what the runtime reports and hands answers to it, and the runtime decides.
+ */
+describe('InteractionBroker with interactions a runtime holds', () => {
+  function heldSetup(
+    answerHeld: (record: InteractionRecord, response: unknown, options: unknown) => Promise<CommandResult>,
+  ) {
+    const log = new InMemoryEventLog();
+    const hub = new SessionEventHub(log);
+    const store = new InMemoryInteractionStore();
+    const broker = new InteractionBroker({ store, hub, answerHeld: answerHeld as never });
+    const ask = (callId = 'call-1') =>
+      broker.track({
+        id: `question:${callId}`,
+        sessionId: 's',
+        callId,
+        heldBy: 'mastra-code',
+        request: { kind: 'question', question: 'Which branch?' },
+        requestedAt: new Date().toISOString(),
+      });
+    return { broker, store, log, ask };
+  }
+
+  it('hands the answer to the runtime with its request context and settles it once the runtime accepts', async () => {
+    const answerHeld = vi.fn(async () => ({ ok: true }) as const);
+    const { broker, store, log, ask } = heldSetup(answerHeld);
+    const record = await ask();
+
+    const outcome = await broker.resolve(
+      record.id,
+      { kind: 'question', answer: 'main' },
+      { resolvedBy: 'u1', context: 'ctx' },
+    );
+
+    expect(outcome.status).toBe('delivered');
+    expect(answerHeld).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'question:call-1', callId: 'call-1' }),
+      { kind: 'question', answer: 'main' },
+      { resolvedBy: 'u1', context: 'ctx' },
+    );
+    expect(await store.get(record.id)).toMatchObject({
+      status: 'resolved',
+      resolvedBy: 'u1',
+      response: { answer: 'main' },
+    });
+    // The runtime's own event stream announces it and its answer; the broker adds nothing.
+    expect(await log.list('s')).toEqual([]);
+  });
+
+  it('lets one of two answers through to the runtime; the other is not pending', async () => {
+    let accept!: () => void;
+    const answerHeld = vi.fn(() => new Promise<CommandResult>(resolve => (accept = () => resolve({ ok: true }))));
+    const { broker, ask } = heldSetup(answerHeld);
+    const record = await ask();
+
+    const first = broker.resolve(record.id, { kind: 'question', answer: 'main' });
+    await vi.waitFor(() => expect(answerHeld).toHaveBeenCalledTimes(1));
+    const second = await broker.resolve(record.id, { kind: 'question', answer: 'release/1.x' });
+    accept();
+
+    expect(second.status).toBe('not_pending');
+    expect((await first).status).toBe('delivered');
+    expect(answerHeld).toHaveBeenCalledTimes(1);
+  });
+
+  it('settles an interaction the runtime no longer holds when it says so, and leaves one it could not reach', async () => {
+    const results: CommandResult[] = [
+      { ok: false, reason: 'not_pending', message: 'no_pending_suspension' },
+      { ok: false, reason: 'session_not_found' },
+    ];
+    const { broker, store, ask } = heldSetup(async () => results.shift()!);
+    const gone = await ask('call-1');
+    const unreachable = await ask('call-2');
+
+    expect((await broker.resolve(gone.id, { kind: 'question', answer: 'main' })).status).toBe('not_pending');
+    expect(await store.get(gone.id)).toMatchObject({ status: 'cancelled', cancelReason: HELD_INTERACTION_GONE });
+
+    await expect(broker.resolve(unreachable.id, { kind: 'question', answer: 'main' })).rejects.toBeInstanceOf(
+      InteractionAnswerRefusedError,
+    );
+    expect(await store.get(unreachable.id)).toMatchObject({ status: 'pending' });
+  });
+
+  it('settles as the runtime reports, even while an answer is with it', async () => {
+    let accept!: (result: CommandResult) => void;
+    const { broker, store, ask } = heldSetup(() => new Promise<CommandResult>(resolve => (accept = resolve)));
+    const answered = await ask('call-1');
+    const abandoned = await ask('call-2');
+
+    // Answered in the session itself: the runtime's events settle it.
+    expect(await broker.settleHeld(abandoned.id, { status: 'cancelled', reason: 'aborted' })).toBe(true);
+    expect(await store.get(abandoned.id)).toMatchObject({ status: 'cancelled', cancelReason: 'aborted' });
+
+    // The runtime's events say the call moved on before its answer returns: the answer's outcome decides.
+    const outcome = broker.resolve(answered.id, { kind: 'question', answer: 'main' }, { resolvedBy: 'u1' });
+    await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
+    expect(await broker.settleHeld(answered.id, { status: 'cancelled', reason: 'withdrawn' })).toBe(false);
+    accept({ ok: true });
+    expect((await outcome).status).toBe('delivered');
+    expect(await store.get(answered.id)).toMatchObject({ status: 'resolved', resolvedBy: 'u1' });
+  });
+
+  it('keeps one record per waiting call, and a fresh one when the call id comes back after it settled', async () => {
+    const { broker, ask } = heldSetup(async () => ({ ok: true }));
+    const first = await ask();
+    expect((await ask()).id).toBe(first.id);
+    expect(await broker.listPending({ sessionId: 's' })).toHaveLength(1);
+
+    await broker.settleHeld(first.id, { status: 'cancelled', reason: 'aborted' });
+    const again = await ask();
+    expect(again.id).toBe('question:call-1#2');
+    expect(await broker.listPending({ sessionId: 's' })).toEqual([
+      expect.objectContaining({ id: 'question:call-1#2' }),
+    ]);
+  });
+
+  it('never takes an answer for a call only its session can answer', async () => {
+    const answerHeld = vi.fn(async () => ({ ok: true }) as const);
+    const { broker } = heldSetup(answerHeld);
+    const record = await broker.track({
+      id: 'tool_input:call-9',
+      sessionId: 's',
+      callId: 'call-9',
+      heldBy: 'mastra-code',
+      request: { kind: 'tool_input', toolName: 'request_access', input: { path: '/etc' } },
+      requestedAt: new Date().toISOString(),
+    });
+
+    await expect(broker.resolve(record.id, { kind: 'question', answer: 'yes' })).rejects.toThrow(
+      /expects a "tool_input"/,
+    );
+    expect(answerHeld).not.toHaveBeenCalled();
   });
 });

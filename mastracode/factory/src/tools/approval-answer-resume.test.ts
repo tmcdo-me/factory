@@ -5,6 +5,8 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { LLMock } from '@copilotkit/aimock';
+import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime'; // fork(claude-agent)
+import { createMastraCodeSessionCommands } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import { createMastraCode } from '@mastra/code-sdk';
 import {
   resolveAuthenticatedCredentialTenant,
@@ -14,7 +16,7 @@ import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolv
 import { EventEmitterPubSub } from '@mastra/core/events';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
-import { LibSQLStore } from '@mastra/libsql';
+import { LibSQLFactoryStorage, LibSQLStore } from '@mastra/libsql';
 import { PostgresStore } from '@mastra/pg';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -29,8 +31,12 @@ import {
 import { fakeRouteAuth, mountApiRoutes } from '../routes/test-utils.js';
 import { WorkItemRoutes } from '../routes/work-items.js';
 import { FactoryTransitionService } from '../rules/transition-service.js';
+import { observeSessionAgentEvents } from '../session/agent-event-mirror.js'; // fork(claude-agent)
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { LiveSessions } from '../session/live-sessions.js';
+import { PendingInteractions } from '../session/pending-interactions.js'; // fork(claude-agent)
+import { AgentEventsStorage } from '../storage/domains/agent-events/base.js'; // fork(claude-agent)
+import { AgentInteractionsStorage } from '../storage/domains/agent-interactions/base.js'; // fork(claude-agent)
 import { factoryPrincipalId } from '../storage/domains/projects/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { QUESTION_ANSWERERS, createFactoryApprovalTools as createFactoryApprovalToolsDefs } from './approval-tools.js';
@@ -339,6 +345,38 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       session.subscribe(event => {
         if (event.type === 'error') errors.push(event.error.message);
       });
+      // fork(claude-agent): the Factory server's interaction broker, over its own storage, recording
+      // what the session waits on as its controller reports it, and handing answers to the controller.
+      const factoryStorage = new LibSQLFactoryStorage({
+        id: 'approval-answer-factory',
+        url: `file:${path.join(directory, 'factory.db')}`,
+      });
+      const interactionStore = factoryStorage.registerDomain(new AgentInteractionsStorage());
+      const agentEvents = factoryStorage.registerDomain(new AgentEventsStorage());
+      await factoryStorage.init();
+      stops.push(() => factoryStorage.close());
+      const pendingInteractions = new PendingInteractions({
+        store: interactionStore,
+        projectOf: sessionId => sourceControl.sessions.getBySessionId(sessionId),
+      });
+      const mastraCodeCommands = createMastraCodeSessionCommands({
+        mastra: () => ({ getAgentController: () => code.controller }) as never,
+        controllerId: 'code',
+      });
+      const broker = new InteractionBroker({
+        store: pendingInteractions,
+        hub: new SessionEventHub(agentEvents),
+        answerHeld: (record, response, { context }) =>
+          mastraCodeCommands.answer(
+            record.sessionId,
+            { interactionId: record.id, ...(record.callId ? { callId: record.callId } : {}) },
+            response,
+            { context },
+          ),
+      });
+      observeSessionAgentEvents(session, new SessionEventHub(agentEvents), {
+        interactions: { broker, waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId) },
+      });
       // What the Factory server tells the sessions following the card about this session's runs.
       const signals: Array<{ sessionId: string; kind: string; priority?: string; summary: string }> = [];
       const reports = {
@@ -502,8 +540,73 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         waitingOn,
         shipped,
         sourceControl,
+        broker, // fork(claude-agent)
+        ownerContext, // fork(claude-agent)
+        interactionStore, // fork(claude-agent)
       };
     }
+
+    // fork(claude-agent): slice 5a. What a Mastra Code session waits on is one broker record,
+    // held by its controller, as a Claude Agent session's is; the controller stays the authority.
+    it.each(['plan', 'release', 'question'] as const)(
+      'keeps what the session waits on in the interaction broker, held by its controller (%s)',
+      async parkedOn => {
+        const { broker, phase } = await parkedPhaseSession({ parkedOn });
+        const kind = { plan: 'plan_approval', release: 'tool_approval', question: 'question' }[parkedOn];
+
+        await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
+        expect(await broker.listPending({ sessionId: phase.sessionId })).toEqual([
+          expect.objectContaining({
+            id: `${kind}:${PARKED[parkedOn].toolCallId}`,
+            callId: PARKED[parkedOn].toolCallId,
+            heldBy: 'mastra-code',
+            request: expect.objectContaining({ kind }),
+          }),
+        ]);
+      },
+    );
+
+    it('settles the broker record once the call is answered the way the session answers it today', async () => {
+      const { answer, broker, phase, interactionStore } = await parkedPhaseSession();
+      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
+
+      await answer('approve');
+
+      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toEqual([]));
+      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({ status: 'cancelled' });
+    });
+
+    it("hands an answer through the broker to the controller, which resumes the run as the session's owner, once", async () => {
+      const { broker, phase, errors, ownerContext, interactionStore, waitingOn } = await parkedPhaseSession();
+      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
+      const requestsBefore = mock.getRequests().length;
+      resolved = [];
+
+      const outcomes = await Promise.all(
+        [REQUESTER, OWNER].map(resolvedBy =>
+          broker.resolve(
+            'plan_approval:call_plan',
+            { kind: 'plan_approval', action: 'approved' },
+            { resolvedBy, context: ownerContext() },
+          ),
+        ),
+      );
+
+      expect(outcomes.map(outcome => outcome.status)).toEqual(['delivered', 'not_pending']);
+      await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+      await vi.waitFor(() => expect(waitingOn()).toBeUndefined());
+      expect(errors).toEqual([]);
+      expect([...new Set(resolved.map(tenant => tenant?.userId))]).toEqual([OWNER]);
+      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({
+        status: 'resolved',
+        resolvedBy: REQUESTER,
+        response: { kind: 'plan_approval', action: 'approved' },
+      });
+      // Answered once: a later answer finds nothing pending.
+      expect(
+        (await broker.resolve('plan_approval:call_plan', { kind: 'plan_approval', action: 'rejected' })).status,
+      ).toBe('not_pending');
+    });
 
     // Technical: the resumed run takes the request context the answer hands it. It must name
     // the phase session's owner, so the run keeps one identity from kickoff to finish and never

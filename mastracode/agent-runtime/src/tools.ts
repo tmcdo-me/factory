@@ -1,6 +1,6 @@
 import type { ZodType } from 'zod';
 
-import type { InteractionKind, InteractionRequest, ResponseFor } from './interactions';
+import type { AnswerableKind, AnswerableRequest, ResponseFor } from './interactions';
 import type { SessionWorkspace } from './workspace';
 
 /**
@@ -38,7 +38,7 @@ export interface FactoryToolContext {
   workspace?: SessionWorkspace;
   signal: AbortSignal;
   /** Ask the human and wait. Resolves with the answer; rejects if the interaction is cancelled. */
-  interact<K extends InteractionKind>(request: Extract<InteractionRequest, { kind: K }>): Promise<ResponseFor<K>>;
+  interact<K extends AnswerableKind>(request: Extract<AnswerableRequest, { kind: K }>): Promise<ResponseFor<K>>;
 }
 
 /**

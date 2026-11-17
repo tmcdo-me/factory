@@ -1,4 +1,4 @@
-// fork(claude-agent): the questions and plans Claude Agent sessions wait on, read as parked runs.
+// fork(claude-agent): what sessions wait on a person for, kept in the interaction broker for both runtimes.
 import type { InteractionRecord, InteractionRequest, InteractionStore } from '@factory/agent-runtime';
 
 import type { FactoryRunOutcome } from '../tools/reports.js';
@@ -28,6 +28,13 @@ export function interactionToolName(request: InteractionRequest): string {
   if (request.kind === 'question') return 'ask_user';
   return request.toolName;
 }
+
+/**
+ * Whether the interaction is one a runtime holds itself (Mastra Code's controller). Slice 5a keeps
+ * those in the index, so an answer and the runtime's own word settle the same record, but readers
+ * still read such sessions from the runtime until slice 5b moves them here.
+ */
+const heldByRuntime = (record: InteractionRecord) => record.heldBy !== undefined;
 
 /** Whether a yes or no is all the request needs (`factory_answer_approval` can give it). */
 export function answersWithDecision(request: InteractionRequest): boolean {
@@ -70,6 +77,9 @@ interface Waiting {
  * Code run: synchronously, from memory. Every record passes through here, so the index follows
  * every request and every answer or cancellation; `load` picks up the ones still pending from
  * before a restart (an answer to those reaches the conversation as a message).
+ *
+ * Mastra Code's waiting calls are recorded here too, held by its controller (`heldBy`), which takes
+ * their answers; `waitingOn` finds them by call as the controller reports them settled.
  */
 export class PendingInteractions implements InteractionStore, ParkedRunSource {
   readonly #options: PendingInteractionsOptions;
@@ -127,10 +137,18 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     return this.#options.store.listPending(filter);
   }
 
+  /** The pending interactions a session holds for one tool call, from memory. */
+  waitingOn(sessionId: string, callId: string): InteractionRecord[] {
+    return [...(this.#waiting.get(sessionId)?.values() ?? [])]
+      .filter(waiting => waiting.record.callId === callId)
+      .map(waiting => waiting.record);
+  }
+
   /** What the session has waited on longest, or nothing. */
   parked(sessionId: string): ParkedRun | undefined {
     let oldest: Waiting | undefined;
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
+      if (heldByRuntime(waiting.record)) continue; // read from the runtime until slice 5b
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }
     if (!oldest) return undefined;
@@ -164,7 +182,8 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     void this.#project(record.sessionId).then(project => {
       if (!project || !this.#waiting.get(record.sessionId)?.has(record.id)) return;
       this.#notify(() => this.#options.onChanged?.(record.sessionId, project));
-      if (announce) this.#notify(() => this.#options.onRequested?.(record, project));
+      // A runtime that holds its calls tells followers itself, until slice 5d.
+      if (announce && !heldByRuntime(record)) this.#notify(() => this.#options.onRequested?.(record, project));
     });
   }
 

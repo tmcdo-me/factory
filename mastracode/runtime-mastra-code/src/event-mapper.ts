@@ -17,9 +17,12 @@ export const MASTRA_CODE_RUNTIME_ID = 'mastra-code';
 
 type MastraMessage = Extract<AgentControllerEvent, { type: 'message_start' }>['message'];
 
+/** What the mapper's own interactions ask: never `tool_input` (it names every paused tool's prompt). */
+type MappedRequest = Exclude<InteractionRequest, { kind: 'tool_input' }>;
+
 interface OpenInteraction {
   id: string;
-  kind: InteractionRequest['kind'];
+  kind: MappedRequest['kind'];
 }
 
 /**
@@ -373,7 +376,7 @@ export class MastraCodeEventMapper {
     return out;
   }
 
-  #requestInteraction(callId: string, request: InteractionRequest): FactoryEvent[] {
+  #requestInteraction(callId: string, request: MappedRequest): FactoryEvent[] {
     if (this.#interactions.has(callId)) return [];
     const id = `${request.kind}:${callId}`;
     this.#interactions.set(callId, { id, kind: request.kind });
@@ -526,7 +529,7 @@ function partText(part: unknown): { part: 'text' | 'reasoning'; text: string } |
   return undefined;
 }
 
-function suspensionRequest(toolName: string, args: unknown, payload: unknown): InteractionRequest {
+function suspensionRequest(toolName: string, args: unknown, payload: unknown): MappedRequest {
   const input = isRecord(args) ? args : {};
   if (toolName === 'submit_plan') {
     return { kind: 'plan_approval', planPath: typeof input.path === 'string' ? input.path : '' };
@@ -555,7 +558,7 @@ function suspensionRequest(toolName: string, args: unknown, payload: unknown): I
   return { kind: 'question', question: typeof message === 'string' ? message : `${toolName} is waiting for input` };
 }
 
-function inferResponse(kind: InteractionRequest['kind'], result: unknown, denied: boolean): InteractionResponse {
+function inferResponse(kind: MappedRequest['kind'], result: unknown, denied: boolean): InteractionResponse {
   switch (kind) {
     case 'tool_approval':
       return { kind, approved: !denied };

@@ -1,12 +1,19 @@
 // fork(claude-agent): mirror Mastra Code sessions into the runtime-neutral session event log.
 import { SessionPublisher } from '@factory/agent-runtime';
-import type { SessionEventHub } from '@factory/agent-runtime';
-import { mirrorSessionEvents } from '@factory/runtime-mastra-code';
+import type { InteractionBroker, InteractionRecord, SessionEventHub } from '@factory/agent-runtime';
+import { mirrorSessionEvents, observeMastraCodeInteractions } from '@factory/runtime-mastra-code';
 import type { MirrorableSession } from '@factory/runtime-mastra-code';
 
 import { customModelContextWindow } from '../routes/custom-provider-source.js';
 
 const mirrored = new WeakSet<object>();
+
+/** Factory's interaction broker, as a Mastra Code session's waiting calls are recorded in it. */
+export interface SessionInteractionRecords {
+  broker: Pick<InteractionBroker, 'track' | 'settleHeld'>;
+  /** What the broker's index holds for one tool call of a session. */
+  waitingOn(sessionId: string, callId: string): InteractionRecord[];
+}
 
 /**
  * Shadow-write a Mastra Code session's events into Factory's event log (`@factory/agent-runtime`).
@@ -19,6 +26,8 @@ export function observeSessionAgentEvents(
   options: {
     /** The context window of the model that produced a step, when known (a custom provider's model). */
     contextWindow?: (modelId: string | undefined) => number | undefined;
+    /** Factory's interaction broker, told of every call the session holds for a person and when it stops holding it. */
+    interactions?: SessionInteractionRecords;
   } = {},
 ): void {
   if (mirrored.has(session)) return;
@@ -36,6 +45,36 @@ export function observeSessionAgentEvents(
   mirrorSessionEvents(session, publisher.emit, {
     onError: error => warnOnce('mapping an event', error),
     ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
+  });
+  if (options.interactions) recordSessionInteractions(session, options.interactions);
+}
+
+/**
+ * Keep the interaction broker's records of a Mastra Code session's waiting calls as its controller
+ * reports them. Each report waits for the one before it, so a call answered at once is recorded
+ * before it is settled. Failures are logged, never surfaced to the session.
+ */
+function recordSessionInteractions(session: MirrorableSession, { broker, waitingOn }: SessionInteractionRecords): void {
+  const sessionId = session.identity.getId();
+  let queue = Promise.resolve();
+  const inTurn = (what: string, work: () => Promise<unknown>) => {
+    queue = queue
+      .then(work)
+      .then(() => undefined)
+      .catch(error =>
+        console.warn(
+          `[factory] interactions: ${what} for session ${sessionId} failed: ${error instanceof Error ? error.message : error}`,
+        ),
+      );
+  };
+  observeMastraCodeInteractions(session, {
+    requested: interaction => inTurn('recording a waiting call', () => broker.track(interaction)),
+    settled: (callId, settlement) =>
+      inTurn('settling a waiting call', async () => {
+        for (const record of waitingOn(sessionId, callId)) {
+          if (record.heldBy) await broker.settleHeld(record.id, settlement(record.request));
+        }
+      }),
   });
 }
 

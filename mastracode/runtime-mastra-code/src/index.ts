@@ -10,3 +10,11 @@ export { mastraTool } from './tools';
 export type { MastraTool, MastraToolCall, MastraToolContextOf } from './tools';
 export { allowToolsWithoutAsking } from './permissions';
 export type { MastraCodePermissionsSession } from './permissions';
+export {
+  answeredResponse,
+  mastraCodeInteractionId,
+  mastraCodeInteractionRequest,
+  observeMastraCodeInteractions,
+  resumesOnDecision,
+} from './interactions';
+export type { InteractionWatchSession, MastraCodeInteractionSink, MastraCodeWaitingCall } from './interactions';

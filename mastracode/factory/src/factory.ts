@@ -158,6 +158,7 @@ import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
 import { observeSessionAgentEvents, sessionModelContextWindow } from './session/agent-event-mirror.js';
+import type { SessionInteractionRecords } from './session/agent-event-mirror.js'; // fork(claude-agent)
 import { ClaudeAgentConcurrency } from './session/claude-agent-concurrency.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
 import { claudeAgentHostIdentity, claudeAgentHostLease } from './session/claude-agent-host.js';
@@ -635,6 +636,8 @@ export class MastraFactory {
   #ciFollow: ReturnType<typeof ciFollowSettings> | undefined; // fork(claude-agent)
   /** fork(claude-agent): whether this process runs Claude Agent sessions. */
   #claudeAgentHost: ClaudeAgentHost | undefined;
+  /** fork(claude-agent): where Mastra Code sessions' waiting calls are recorded (the interaction broker). */
+  #interactionRecords: SessionInteractionRecords | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -1817,6 +1820,28 @@ export class MastraFactory {
         );
       },
     });
+    // fork(claude-agent): one interaction broker for both runtimes. Claude Agent's Factory tools await
+    // it; Mastra Code's controller holds its own waiting calls, recorded here as it reports them, and
+    // takes their answers through its session commands (it stays the authority on them).
+    const mastraCodeCommands = createMastraCodeSessionCommands({
+      mastra: () => this.#prepared?.base.controller.getMastra(),
+      controllerId: CONTROLLER_ID,
+    });
+    const interactionBroker = new InteractionBroker({
+      store: pendingInteractions,
+      hub: agentEventHub,
+      answerHeld: (record, response, { context }) =>
+        mastraCodeCommands.answer(
+          record.sessionId,
+          { interactionId: record.id, ...(record.callId ? { callId: record.callId } : {}) },
+          response,
+          { context },
+        ),
+    });
+    this.#interactionRecords = {
+      broker: interactionBroker,
+      waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+    };
     void agentInteractionsStorage
       .ensureReady()
       .then(() => pendingInteractions.load())
@@ -1898,7 +1923,7 @@ export class MastraFactory {
       // Held messages survive a restart where the domain is up; otherwise they wait in memory.
       ...(agentMessagesReady ? { messages: agentMessagesStorage } : {}),
       tools: async requestContext => (factorySessionTools ? factorySessionTools({ requestContext }) : {}),
-      interactions: new InteractionBroker({ store: pendingInteractions, hub: agentEventHub }),
+      interactions: interactionBroker,
       // A review session, or one on a pull request card, loads none of its checkout's own settings.
       ...(workItemsReady
         ? { checkout: claudeAgentCheckoutPosture({ sessions: sourceControlSessions, workItems: workItemsStorage }) }
@@ -2522,10 +2547,7 @@ export class MastraFactory {
             commands: routeSessionCommands({
               sessions: agentSessionsStorage,
               runtimes: { [CLAUDE_AGENT_RUNTIME_ID]: claudeAgentSessions.commands() },
-              fallback: createMastraCodeSessionCommands({
-                mastra: () => this.#prepared?.base.controller.getMastra(),
-                controllerId: CONTROLLER_ID,
-              }),
+              fallback: mastraCodeCommands,
             }),
           }),
           ...auditDomain.routes(),
@@ -2664,6 +2686,8 @@ export class MastraFactory {
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {
         contextWindow: sessionModelContextWindow(session),
+        // Slice 5a: what the session waits on a person for is kept in the interaction broker.
+        ...(this.#interactionRecords ? { interactions: this.#interactionRecords } : {}),
       });
     });
 

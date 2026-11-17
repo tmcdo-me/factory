@@ -1,12 +1,14 @@
 import { randomUUID } from 'node:crypto';
 
+import type { CommandFailure, CommandResult } from './commands';
 import type { SessionEventHub } from './event-hub';
 import type {
-  InteractionKind,
+  AnswerableKind,
+  AnswerableRequest,
   InteractionRecord,
-  InteractionRequest,
   InteractionResponse,
   InteractionStore,
+  PendingInteraction,
   ResponseFor,
 } from './interactions';
 
@@ -20,6 +22,29 @@ export class InteractionCancelledError extends Error {
     this.reason = reason;
   }
 }
+
+/**
+ * The runtime holding an interaction (`heldBy`) refused an answer for a reason other than "nothing
+ * is pending": its session is gone or can't be read, or the answer doesn't fit.
+ */
+export class InteractionAnswerRefusedError extends Error {
+  readonly interactionId: string;
+  readonly reason: Exclude<CommandFailure, 'not_pending'>;
+  constructor(interactionId: string, reason: Exclude<CommandFailure, 'not_pending'>, message?: string) {
+    super(`The answer to interaction ${interactionId} was refused (${reason})${message ? `: ${message}` : ''}`);
+    this.name = 'InteractionAnswerRefusedError';
+    this.interactionId = interactionId;
+    this.reason = reason;
+  }
+}
+
+/** How an interaction a runtime holds was settled there, as the runtime reports it. */
+export type HeldSettlement =
+  | { status: 'resolved'; response: InteractionResponse; resolvedBy?: string }
+  | { status: 'cancelled'; reason: string };
+
+/** What the broker says when a runtime that holds an interaction reports nothing pending for it any more. */
+export const HELD_INTERACTION_GONE = 'The session no longer waits on it.';
 
 export type ResolveOutcome =
   /** A live waiter received the answer. */
@@ -42,6 +67,16 @@ export interface InteractionBrokerOptions {
    * while the human was deciding. Factory reopens the session and sends an `interaction_response`.
    */
   onUndelivered?(record: InteractionRecord): Promise<void>;
+  /**
+   * Hands an answer to the runtime that holds the interaction (`record.heldBy`). The runtime is the
+   * authority: the broker settles the record only once it accepts, and a `not_pending` from it means
+   * the interaction is gone. `context` is the host's request context for the answer, untouched.
+   */
+  answerHeld?(
+    record: InteractionRecord,
+    response: InteractionResponse,
+    options: { resolvedBy?: string; context?: unknown },
+  ): Promise<CommandResult>;
   newId?: () => string;
   now?: () => Date;
 }
@@ -55,6 +90,12 @@ export class InteractionBroker {
   readonly #store: InteractionStore;
   readonly #hub: SessionEventHub;
   readonly #onUndelivered: InteractionBrokerOptions['onUndelivered'];
+  readonly #answerHeld: InteractionBrokerOptions['answerHeld'];
+  /**
+   * Held interactions whose answer is with their runtime right now, with how the runtime settled one
+   * meanwhile (its events can say so before its answer returns).
+   */
+  readonly #answering = new Map<string, HeldSettlement | undefined>();
   readonly #newId: () => string;
   readonly #now: () => Date;
   readonly #waiters = new Map<string, Waiter>();
@@ -63,14 +104,15 @@ export class InteractionBroker {
     this.#store = options.store;
     this.#hub = options.hub;
     this.#onUndelivered = options.onUndelivered;
+    this.#answerHeld = options.answerHeld;
     this.#newId = options.newId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
   }
 
   /** Ask the human and wait for the answer. Rejects with `InteractionCancelledError` on cancel/abort. */
-  async request<K extends InteractionKind>(
+  async request<K extends AnswerableKind>(
     sessionId: string,
-    request: Extract<InteractionRequest, { kind: K }>,
+    request: Extract<AnswerableRequest, { kind: K }>,
     options: { callId?: string; signal?: AbortSignal } = {},
   ): Promise<ResponseFor<K>> {
     const { callId, signal } = options;
@@ -103,16 +145,21 @@ export class InteractionBroker {
     }
   }
 
+  /**
+   * Answer a pending interaction. One a runtime holds (`heldBy`) is answered through `answerHeld`
+   * and settled once the runtime accepts; `context` is passed to it untouched.
+   */
   async resolve(
     id: string,
     response: InteractionResponse,
-    options: { resolvedBy?: string } = {},
+    options: { resolvedBy?: string; context?: unknown } = {},
   ): Promise<ResolveOutcome> {
     const existing = await this.#store.get(id);
     if (!existing || existing.status !== 'pending') return { status: 'not_pending' };
     if (existing.request.kind !== response.kind) {
       throw new Error(`Interaction ${id} expects a "${existing.request.kind}" response, got "${response.kind}"`);
     }
+    if (existing.heldBy) return this.#resolveHeld(existing, response, options);
 
     const record = await this.#store.settle(id, {
       status: 'resolved',
@@ -136,6 +183,102 @@ export class InteractionBroker {
     }
     await this.#onUndelivered?.(record);
     return { status: 'queued', record };
+  }
+
+  /**
+   * Record an interaction a runtime holds itself (`heldBy`), as the runtime reports it. The runtime
+   * announced it on the session's own event stream, so the broker publishes nothing. Reporting the
+   * same pending call again returns the record already kept; a call id reused after its earlier
+   * interaction settled gets an id of its own (`<id>#2`, …).
+   */
+  async track(interaction: PendingInteraction & { heldBy: string }): Promise<InteractionRecord> {
+    if (interaction.callId) {
+      const kept = (await this.#store.listPending({ sessionId: interaction.sessionId })).find(
+        record => record.heldBy === interaction.heldBy && record.callId === interaction.callId,
+      );
+      if (kept) return kept;
+    }
+    let id = interaction.id;
+    for (let n = 2; ; n++) {
+      const existing = await this.#store.get(id);
+      if (!existing) break;
+      if (existing.status === 'pending') return existing;
+      id = `${interaction.id}#${n}`;
+    }
+    const record: InteractionRecord = { ...interaction, id, status: 'pending' };
+    await this.#store.create(record);
+    return record;
+  }
+
+  /**
+   * Settle a held interaction as its runtime reports it settled (answered in the session, or
+   * abandoned). Publishes nothing: the runtime's own stream reports it. An interaction whose answer
+   * is with the runtime right now is settled when that answer returns. Returns whether it settled.
+   */
+  async settleHeld(id: string, settlement: HeldSettlement): Promise<boolean> {
+    if (this.#answering.has(id)) {
+      this.#answering.set(id, settlement);
+      return false;
+    }
+    return (await this.#store.settle(id, this.#settlementOf(settlement))) !== undefined;
+  }
+
+  #settlementOf(settlement: HeldSettlement): Parameters<InteractionStore['settle']>[1] {
+    const settledAt = this.#now().toISOString();
+    return settlement.status === 'resolved'
+      ? {
+          status: 'resolved',
+          response: settlement.response,
+          ...(settlement.resolvedBy ? { resolvedBy: settlement.resolvedBy } : {}),
+          settledAt,
+        }
+      : { status: 'cancelled', cancelReason: settlement.reason, settledAt };
+  }
+
+  /**
+   * Hand the answer to the runtime that holds the interaction. Of two answers in this process, the
+   * second is `not_pending` without reaching the runtime; the runtime decides between answers from
+   * elsewhere. Its `not_pending` settles the record (it holds nothing for it any more).
+   */
+  async #resolveHeld(
+    existing: InteractionRecord,
+    response: InteractionResponse,
+    options: { resolvedBy?: string; context?: unknown },
+  ): Promise<ResolveOutcome> {
+    const { id } = existing;
+    if (!this.#answerHeld) throw new Error(`Nothing delivers answers to ${existing.heldBy} sessions`);
+    if (this.#answering.has(id)) return { status: 'not_pending' };
+    this.#answering.set(id, undefined);
+    try {
+      const result = await this.#answerHeld(existing, response, {
+        ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
+        ...(options.context !== undefined ? { context: options.context } : {}),
+      });
+      const reported = this.#answering.get(id);
+      if (result.ok) {
+        const record =
+          (await this.#store.settle(
+            id,
+            this.#settlementOf({
+              status: 'resolved',
+              response,
+              ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
+            }),
+          )) ?? (await this.#store.get(id));
+        return { status: 'delivered', record: record ?? existing };
+      }
+      if (result.reason === 'not_pending') {
+        await this.#store.settle(
+          id,
+          this.#settlementOf(reported ?? { status: 'cancelled', reason: HELD_INTERACTION_GONE }),
+        );
+        return { status: 'not_pending' };
+      }
+      if (reported) await this.#store.settle(id, this.#settlementOf(reported));
+      throw new InteractionAnswerRefusedError(id, result.reason, result.message);
+    } finally {
+      this.#answering.delete(id);
+    }
   }
 
   /** Cancel one pending interaction. Returns false when it was not pending. */

@@ -1,10 +1,15 @@
 // fork(claude-agent)
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+
 import { InteractionBroker, SessionEventHub, buildTranscript } from '@factory/agent-runtime';
 import type { FactoryEvent } from '@factory/agent-runtime';
+import { FactoryStorageDomain } from '@mastra/core/storage';
 import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { describe, expect, it, onTestFinished, vi } from 'vitest';
 
-import { AgentInteractionsStorage } from '../agent-interactions/base.js';
+import { AGENT_INTERACTIONS_SCHEMA, AgentInteractionsStorage } from '../agent-interactions/base.js';
 import { AgentEventsStorage } from './base.js';
 
 async function setup() {
@@ -134,5 +139,63 @@ describe('AgentInteractionsStorage', () => {
     expect((await broker.resolve(pending!.id, { kind: 'question', answer: 'yes' })).status).toBe('delivered');
     await expect(answer).resolves.toEqual({ kind: 'question', answer: 'yes' });
     expect((await events.list('s1')).map(e => e.event.type)).toEqual(['interaction.requested', 'interaction.resolved']);
+  });
+
+  // Slice 5a: Mastra Code's waiting calls are kept here too, held by its controller, which takes the answer.
+  it('keeps who holds a call across a restart, on a table made before that was recorded', async () => {
+    const directory = mkdtempSync(path.join(tmpdir(), 'agent-interactions-'));
+    onTestFinished(() => rmSync(directory, { recursive: true, force: true }));
+    const url = `file:${path.join(directory, 'factory.db')}`;
+    // The table as an earlier release made it, with a row in it.
+    const { held_by: _heldBy, ...earlierColumns } = AGENT_INTERACTIONS_SCHEMA.columns;
+    class EarlierInteractions extends FactoryStorageDomain {
+      constructor() {
+        super('agent-interactions');
+      }
+      async init() {
+        await this.ensureCollections([{ ...AGENT_INTERACTIONS_SCHEMA, columns: earlierColumns }]);
+      }
+      async dangerouslyClearAll() {}
+    }
+    const earlier = new LibSQLFactoryStorage({ id: 'earlier', url });
+    earlier.registerDomain(new EarlierInteractions());
+    await earlier.init();
+    await earlier.close();
+
+    const before = new LibSQLFactoryStorage({ id: 'before-restart', url });
+    const kept = before.registerDomain(new AgentInteractionsStorage());
+    await before.init();
+    const broker = new InteractionBroker({ store: kept, hub: new SessionEventHub(new AgentEventsStorage()) });
+    await broker.track({
+      id: 'question:call-1',
+      sessionId: 's1',
+      callId: 'call-1',
+      heldBy: 'mastra-code',
+      request: { kind: 'question', question: 'Which branch?' },
+      requestedAt: '2026-11-15T00:00:00.000Z',
+    });
+    await before.close();
+
+    const after = new LibSQLFactoryStorage({ id: 'after-restart', url });
+    const reopened = after.registerDomain(new AgentInteractionsStorage());
+    await after.init();
+    onTestFinished(() => after.close());
+    const answers: unknown[] = [];
+    const restarted = new InteractionBroker({
+      store: reopened,
+      hub: new SessionEventHub(new AgentEventsStorage()),
+      answerHeld: async (record, response) => {
+        answers.push({ id: record.id, heldBy: record.heldBy, response });
+        return { ok: true };
+      },
+    });
+    expect(await reopened.listPending({ sessionId: 's1' })).toEqual([
+      expect.objectContaining({ id: 'question:call-1', heldBy: 'mastra-code' }),
+    ]);
+    expect((await restarted.resolve('question:call-1', { kind: 'question', answer: 'main' })).status).toBe('delivered');
+    expect(answers).toEqual([
+      { id: 'question:call-1', heldBy: 'mastra-code', response: { kind: 'question', answer: 'main' } },
+    ]);
+    expect(await reopened.get('question:call-1')).toMatchObject({ status: 'resolved' });
   });
 });
