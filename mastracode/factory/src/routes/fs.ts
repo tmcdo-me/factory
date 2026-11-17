@@ -2,9 +2,8 @@ import { lstat, open, readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { isAbsolute, join, posix as posixPath, resolve, sep } from 'node:path';
 
+import { SandboxFilesystem, detectProject, getResourceIdOverride } from '@factory/runtime-mastra-code/sdk';
 import { SETUP_MARKER_DIR } from '@internal/workspace';
-import { SandboxFilesystem } from '@mastra/code-sdk/agents/sandbox-filesystem';
-import { detectProject, getResourceIdOverride } from '@mastra/code-sdk/utils/project';
 import { registerApiRoute } from '@mastra/core/server';
 import type { ApiRoute } from '@mastra/core/server';
 import type { Context } from 'hono';

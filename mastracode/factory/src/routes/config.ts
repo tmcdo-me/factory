@@ -1,16 +1,22 @@
 import type { ThinkingLevelSetting } from '@factory/agent-runtime';
-import type { CredentialTenant } from '@mastra/code-sdk/agents/credential-resolver';
-import { MastraCodeGateway } from '@mastra/code-sdk/agents/mastracode-gateway';
-import { isClaudeSubscriptionCredential } from '@mastra/code-sdk/auth/claude-subscription-policy';
-import type { AuthStorage } from '@mastra/code-sdk/auth/storage';
-import { MIN_OBSERVATION_THRESHOLD } from '@mastra/code-sdk/constants';
-import { resolveAutoOMModelId } from '@mastra/code-sdk/onboarding/packs';
-import type { ProviderAccess, ProviderAccessLevel } from '@mastra/code-sdk/onboarding/packs';
-import { getCustomProviderId, MASTRA_GATEWAY_PROVIDER } from '@mastra/code-sdk/onboarding/settings';
-import type { CustomProviderSetting } from '@mastra/code-sdk/onboarding/settings';
-import { AMAZON_BEDROCK_GATEWAY_ID } from '@mastra/code-sdk/providers/amazon-bedrock-gateway';
-import { GOOGLE_VERTEX_GATEWAY_ID } from '@mastra/code-sdk/providers/google-vertex-gateway';
-import { MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
+import type {
+  AuthStorage,
+  CredentialTenant,
+  CustomProviderSetting,
+  ProviderAccess,
+  ProviderAccessLevel,
+} from '@factory/runtime-mastra-code/sdk';
+import {
+  AMAZON_BEDROCK_GATEWAY_ID,
+  GOOGLE_VERTEX_GATEWAY_ID,
+  MASTRA_GATEWAY_PREFIX,
+  MASTRA_GATEWAY_PROVIDER,
+  MIN_OBSERVATION_THRESHOLD,
+  MastraCodeGateway,
+  getCustomProviderId,
+  isClaudeSubscriptionCredential,
+  resolveAutoOMModelId,
+} from '@factory/runtime-mastra-code/sdk';
 import { getModelReasoningOptions, MastraGateway } from '@mastra/core/llm';
 import type { ModelReasoningOption } from '@mastra/core/llm';
 import { RequestContext } from '@mastra/core/request-context';
