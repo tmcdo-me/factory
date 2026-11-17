@@ -1,12 +1,12 @@
-import type { AgentControllerEvent, AgentControllerThread } from '@mastra/core/agent-controller';
+import { isSessionEvent } from '@factory/agent-runtime';
+import type { RuntimeSessionEvents, RuntimeThread } from '@factory/agent-runtime';
 
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import { normalizeSessionTitle } from './session-title.js';
 
-export interface ThreadTitleMirrorSession {
+export interface ThreadTitleMirrorSession extends RuntimeSessionEvents {
   readonly identity: { getId(): string };
-  readonly thread: { getById(args: { threadId: string }): Promise<AgentControllerThread | null> };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
+  readonly thread: { getById(args: { threadId: string }): Promise<RuntimeThread | null> };
 }
 
 export interface ThreadTitleMirrorDependencies {
@@ -60,19 +60,15 @@ export function observeSessionThreadTitle(
   };
 
   return session.subscribe(event => {
-    switch (event.type) {
-      case 'thread_title_updated':
-        return project(event.threadId, event.title);
-      case 'om_thread_title_updated':
-        return project(event.threadId, event.newTitle);
-      case 'thread_changed': {
-        boundThreadId = event.threadId;
-        void session.thread
-          .getById({ threadId: event.threadId })
-          .then(thread => project(event.threadId, thread?.title))
-          .catch(error => console.warn('[Factory thread-title mirror] Unable to read the bound thread.', error));
-        return undefined;
-      }
+    if (isSessionEvent(event, 'thread_title_updated')) return project(event.threadId, event.title);
+    if (isSessionEvent(event, 'om_thread_title_updated')) return project(event.threadId, event.newTitle);
+    if (isSessionEvent(event, 'thread_changed')) {
+      boundThreadId = event.threadId;
+      void session.thread
+        .getById({ threadId: event.threadId })
+        .then(thread => project(event.threadId, thread?.title))
+        .catch(error => console.warn('[Factory thread-title mirror] Unable to read the bound thread.', error));
     }
+    return undefined;
   });
 }

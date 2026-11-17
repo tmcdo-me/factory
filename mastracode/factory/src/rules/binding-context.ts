@@ -1,4 +1,4 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
+import type { RuntimeRequestContext, RuntimeSessionState } from '@factory/agent-runtime';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext } from '../auth.js';
@@ -11,15 +11,9 @@ import type {
   WorkItemsStorage,
 } from '../storage/domains/work-items/base.js';
 
-interface FactorySessionState extends Record<string, unknown> {
-  factoryProjectId?: string;
-  factoryOrgId?: string;
-  projectRepositoryId?: string;
-  untrustedCheckout?: boolean;
-  baseRef?: string;
-}
+type FactorySessionState = RuntimeSessionState;
 
-type FactorySessionControllerContext = AgentControllerRequestContext<FactorySessionState>;
+type FactorySessionControllerContext = RuntimeRequestContext<FactorySessionState>;
 
 /** Minimal source-control session lookup used to heal recovered session state. */
 export interface FactorySessionSourceLookup {

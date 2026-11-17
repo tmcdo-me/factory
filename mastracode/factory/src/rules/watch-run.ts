@@ -1,6 +1,7 @@
 // fork(claude-agent): watching a Mastra Code run to its end, moved out of the dispatcher so the Mastra Code
 // adapter (`mastra-code-sessions.ts`) and the dispatcher's open-run waits share it.
-import type { AgentControllerEventListener } from '@mastra/core/agent-controller';
+import { isSessionEvent } from '@factory/agent-runtime';
+import type { RuntimeSessionEvents } from '@factory/agent-runtime';
 import { classifyProviderError, PROVIDER_CALL_ERROR_NAME } from '@mastra/core/error';
 
 import type { FactoryDispatchFailureCode } from '../storage/domains/work-items/base.js';
@@ -92,7 +93,7 @@ export type ApprovePausedCall = (call: {
 }) => Promise<(() => Promise<void>) | undefined>;
 
 export function watchRun(
-  session: { subscribe(listener: AgentControllerEventListener): () => void },
+  session: RuntimeSessionEvents,
   {
     timeoutMs,
     autoApprovedTool,
@@ -143,21 +144,21 @@ export function watchRun(
   };
   arm();
   const unsubscribe = session.subscribe(event => {
-    if (event.type === 'agent_end') {
+    if (isSessionEvent(event, 'agent_end')) {
       endReason = event.reason;
       supersededAtEnd = onAgentEnd?.();
       resolveAgentEnd();
       return;
     }
-    if (event.type === 'error') {
+    if (isSessionEvent(event, 'error')) {
       runError = event.error;
       return;
     }
-    if (event.type === 'om_observation_failed' || event.type === 'om_buffering_failed') {
+    if (isSessionEvent(event, 'om_observation_failed') || isSessionEvent(event, 'om_buffering_failed')) {
       if (event.error) omFailure = event.error;
       return;
     }
-    if (event.type === 'tool_suspended') {
+    if (isSessionEvent(event, 'tool_suspended')) {
       parked = { toolName: event.toolName, toolCallId: event.toolCallId };
       // Said before the run ends on it, so nobody is asked to answer what this run answers itself.
       if (approve && event.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
@@ -166,7 +167,7 @@ export function watchRun(
       }
       return;
     }
-    if (event.type === 'tool_suspension_cancelled' && parked?.toolCallId === event.toolCallId) {
+    if (isSessionEvent(event, 'tool_suspension_cancelled') && parked?.toolCallId === event.toolCallId) {
       parked = undefined;
     }
   });

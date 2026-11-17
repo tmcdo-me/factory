@@ -1,4 +1,4 @@
-import type { AgentController, AgentControllerThread } from '@mastra/core/agent-controller';
+import type { RuntimeThread, RuntimeThreadLookup, RuntimeThreadQueries } from '@factory/agent-runtime';
 
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 
@@ -33,7 +33,7 @@ export async function threadRunBinding(
   });
 }
 
-export type SessionThreadLookup = Pick<AgentController<any>, 'queryThreadById'>;
+export type SessionThreadLookup = RuntimeThreadLookup;
 
 /**
  * The one memory resource a Factory session runs under. A Slack session uses
@@ -122,7 +122,7 @@ export function userSessionResourceFor(
  * (from before resources were shared) stay where they are.
  */
 export async function sessionThreadsToMove(
-  controller: Pick<AgentController<any>, 'queryThreads' | 'queryThreadById'>,
+  controller: RuntimeThreadQueries,
   session: FactorySessionOwnership,
   resourceId: string,
 ): Promise<string[]> {
@@ -156,11 +156,11 @@ export function sessionStampCounts(session: FactorySessionOwnership, resourceId:
  * client-writable, so the own and stamped threads only count under the
  * session's memory resource.
  */
-export async function listFactorySessionThreads(
-  controller: Pick<AgentController<any>, 'queryThreads' | 'queryThreadById'>,
+export async function listFactorySessionThreads<Thread extends RuntimeThread = RuntimeThread>(
+  controller: RuntimeThreadQueries<Thread>,
   session: FactorySessionOwnership,
   runs: SessionRunBindings | undefined,
-): Promise<AgentControllerThread[]> {
+): Promise<Thread[]> {
   const { sessionId } = session;
   const [own, runBound, stamped, legacy] = await Promise.all([
     controller.queryThreadById({ threadId: sessionId }),
@@ -169,7 +169,7 @@ export async function listFactorySessionThreads(
     controller.queryThreads({ resourceId: sessionId }),
   ]);
   const resourceId = memoryResourceOf(session, own, runBound);
-  const threads = new Map<string, AgentControllerThread>();
+  const threads = new Map<string, Thread>();
   const owned = [
     ...(own?.resourceId === resourceId ? [own] : []),
     ...(sessionStampCounts(session, resourceId) ? stamped.filter(thread => thread.resourceId === resourceId) : []),
