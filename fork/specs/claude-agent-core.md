@@ -365,8 +365,14 @@ Each slice: implement → focused tests → manual check where noted → commit.
        creates is drawn from the log at once. Both sources' hooks are mounted and only one is
        enabled, so learning which one never remounts the chat. Mastra's queued-follow-up count
        and decode rate (tok/s) have no counterpart in the log and show only on that path.
-4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
+4. ✅ **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
+   Every tool Factory defines is a definition now, served as it is to Claude Agent and adapted for
+   Mastra Code and Factory's MCP endpoint. Still Mastra tools, by design: `ask_user` and
+   `submit_plan` (Mastra Code's own, suspending; slice 5 puts them on the broker), the Chat SDK's
+   Slack tools, a deployment's configured `tools` (Mastra Connect among them), and the MCP endpoint's
+   own `search`/`fetch`; Claude Agent still runs these through `runMastraTool`. `tools/deliver.ts`
+   delivers to Mastra Code sessions rather than defining a tool, so its row moved to slice 5.
    - **4a** ✅ The seam for it, and the read tools. A session's Factory tools
      (`FactorySessionTools`, `tools/toolset.ts`) are definitions (`FactoryToolDef`) or, until their
      group is ported, Mastra tools; one per-turn builder makes them for both runtimes. Mastra Code's
@@ -425,6 +431,9 @@ Each slice: implement → focused tests → manual check where noted → commit.
      subscription from a turn that names no session is refused.
      Inventory: `integrations/slack/share-file-tool.ts`, `integrations/github/session-subscriptions.ts`
      (its pull request subscriptions themselves went through the runtime in 6c).
+   - **4e** ✅ The sandbox tools as definitions: `factory_recreate_sandbox` and
+     `factory_sandbox_port_url`, which signs the session's browser in for the scope's thread (the
+     turn's; upstream read it from Mastra's call, the same thread).
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
    `factory_answer_approval`, follower notifications.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the

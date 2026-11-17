@@ -2,8 +2,13 @@ import type { MastraBrowser } from '@mastra/core/browser';
 import { describe, expect, it, vi } from 'vitest';
 
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
-import { createFactorySandboxTools } from './sandbox-tools.js';
+import { createFactorySandboxTools as createFactorySandboxToolsDefs } from './sandbox-tools.js';
 import type { FactoryToolScope } from './scope.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactorySandboxTools = (...args: Parameters<typeof createFactorySandboxToolsDefs>) =>
+  mastraSessionTools(createFactorySandboxToolsDefs(...args), scopeToolContext(args[0]));
 
 const scope: FactoryToolScope = {
   orgId: 'org-1',
@@ -109,12 +114,18 @@ describe('factory_sandbox_port_url', () => {
     expect(JSON.stringify(result)).not.toContain('secret');
   });
 
-  it("doesn't touch the browser without the calling thread", async () => {
+  // fork(claude-agent): the browser belongs to the session's thread, which the tool's scope names
+  // (slice 4); a call that names no thread (a Claude Agent call) signs in the same browser.
+  it("signs in the session's own thread's browser, whatever thread the call names", async () => {
     const setCookies = vi.fn(async () => {});
     const { run } = portUrlTool(platformSandbox(), true, { setCookies });
 
     await expect(run(3000, null)).resolves.toEqual({ url });
-    expect(setCookies).not.toHaveBeenCalled();
+    await expect(run(3000, 'another-thread')).resolves.toEqual({ url });
+    expect(setCookies.mock.calls).toEqual([
+      [[cookie], 'thread-1'],
+      [[cookie], 'thread-1'],
+    ]);
   });
 
   it("still returns the link when the browser can't take cookies", async () => {
