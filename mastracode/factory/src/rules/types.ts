@@ -48,7 +48,9 @@ export function workItemSource(source: ExternalWorkItemSource | null): WorkItemS
   // Only GitHub has provider-specific rules; anything else (a Slack thread,
   // say) is a plain work item, not a mislabeled GitHub issue.
   if (source.integrationId !== 'github') return 'manual';
-  return source.type === 'pull-request' ? 'github-pr' : 'github-issue';
+  if (source.type === 'pull-request') return 'github-pr';
+  // Only an issue is one; a legacy GitHub source of another type (a Dependabot alert) is plain work.
+  return source.type === 'issue' ? 'github-issue' : 'manual';
 }
 
 /** The card's author is inside the write-access circle, or the card is Factory's own PR. */

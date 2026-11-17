@@ -336,7 +336,6 @@ describe('FactoryStartCoordinator', () => {
       storage,
       undefined,
       makeSourceControl() as never,
-      undefined,
       {
         projects: {
           getById: vi.fn(async () => ({
@@ -369,7 +368,6 @@ describe('FactoryStartCoordinator', () => {
       storage,
       undefined,
       makeSourceControl() as never,
-      undefined,
       {
         projects: {
           getById: vi.fn(async () => ({
@@ -659,7 +657,6 @@ describe('FactoryStartCoordinator', () => {
         new FactoryTransitionService({ storage, configVersion: 'rules-v1', boards: createBoardRegistry() }),
         makeSourceControl() as never,
         undefined,
-        undefined,
         createBoardRegistry(),
       );
 
@@ -876,7 +873,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       makeSourceControl() as never,
       undefined,
       undefined,
-      undefined,
       chooser,
     );
 
@@ -918,7 +914,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       makeSourceControl() as never,
       undefined,
       undefined,
-      undefined,
       runtimes('claude-agent'),
     );
     await expect(coordinator.prepare(startRequest())).resolves.toMatchObject({ resourceId: PROJECT_ID });
@@ -953,7 +948,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       storage,
       undefined,
       makeSourceControl() as never,
-      undefined,
       undefined,
       undefined,
       createRunRuntimes({
@@ -1000,7 +994,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       makeSourceControl() as never,
       undefined,
       undefined,
-      undefined,
       createRunRuntimes({
         sessions: {
           get: vi.fn(async () => undefined),
@@ -1044,7 +1037,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       makeSourceControl() as never,
       undefined,
       undefined,
-      undefined,
       runtimes('mastra-code'),
     );
 
@@ -1062,7 +1054,6 @@ describe('FactoryStartCoordinator agent runtime', () => {
       storage,
       undefined,
       makeSourceControl() as never,
-      undefined,
       undefined,
       undefined,
       chooser,

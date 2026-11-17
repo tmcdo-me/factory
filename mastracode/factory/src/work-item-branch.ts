@@ -20,7 +20,9 @@ export function workItemBranchSource(externalSource: ExternalWorkItemSource | nu
   // Only GitHub carries provider identities; anything else (a Slack thread, say)
   // is a plain work item rather than a mislabeled GitHub issue.
   if (externalSource.integrationId !== 'github') return 'manual';
-  return externalSource.type === 'pull-request' ? 'github-pr' : 'github-issue';
+  if (externalSource.type === 'pull-request') return 'github-pr';
+  // Only an issue is one; a legacy GitHub source of another type (a Dependabot alert) is plain work.
+  return externalSource.type === 'issue' ? 'github-issue' : 'manual';
 }
 
 function branchNumber(metadata: Record<string, unknown>, key: string): number | undefined {

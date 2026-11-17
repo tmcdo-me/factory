@@ -1497,7 +1497,6 @@ export class MastraFactory {
             }
           : {}),
       },
-      intake: intakeStorage,
       startCoordinator: () => this.#startCoordinator,
       messaging: factoryMessaging,
       liveSessions: () => liveSessions,

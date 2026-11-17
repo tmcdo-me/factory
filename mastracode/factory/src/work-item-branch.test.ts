@@ -13,6 +13,15 @@ describe('workItemBranchSource', () => {
     expect(workItemBranchSource({ integrationId: 'linear', type: 'issue', externalId: '3' })).toBe('manual');
   });
 
+  it('reads a legacy GitHub source that is neither an issue nor a pull request as plain work', () => {
+    // Dependabot alerts were filed under the GitHub integration; that intake is gone.
+    const alert = { integrationId: 'github', type: 'dependabot-alert', externalId: 'acme/app#dependabot-4' };
+    expect(workItemBranchSource(alert)).toBe('manual');
+    expect(workItemSource(alert)).toBe('manual');
+    expect(workItemSource({ integrationId: 'github', type: 'issue', externalId: '1' })).toBe('github-issue');
+    expect(workItemSource({ integrationId: 'github', type: 'pull-request', externalId: '2' })).toBe('github-pr');
+  });
+
   it('preserves Detail finding provenance through storage, rules, and branches', () => {
     const source = externalSourceForWorkItem('detail-finding', 'repo-1:finding-2', 'https://example.com/finding');
     expect(source).toEqual({

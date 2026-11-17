@@ -7892,7 +7892,6 @@ describe('automatic work in a Factory with no organization model key', () => {
           seeded.projects,
           boards,
           input,
-          undefined,
           { workItems: storage, modelCredentials: seeded.credentials },
         ),
     });

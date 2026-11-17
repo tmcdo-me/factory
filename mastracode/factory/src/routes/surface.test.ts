@@ -255,7 +255,6 @@ describe('prepareFactoryRuleBinding', () => {
         seed.seeded.projects,
         boards,
         input,
-        undefined,
         {
           workItems: seed.seeded.workItems,
           modelCredentials: seed.seeded.credentials,

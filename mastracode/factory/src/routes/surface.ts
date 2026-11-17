@@ -402,7 +402,6 @@ export async function prepareFactoryRuleBinding(
   projects: FactoryProjectsStorage,
   boards: BoardRegistry | ProjectBoardSource,
   input: FactoryBindingPreparationInput,
-  intake?: Pick<IntakeStorage, 'getConfig'>,
   owner?: PhaseSessionOwnerSources,
 ): Promise<void> {
   try {
@@ -867,7 +866,6 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
             factoryProjectId: request.factoryProjectId,
             sessionId: request.sessionId,
           }),
-        deps.domains.intake,
         { projects: deps.domains.projects, modelDefaults: deps.domains.modelDefaults },
         deps.boardRegistry,
         deps.startRuntimes, // fork(claude-agent)
@@ -897,7 +895,6 @@ export function assembleFactoryApiRoutes(deps: FactoryApiRoutesDeps): ApiRoute[]
                 deps.domains.projects,
                 deps.boardRegistry,
                 input,
-                deps.domains.intake,
                 {
                   workItems: deps.domains.workItems,
                   modelCredentials: deps.domains.modelCredentials,

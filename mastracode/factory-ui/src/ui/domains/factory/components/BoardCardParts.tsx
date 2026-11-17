@@ -162,7 +162,7 @@ function labelDotClass(label: string): string {
   if (normalized.includes('bug') || normalized.includes('error')) return 'bg-badge-red-indicator';
   if (normalized.includes('approval') || normalized.includes('priority')) return 'bg-badge-amber-indicator';
   if (normalized.includes('triage') || normalized.includes('ready')) return 'bg-badge-green-indicator';
-  if (normalized.includes('cli') || normalized.includes('linear')) return 'bg-badge-blue-indicator';
+  if (normalized.includes('cli')) return 'bg-badge-blue-indicator';
   if (normalized.includes('work') || normalized.includes('trio')) return 'bg-badge-amber-indicator';
   return 'bg-muted-foreground';
 }

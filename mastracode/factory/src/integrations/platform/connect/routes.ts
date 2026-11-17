@@ -36,9 +36,6 @@ export interface ConnectToolsSource {
 
 function platformError(c: Context, err: unknown) {
   if (err instanceof PlatformApiError) {
-    if (err.status === 409) {
-      return c.json({ error: 'session_pending', message: err.message }, 409);
-    }
     if (err.status === 403) {
       return c.json({ error: 'platform_forbidden', message: err.message }, 403);
     }
