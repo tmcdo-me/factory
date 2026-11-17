@@ -829,6 +829,8 @@ describe('the side session run-end backstop', () => {
     expect(reports).toHaveLength(0);
   });
 
+  // fork(claude-agent): slice 5d. The call a run parks on is announced from the interaction broker as
+  // it starts waiting; the run's end adds nothing, and the run that follows the answer is its own.
   it('reports done once when a parked run is answered and the resumed run completes', async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
     try {
@@ -836,15 +838,11 @@ describe('the side session run-end backstop', () => {
       const { session, reports } = await started();
       session.emit({ type: 'tool_suspended', toolName: 'ask_user', toolCallId: 'call-1' } as AgentControllerEvent);
       session.emit({ type: 'agent_end', reason: 'suspended' } as AgentControllerEvent);
-      // The backstop's own `blocked` lands after the run ended, inside the next run's window.
-      vi.setSystemTime(new Date('2026-10-14T12:00:05Z'));
-      await vi.waitFor(() => expect(reports).toHaveLength(1));
-      expect(reports[0]!.input).toMatchObject({ kind: 'blocked' });
 
       vi.setSystemTime(new Date('2026-10-14T12:01:00Z'));
       session.emit({ type: 'agent_end', reason: 'complete' } as AgentControllerEvent);
-      await vi.waitFor(() => expect(reports).toHaveLength(2));
-      expect(reports[1]!.input).toMatchObject({ kind: 'done', attributes: { backstop: 'true' } });
+      await vi.waitFor(() => expect(reports).toHaveLength(1));
+      expect(reports[0]!.input).toMatchObject({ kind: 'done', attributes: { backstop: 'true' } });
       // The session's report listener stays for its later runs.
       expect(session.listenerCount()).toBe(1);
     } finally {
@@ -860,16 +858,12 @@ describe('the side session run-end backstop', () => {
     expect(child!.projectRepositoryId).toBe(parent!.projectRepositoryId);
   });
 
-  it('reports blocked, naming the tool, when the run ends parked', async () => {
+  // fork(claude-agent): slice 5d. A run parked on a named call is announced from the broker instead.
+  it('reports blocked when the run ends parked on nothing it named', async () => {
     const { session, reports } = await started();
-    session.emit({ type: 'tool_suspended', toolName: 'ask_user', toolCallId: 'call-1' } as AgentControllerEvent);
     session.emit({ type: 'agent_end', reason: 'suspended' } as AgentControllerEvent);
     await vi.waitFor(() => expect(reports).toHaveLength(1));
-    expect(reports[0]!.input).toMatchObject({
-      kind: 'blocked',
-      priority: 'urgent',
-      attributes: { 'parked-tool': 'ask_user' },
-    });
+    expect(reports[0]!.input).toMatchObject({ kind: 'blocked', priority: 'urgent' });
   });
 
   it('leaves nothing but the session’s own report listener when the kickoff fails', async () => {

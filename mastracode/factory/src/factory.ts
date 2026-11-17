@@ -191,12 +191,7 @@ import type { LiveSessions } from './session/live-sessions.js';
 import { hydrateSessionMemorySettings } from './session/memory-settings-hydration.js';
 import { hasResolvedOrg } from './session/org-seed.js';
 // fork(claude-agent)
-import {
-  FallbackInteractionStore,
-  PendingInteractions,
-  alsoParked,
-  waitingReport,
-} from './session/pending-interactions.js';
+import { FallbackInteractionStore, PendingInteractions, alsoParked } from './session/pending-interactions.js';
 import { FactoryReplyCredentialProcessor } from './session/reply-credential-processor.js';
 import { migrateSessionResources, privatizeOwnerResourceSessions } from './session/resource-migration.js';
 import { observeSessionRunEnd } from './session/run-audit.js';
@@ -208,6 +203,7 @@ import { createSourceControlTools, resolveReviewedChangeRequest } from './sessio
 import { resolveFactoryThinkingLevel } from './session/thinking-default.js';
 import { observeSessionThreadStamp } from './session/thread-session-stamp.js';
 import { observeSessionThreadTitle } from './session/thread-title-mirror.js';
+import { SessionReportWindows, createWaitingNotices } from './session/waiting-notices.js'; // fork(claude-agent)
 import { FactoryWorkItemStateProcessor } from './session/work-item-state-processor.js';
 import { assertFactorySkills, findBoardSkillProblems } from './skills/app-skills.js';
 import { createSpaStaticMiddleware, resolveUiDistDir } from './spa-static.js';
@@ -1832,9 +1828,17 @@ export class MastraFactory {
         (await this.#prepared?.base.controller.queryThreadById({ threadId: sessionId }))?.resourceId,
       modelIdOf: async sessionId => (await agentSessionsStorage.get(sessionId))?.modelId ?? CLAUDE_AGENT_DEFAULT_MODEL,
     });
-    // fork(claude-agent): what Claude Agent sessions wait on a person for, read by the inbox, boards and
-    // session lists as Mastra Code's parked runs are. A session that starts waiting tells its followers,
-    // as a Mastra Code run that parks does when it ends.
+    // fork(claude-agent): what sessions of both runtimes wait on a person for, read by the inbox, boards
+    // and session lists. A session that starts waiting tells its followers (slice 5d: a Mastra Code
+    // session's call too, as its controller reports it held, on the run window `reportWindows` keeps).
+    const notifyApprovalRequested = createSessionApprovalNotifier(sessionReports);
+    const reportWindows = new SessionReportWindows();
+    const announceWaiting = createWaitingNotices({
+      reportRunEnd: reportSessionRunEnd,
+      notifyApproval: notifyApprovalRequested,
+      windows: reportWindows,
+      answersItself: toolCallId => this.#dispatcher?.autoApproves(toolCallId) ?? false,
+    });
     const pendingInteractions = new PendingInteractions({
       // Kept in memory when the domain can't start, so Mastra Code's parked runs still show.
       store: new FallbackInteractionStore(agentInteractionsStorage),
@@ -1843,7 +1847,7 @@ export class MastraFactory {
       projectOf: sessionId => sourceControlSessions.getBySessionId(sessionId),
       onChanged: (_sessionId, project) => touchFeed(eventBus, project),
       onRequested: record => {
-        void reportSessionRunEnd(waitingReport(record)).catch(error =>
+        void announceWaiting(record).catch(error =>
           console.warn(`[factory] Unable to report that session ${record.sessionId} waits.`, error),
         );
       },
@@ -2498,6 +2502,35 @@ export class MastraFactory {
                 afterRunTurn: binding => factoryProcessor?.attachOwnBranchPullRequest(binding) ?? Promise.resolve(),
                 prepareBinding,
                 runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
+                // fork(claude-agent): a run approves its phase's own exit tool through the broker (slice 5d).
+                interactions: {
+                  broker: interactionBroker,
+                  whenWaitingOn: (sessionId, callId, timeoutMs) =>
+                    pendingInteractions.whenWaitingOn(sessionId, callId, timeoutMs),
+                  // A call the board meant to answer and didn't: announced as it would have been.
+                  announce: ({ sessionId, toolCallId, toolName, record }) => {
+                    const announced = (async () => {
+                      if (record) {
+                        const still = pendingInteractions
+                          .waitingOn(sessionId, toolCallId)
+                          .find(waiting => waiting.id === record.id && !pendingInteractions.isHidden(waiting.id));
+                        if (still) await announceWaiting(still);
+                        return;
+                      }
+                      // Never recorded: the report its run's end would have made.
+                      const run = reportWindows.at(sessionId, new Date());
+                      await reportSessionRunEnd({
+                        sessionId,
+                        threadId: run?.threadId ?? sessionId,
+                        since: run?.since ?? new Date(),
+                        outcome: { status: 'blocked', toolName, toolCallId, decision: true },
+                      });
+                    })();
+                    void announced.catch(error =>
+                      console.warn(`[factory] Unable to report that session ${sessionId} waits.`, error),
+                    );
+                  },
+                },
                 // fork(claude-agent): their phase goals and run ledgers, in the store Mastra Code's goals use
                 // (generic per type; `resolveGoalStore` types it for goals only).
                 runtimeThreadState: async () =>
@@ -2687,7 +2720,6 @@ export class MastraFactory {
       }),
     );
 
-    const notifyApprovalRequested = createSessionApprovalNotifier(sessionReports);
     // fork(claude-agent): once the controller is up, settle what Mastra Code sessions stopped waiting on
     // while no process watched them (checked after the session observers below are attached).
     void this.#interactionsLoaded?.then(async loaded => {
@@ -2743,9 +2775,10 @@ export class MastraFactory {
             .catch(error => console.warn('[factory] Unable to log a session rename.', error)),
       });
       observeSessionRunEnd(session, { audit: auditDomain });
-      // Every run end of a work or side session, and every tool call it holds for
-      // approval, reaches whoever follows it, however the run started;
-      // re-attached when a session is created again.
+      // Every run end of a work or side session reaches whoever follows it, however
+      // the run started; re-attached when a session is created again.
+      // fork(claude-agent): a call it holds for a person (a gate, a plan, a question) is announced
+      // from the interaction broker (`announceWaiting`), on the run window kept here.
       observeSessionRunReports(
         session,
         (outcome, since) =>
@@ -2756,13 +2789,15 @@ export class MastraFactory {
             since,
           }),
         {
-          onApprovalRequested: request =>
-            notifyApprovalRequested({
-              sessionId: session.identity.getId(),
-              threadId: session.thread.getId(),
-              ...request,
-            }),
           answersItself: toolCallId => this.#dispatcher?.autoApproves(toolCallId) ?? false,
+          // Held weakly: the windows outlive a closed session, and must not keep it in memory.
+          onWindow: reportWindows.watch(
+            session.identity.getId(),
+            (
+              ref => () =>
+                ref.deref()?.thread.getId()
+            )(new WeakRef(session)),
+          ),
         },
       );
       observeSessionThreadStamp(session);

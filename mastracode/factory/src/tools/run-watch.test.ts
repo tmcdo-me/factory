@@ -35,23 +35,58 @@ describe('observeSessionRunReports', () => {
     ]);
   });
 
-  it('reports a run waiting for approval as blocked, naming the tool', () => {
+  // fork(claude-agent): slice 5d. The call a run parks on is announced from the interaction broker as the
+  // session starts waiting on it, so the run's end adds nothing; its window still closes there.
+  it('says nothing when a run ends parked on a call, and the next run is judged on a window of its own', () => {
+    vi.useFakeTimers({ now: new Date('2026-10-15T12:00:00Z') });
+    try {
+      const session = fakeSession();
+      const report = vi.fn(async () => {});
+      const windows: string[] = [];
+      observeSessionRunReports(session, report, { onWindow: since => windows.push(since.toISOString()) });
+
+      session.emit({
+        type: 'tool_suspended',
+        toolCallId: 'call-plan',
+        toolName: 'submit_plan',
+      } as AgentControllerEvent);
+      vi.setSystemTime(new Date('2026-10-15T12:01:00Z'));
+      session.emit(end('suspended'));
+      vi.setSystemTime(new Date('2026-10-15T12:02:00Z'));
+      session.emit(end('complete'));
+
+      expect(report.mock.calls).toEqual([[{ status: 'done' }, new Date('2026-10-15T12:01:00.001Z')]]);
+      expect(windows).toEqual(['2026-10-15T12:00:00.000Z', '2026-10-15T12:01:00.001Z', '2026-10-15T12:02:00.001Z']);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('still reports a run that ends suspended on nothing it named', () => {
     const session = fakeSession();
     const report = vi.fn(async () => {});
     observeSessionRunReports(session, report);
 
-    session.emit({
-      type: 'tool_approval_required',
-      toolCallId: 'call-1',
-      toolName: 'factory_transition_work_item',
-      args: {},
-    } as AgentControllerEvent);
     session.emit(end('suspended'));
 
-    expect(report).toHaveBeenCalledWith(
-      { status: 'blocked', toolName: 'factory_transition_work_item', toolCallId: 'call-1', approval: true },
-      expect.any(Date),
-    );
+    expect(report).toHaveBeenCalledWith({ status: 'blocked' }, expect.any(Date));
+  });
+
+  it('keeps the window open across a pause the Factory answers itself', () => {
+    const session = fakeSession();
+    const report = vi.fn(async () => {});
+    const windows: Date[] = [];
+    observeSessionRunReports(session, report, {
+      answersItself: toolCallId => toolCallId === 'call-plan',
+      onWindow: since => windows.push(since),
+    });
+
+    session.emit({ type: 'tool_suspended', toolCallId: 'call-plan', toolName: 'submit_plan' } as AgentControllerEvent);
+    session.emit(end('suspended'));
+    session.emit(end('complete'));
+
+    expect(report.mock.calls).toEqual([[{ status: 'done' }, windows[0]]]);
+    expect(windows).toHaveLength(2);
   });
 
   it('says nothing for an aborted run, and the next run’s window starts where the aborted one did', () => {
@@ -77,27 +112,6 @@ describe('observeSessionRunReports', () => {
     } finally {
       vi.useRealTimers();
     }
-  });
-
-  it('announces a tool call held for approval as it happens, before the run ends', () => {
-    const session = fakeSession();
-    const report = vi.fn(async () => {});
-    const onApprovalRequested = vi.fn(async () => {});
-    observeSessionRunReports(session, report, { onApprovalRequested });
-
-    session.emit({
-      type: 'tool_approval_required',
-      toolCallId: 'call-1',
-      toolName: 'factory_transition_work_item',
-      args: { stage: 'done' },
-    } as AgentControllerEvent);
-
-    expect(onApprovalRequested).toHaveBeenCalledWith({
-      toolName: 'factory_transition_work_item',
-      toolCallId: 'call-1',
-      args: { stage: 'done' },
-    });
-    expect(report).not.toHaveBeenCalled();
   });
 
   it("quotes the run's error in a failed report", () => {

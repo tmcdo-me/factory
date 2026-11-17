@@ -6,6 +6,7 @@ import path from 'node:path';
 
 import { LLMock } from '@copilotkit/aimock';
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { InteractionRecord } from '@factory/agent-runtime'; // fork(claude-agent)
 import {
   answerMastraCodeCall,
   createMastraCodeSessionCommands,
@@ -40,6 +41,7 @@ import { attributingHeldAnswers, observeSessionAgentEvents } from '../session/ag
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { LiveSessions } from '../session/live-sessions.js';
 import { PendingInteractions } from '../session/pending-interactions.js'; // fork(claude-agent)
+import { SessionReportWindows, createWaitingNotices } from '../session/waiting-notices.js'; // fork(claude-agent)
 import { AgentEventsStorage } from '../storage/domains/agent-events/base.js'; // fork(claude-agent)
 import { AgentInteractionsStorage } from '../storage/domains/agent-interactions/base.js'; // fork(claude-agent)
 import { factoryPrincipalId } from '../storage/domains/projects/base.js';
@@ -149,6 +151,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       movedFromOwnSession?: boolean;
       /** fork(claude-agent): who filed the card (its owner unless said). */
       filedBy?: string;
+      /** fork(claude-agent): the board answers these paused calls itself (a phase that approves its own plans). */
+      answersItself?: (toolCallId: string) => boolean;
     }) {
       const parkedOn = options?.parkedOn ?? 'plan';
       const parked = PARKED[parkedOn];
@@ -362,9 +366,12 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       const agentEvents = factoryStorage.registerDomain(new AgentEventsStorage());
       await factoryStorage.init();
       stops.push(() => factoryStorage.close());
+      // fork(claude-agent): slice 5d. Followers hear of a call as the broker records it, as on the server.
+      let announceWaiting: (record: InteractionRecord) => Promise<void> = async () => {};
       const pendingInteractions = new PendingInteractions({
         store: interactionStore,
         projectOf: sessionId => sourceControl.sessions.getBySessionId(sessionId),
+        onRequested: record => void announceWaiting(record),
       });
       // Slice 5b: the inbox, factory_list_attention and the board read parked runs from the broker.
       liveSessions.addParkedSource(pendingInteractions);
@@ -407,14 +414,26 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         }),
       } as never;
       const reportRunEnd = createSessionRunEndReporter(reports);
-      const notifyApproval = createSessionApprovalNotifier(reports);
+      // fork(claude-agent): as the server wires them (slice 5d): run ends from the session, and what it
+      // waits on from the broker, on the run window the session's reports keep.
+      const reportWindows = new SessionReportWindows();
+      announceWaiting = createWaitingNotices({
+        reportRunEnd,
+        notifyApproval: createSessionApprovalNotifier(reports),
+        windows: reportWindows,
+        answersItself: options?.answersItself ?? (() => false),
+      });
+      const runEnds: string[] = [];
+      session.subscribe(event => {
+        if (event.type === 'agent_end') runEnds.push(event.reason);
+      });
       stops.push(
         observeSessionRunReports(
           session,
           (outcome, since) => reportRunEnd({ sessionId: phase.sessionId, threadId: phase.sessionId, outcome, since }),
           {
-            onApprovalRequested: request =>
-              notifyApproval({ sessionId: phase.sessionId, threadId: phase.sessionId, ...request }),
+            onWindow: reportWindows.watch(phase.sessionId, () => session.thread.getId()),
+            ...(options?.answersItself ? { answersItself: options.answersItself } : {}),
           },
         ),
       );
@@ -545,6 +564,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         item,
         requesterSessionId,
         signals,
+        runEnds, // fork(claude-agent)
         phase,
         owner,
         profileLookups,
@@ -830,7 +850,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
     // A person moves a card from their own session. The phase that starts is the Factory's, but the
     // person's session is where it reports to: it hears the plan is waiting, and answers it there.
     it("tells the session that moved the card when the Factory's phase session waits on its plan, and resumes on its answer", async () => {
-      const { answer, errors, audit, owner, signals, phase, requesterSessionId } = await parkedPhaseSession({
+      const { answer, errors, audit, owner, signals, phase, requesterSessionId, runEnds } = await parkedPhaseSession({
         ownedByFactory: true,
         movedFromOwnSession: true,
       });
@@ -845,6 +865,10 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
           },
         ]),
       );
+      // fork(claude-agent): slice 5d. Told once, as the plan started waiting: the run's end adds nothing.
+      await vi.waitFor(() => expect(runEnds).toContain('suspended'));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(signals.filter(signal => signal.kind === 'blocked')).toHaveLength(1);
       const requestsBefore = mock.getRequests().length;
       resolved = [];
 
@@ -856,6 +880,53 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         `${owner} factory`,
       ]);
       expect(audit.map(event => event.actorId)).toEqual([REQUESTER]);
+    });
+
+    // fork(claude-agent): slice 5d. A question is announced from the broker too, once, with how to answer it.
+    it('tells a following session once that the phase session asks a question, and how to answer it', async () => {
+      const { signals, phase, requesterSessionId, runEnds } = await parkedPhaseSession({
+        ownedByFactory: true,
+        movedFromOwnSession: true,
+        parkedOn: 'question',
+      });
+
+      await vi.waitFor(() => expect(signals).toHaveLength(1));
+      await vi.waitFor(() => expect(runEnds).toContain('suspended'));
+      await new Promise(resolve => setTimeout(resolve, 200));
+      expect(signals).toEqual([
+        expect.objectContaining({ sessionId: requesterSessionId, kind: 'blocked', priority: 'urgent' }),
+      ]);
+      expect(signals[0]!.summary).toContain(
+        `answer it with factory_answer_question (sessionId "${phase.sessionId}", toolCallId "call_question")`,
+      );
+    });
+
+    // fork(claude-agent): slice 5d. A phase that approves its own plans answers through the broker, as the
+    // dispatcher does: nobody is asked, and the run carries on as the session's owner.
+    it('tells nobody when the board approves its own plan through the broker, and the run carries on as its owner', async () => {
+      const { broker, signals, errors, ownerContext, interactionStore, runEnds } = await parkedPhaseSession({
+        ownedByFactory: true,
+        movedFromOwnSession: true,
+        answersItself: toolCallId => toolCallId === 'call_plan',
+      });
+      const requestsBefore = mock.getRequests().length;
+      resolved = [];
+
+      const outcome = await broker.resolve(
+        'plan_approval:call_plan',
+        { kind: 'plan_approval', action: 'approved' },
+        { resolvedBy: 'factory', context: ownerContext() },
+      );
+
+      expect(outcome.status).toBe('delivered');
+      await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+      await vi.waitFor(() => expect(runEnds).toContain('complete'), { timeout: 30_000 });
+      expect(errors).toEqual([]);
+      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({
+        status: 'resolved',
+        resolvedBy: 'factory',
+      });
+      expect(signals.filter(signal => signal.kind === 'blocked' || signal.kind === 'approval')).toEqual([]);
     });
 
     it("tells a following session when a tool in the Factory's phase session waits for a person to allow it", async () => {

@@ -516,6 +516,26 @@ Each slice: implement → focused tests → manual check where noted → commit.
      model alone is told `Answered by …`, `delivered`). Factory runs as one server process: recovering a
      session from storage while another process holds it live is not guarded against (several
      replicas would need the controller's thread lease first).
+   - **5d** (notices ✅; `tools/deliver.ts` onto runtime delivery still to do) Auto-approval and
+     follower notices from the broker. A board run that approves its phase's own exit tool
+     (`watchRun`, at most `MAX_PLAN_APPROVALS` a run) answers the paused call through its broker
+     record (`broker.resolve`, `resolvedBy: 'factory'`, as the run's owner) instead of
+     `respondToToolSuspension`; the record is kept a moment after the controller reports the pause,
+     so the run waits for it (`whenWaitingOn`, up to 10 s; one never kept, or one a bare yes doesn't
+     answer, waits for a person). A resume the controller refuses fails the decision (`run_failed`).
+     A Mastra Code session's followers hear of a call from the broker as it starts waiting
+     (`PendingInteractions.onRequested`, now for held records too; `createWaitingNotices`): a gate's
+     urgent `approval` notice, anything else's `blocked` report, nothing for a call the board answers
+     itself (`autoApproves`, set as the run sees the pause, before the broker has it). Timing: the
+     notice comes as the call starts waiting, a moment before the run ends on it, not at that end. The
+     run's report window still closes at that end (`observeSessionRunReports` reports nothing there for
+     a run parked on a named call, and keeps its window open across a pause the board answers), and
+     the notice is judged on the window the call started in (`SessionReportWindows`: an agent's own
+     `blocked` in that run still stands in for it), so each wait is announced once, and not again
+     after a restart. Claude Agent's notices and auto-approval are unchanged. Checked on aimock Mastra
+     Code sessions (one `blocked` notice per plan or question, one `approval` per gate, none for a plan
+     the board approves through the broker, the run carrying on as its owner) and on the dispatcher's
+     fake sessions through a real broker (approvals capped at three, then a person is asked once).
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's
