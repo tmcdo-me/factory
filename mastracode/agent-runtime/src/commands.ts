@@ -35,7 +35,18 @@ export interface CommandRequest {
   context: unknown;
 }
 
-export type CommandResult = { ok: true } | { ok: false; reason: CommandFailure; message?: string };
+export type CommandResult =
+  | { ok: true }
+  | {
+      ok: false;
+      reason: CommandFailure;
+      message?: string;
+      /**
+       * fork(claude-agent): the runtime still waits on the interaction after refusing this answer
+       * (its resume could not start), so it stays pending whatever its events said meanwhile.
+       */
+      waiting?: boolean;
+    };
 
 export type CommandFailure =
   /** No session with that id is running or can be resumed. */

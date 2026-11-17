@@ -248,6 +248,9 @@ function promptEntry(item: InteractionItem, tool: ToolItem | undefined): PromptE
         args: tool?.input ?? { path: request.planPath },
         suspendPayload: { path: request.planPath, ...(request.plan ? { plan: request.plan } : {}) },
       };
+    case 'tool_input':
+      // Only the broker records these (a tool's own prompt is drawn from its tool call), never the log.
+      return undefined;
   }
 }
 

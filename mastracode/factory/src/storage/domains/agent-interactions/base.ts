@@ -23,6 +23,8 @@ export const AGENT_INTERACTIONS_SCHEMA: CollectionSchema = {
     cancel_reason: { type: 'text', nullable: true },
     requested_at: { type: 'timestamp' },
     settled_at: { type: 'timestamp', nullable: true },
+    // The runtime that holds the call and takes its answer (Mastra Code's controller), if not the broker.
+    held_by: { type: 'text', nullable: true },
   },
   indexes: [{ name: 'factory_agent_interactions_session_status_idx', columns: ['session_id', 'status'] }],
 };
@@ -38,6 +40,7 @@ interface AgentInteractionRow extends Record<string, unknown> {
   cancel_reason: string | null;
   requested_at: Date;
   settled_at: Date | null;
+  held_by?: string | null;
 }
 
 const iso = (value: Date | string) => (value instanceof Date ? value : new Date(value)).toISOString();
@@ -54,6 +57,7 @@ function toRecord(row: AgentInteractionRow): InteractionRecord {
     ...(row.resolved_by ? { resolvedBy: row.resolved_by } : {}),
     ...(row.cancel_reason ? { cancelReason: row.cancel_reason } : {}),
     ...(row.settled_at ? { settledAt: iso(row.settled_at) } : {}),
+    ...(row.held_by ? { heldBy: row.held_by } : {}),
   };
 }
 
@@ -83,6 +87,8 @@ export class AgentInteractionsStorage extends FactoryStorageDomain implements In
       cancel_reason: record.cancelReason ?? null,
       requested_at: new Date(record.requestedAt),
       settled_at: record.settledAt ? new Date(record.settledAt) : null,
+      // Only a held record writes the column, so a table it couldn't be added to still takes Claude Agent's.
+      ...(record.heldBy ? { held_by: record.heldBy } : {}),
     });
   }
 

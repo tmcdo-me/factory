@@ -435,7 +435,44 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `factory_sandbox_port_url`, which signs the session's browser in for the scope's thread (the
      turn's; upstream read it from Mastra's call, the same thread).
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
-   `factory_answer_approval`, follower notifications.
+   `factory_answer_approval`, follower notifications. Design (owner's decision): the **controller is
+   the authority** for Mastra Code's own suspended and gated calls (it resumes them, and decides
+   between two answers), and the `InteractionBroker` is the **one index** Factory reads for both
+   runtimes. Claude Agent stays unasked before Factory tools (`bypassPermissions`); a definition's
+   `approval` is the knob.
+   - **5a** ✅ One record for both runtimes. Every call a Mastra Code session holds for a person (a
+     gated call, `ask_user`, `submit_plan`, another paused tool) is a broker record held by its
+     controller (`heldBy: 'mastra-code'`), id `<kind>:<toolCallId>` as the event mirror names it (a call
+     id reused after its record settled gets `#2`, …), kept in the same store as Claude Agent's.
+     `observeMastraCodeInteractions` (`@factory/runtime-mastra-code`) reads what the session waits on
+     from each display-state snapshot its controller publishes (what its own UI renders), so a call
+     the controller drops without an event of its own (an abort, a run that ends, a thread reset) is
+     settled too; a call that finishes settles with the answer its result carries (also one taken up
+     after a restart, which the controller holds only in storage). What it asks is read as Factory
+     read it from the paused call (a question with its options and selection, a plan, a yes or no); a
+     tool that resumes on input of its own (`request_access`) is the new `tool_input` kind, which
+     nothing answers from outside its session. `broker.track`/`settleHeld` record these without
+     publishing (the mirror logs the session's own events, unchanged). An answer to a held record goes
+     to the runtime (`answerHeld`: `createMastraCodeSessionCommands.answer`, Mastra's own
+     agent-controller handlers, with the answer's request context) and settles once it accepts, with
+     who answered; of two answers in this process the second is `not_pending` without reaching the
+     controller, and a `not_pending` from the controller settles the record (it holds nothing any
+     more). One broker serves both runtimes (`factory.ts`). Held records survive a restart (a
+     `held_by` column, added to an existing table). Readers are unchanged in 5a: parked runs and
+     follower notices still come from the controller, so held records are indexed but not reported
+     as parked or announced.
+     After review: a call that leaves the controller's snapshot is let go of (hidden from lists) and
+     settled by its outcome (its `tool_end` result, a cancellation, the run aborting or failing, a
+     thread switch, or after a 15 s grace window: approved for a gate whose call is running), so an
+     answer in the session records what was answered, and a session API answer records who
+     (`broker.attribute`). A call that comes back (a resume that failed) is reported waiting again and
+     the broker forgets what was said of it meanwhile; a runtime that refuses an answer and still waits
+     keeps it pending. A call whose kind changes is settled and asked anew; a stored record the index
+     missed is adopted. After a restart, held records whose session no longer waits on their call (asked
+     of its controller and storage, without claiming) are settled, at most 100, one at a time. A
+     Claude Agent record never writes `held_by`. Rollback: `UPDATE factory_agent_interactions SET status =
+'cancelled' WHERE held_by IS NOT NULL AND status = 'pending'`. 5a–5c ship together (5a's gate
+     records carry `gate: true` only from 5b).
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's

@@ -4,9 +4,9 @@ import { readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import type {
+  AnswerableRequest,
   FactoryToolContext,
   FactoryToolDef,
-  InteractionRequest,
   InteractionResponse,
   SandboxProcess,
   SessionWorkspace,
@@ -117,7 +117,7 @@ async function interactionFor(
   name: string,
   payload: unknown,
   cwd: string,
-): Promise<{ request: InteractionRequest; resume(response: InteractionResponse): unknown }> {
+): Promise<{ request: AnswerableRequest; resume(response: InteractionResponse): unknown }> {
   const data = (payload ?? {}) as Record<string, unknown>;
   if (name === 'submit_plan' || data.toolId === 'submit_plan') {
     const planPath = typeof data.path === 'string' ? data.path : '';

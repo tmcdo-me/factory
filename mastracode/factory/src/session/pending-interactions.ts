@@ -1,4 +1,4 @@
-// fork(claude-agent): the questions and plans Claude Agent sessions wait on, read as parked runs.
+// fork(claude-agent): what sessions wait on a person for, kept in the interaction broker for both runtimes.
 import type { InteractionRecord, InteractionRequest, InteractionStore } from '@factory/agent-runtime';
 
 import type { FactoryRunOutcome } from '../tools/reports.js';
@@ -29,6 +29,13 @@ export function interactionToolName(request: InteractionRequest): string {
   return request.toolName;
 }
 
+/**
+ * Whether the interaction is one a runtime holds itself (Mastra Code's controller). Slice 5a keeps
+ * those in the index, so an answer and the runtime's own word settle the same record, but readers
+ * still read such sessions from the runtime until slice 5b moves them here.
+ */
+const heldByRuntime = (record: InteractionRecord) => record.heldBy !== undefined;
+
 /** Whether a yes or no is all the request needs (`factory_answer_approval` can give it). */
 export function answersWithDecision(request: InteractionRequest): boolean {
   return request.kind === 'plan_approval' || request.kind === 'tool_approval';
@@ -37,7 +44,9 @@ export function answersWithDecision(request: InteractionRequest): boolean {
 /**
  * The `blocked` report a session's followers get when it starts waiting on a person, as they get one
  * when a Mastra Code run parks: it names the call, so a yes or no can come from
- * `factory_answer_approval` or the notice's buttons. A Claude Agent session's thread is its own id.
+ * `factory_answer_approval` or the notice's buttons. A Claude Agent session's thread is its own id; that
+ * is why only its records come through here: a record a runtime holds (Mastra Code, whose session may run
+ * on another thread than its id) is announced by that runtime's own observer with the real thread.
  */
 export function waitingReport(record: InteractionRecord): {
   sessionId: string;
@@ -62,6 +71,8 @@ interface Waiting {
   record: InteractionRecord;
   /** When the session started waiting (its stored `requestedAt`): it doubles as the inbox receipt key. */
   stamp: number;
+  /** Its runtime let go of it and its outcome is on its way: indexed, not listed. */
+  hidden?: boolean;
 }
 
 /**
@@ -70,6 +81,9 @@ interface Waiting {
  * Code run: synchronously, from memory. Every record passes through here, so the index follows
  * every request and every answer or cancellation; `load` picks up the ones still pending from
  * before a restart (an answer to those reaches the conversation as a message).
+ *
+ * Mastra Code's waiting calls are recorded here too, held by its controller (`heldBy`), which takes
+ * their answers; `waitingOn` finds them by call as the controller reports them settled.
  */
 export class PendingInteractions implements InteractionStore, ParkedRunSource {
   readonly #options: PendingInteractionsOptions;
@@ -127,10 +141,54 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     return this.#options.store.listPending(filter);
   }
 
+  /**
+   * A pending record the broker found stored when a runtime reported it waiting again: indexed if it
+   * wasn't, and listed again if it was hidden.
+   */
+  adopt(record: InteractionRecord): void {
+    if (record.status !== 'pending') return;
+    const waiting = this.#waiting.get(record.sessionId)?.get(record.id);
+    if (!waiting) {
+      this.#add(record, false);
+      return;
+    }
+    if (!waiting.hidden) return;
+    waiting.hidden = false;
+    this.#changed(record.sessionId);
+  }
+
+  /**
+   * Stop listing what a session holds for one tool call while its outcome is on its way (its runtime
+   * let go of it, an answer reached the tool): it stays indexed until it settles, or comes back.
+   */
+  hide(sessionId: string, callId: string): void {
+    let hid = false;
+    for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
+      if (waiting.record.callId !== callId || waiting.hidden) continue;
+      waiting.hidden = true;
+      hid = true;
+    }
+    if (hid) this.#changed(sessionId);
+  }
+
+  #changed(sessionId: string): void {
+    const project = this.#projects.get(sessionId);
+    if (project) this.#notify(() => this.#options.onChanged?.(sessionId, project));
+  }
+
+  /** The pending interactions a session holds for one tool call, from memory. */
+  waitingOn(sessionId: string, callId: string): InteractionRecord[] {
+    return [...(this.#waiting.get(sessionId)?.values() ?? [])]
+      .filter(waiting => waiting.record.callId === callId)
+      .map(waiting => waiting.record);
+  }
+
   /** What the session has waited on longest, or nothing. */
   parked(sessionId: string): ParkedRun | undefined {
     let oldest: Waiting | undefined;
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
+      if (waiting.hidden) continue;
+      if (heldByRuntime(waiting.record)) continue; // read from the runtime until slice 5b
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }
     if (!oldest) return undefined;
@@ -164,7 +222,8 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     void this.#project(record.sessionId).then(project => {
       if (!project || !this.#waiting.get(record.sessionId)?.has(record.id)) return;
       this.#notify(() => this.#options.onChanged?.(record.sessionId, project));
-      if (announce) this.#notify(() => this.#options.onRequested?.(record, project));
+      // A runtime that holds its calls tells followers itself, until slice 5d.
+      if (announce && !heldByRuntime(record)) this.#notify(() => this.#options.onRequested?.(record, project));
     });
   }
 

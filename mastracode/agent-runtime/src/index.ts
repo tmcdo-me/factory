@@ -13,8 +13,13 @@ export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
 export { SessionPublisher } from './session-publisher';
 export type { SessionPublisherOptions } from './session-publisher';
-export { InteractionBroker, InteractionCancelledError } from './interaction-broker';
-export type { InteractionBrokerOptions, ResolveOutcome } from './interaction-broker';
+export {
+  HELD_INTERACTION_GONE,
+  InteractionAnswerRefusedError,
+  InteractionBroker,
+  InteractionCancelledError,
+} from './interaction-broker';
+export type { HeldSettlement, InteractionBrokerOptions, ResolveOutcome } from './interaction-broker';
 export { InMemoryInteractionStore } from './interaction-store-memory';
 export { RuntimeRegistry } from './registry';
 export { applyEvent, buildTranscript, emptyTranscript, finishedToolCalls } from './transcript';

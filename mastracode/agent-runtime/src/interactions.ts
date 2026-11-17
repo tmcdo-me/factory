@@ -15,7 +15,13 @@ export type InteractionRequest =
       selection?: 'single' | 'multiple';
     }
   | { kind: 'plan_approval'; planPath: string; plan?: string }
-  | { kind: 'tool_approval'; toolName: string; input: unknown; reason?: string };
+  | { kind: 'tool_approval'; toolName: string; input: unknown; reason?: string }
+  /**
+   * A tool that paused for input only its own session can give (its runtime resumes it on a shape of
+   * its own, such as Mastra Code's `request_access`). Nothing answers it from outside the session; it
+   * is recorded so Factory knows the session waits.
+   */
+  | { kind: 'tool_input'; toolName: string; input: unknown };
 
 export type InteractionKind = InteractionRequest['kind'];
 
@@ -30,6 +36,11 @@ export type InteractionResponse =
     }
   | { kind: 'tool_approval'; approved: boolean; reason?: string };
 
+/** Requests a person can answer from outside the session (every kind but `tool_input`). */
+export type AnswerableRequest = Exclude<InteractionRequest, { kind: 'tool_input' }>;
+
+export type AnswerableKind = AnswerableRequest['kind'];
+
 export type ResponseFor<K extends InteractionKind> = Extract<InteractionResponse, { kind: K }>;
 
 export type InteractionStatus = 'pending' | 'resolved' | 'cancelled';
@@ -42,6 +53,13 @@ export interface PendingInteraction {
   request: InteractionRequest;
   /** ISO-8601. */
   requestedAt: string;
+  /**
+   * The runtime that holds the call and takes its answer, when it is not a Factory tool awaiting the
+   * broker (for example `mastra-code`, whose controller resumes its own suspended and gated calls).
+   * The broker records such an interaction as the runtime reports it, hands an answer to the
+   * runtime, and settles it on the runtime's word.
+   */
+  heldBy?: string;
 }
 
 export interface InteractionRecord extends PendingInteraction {
@@ -68,4 +86,9 @@ export interface InteractionStore {
       | { status: 'cancelled'; cancelReason: string; settledAt: string },
   ): Promise<InteractionRecord | undefined>;
   listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]>;
+  /**
+   * fork(claude-agent): a pending record the broker found already stored when a runtime reported it
+   * again (`track`), for a store that keeps an index of what is pending to take it in.
+   */
+  adopt?(record: InteractionRecord): void;
 }
