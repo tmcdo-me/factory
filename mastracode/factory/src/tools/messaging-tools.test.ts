@@ -8,12 +8,23 @@ import type { SourceControlSession } from '../storage/domains/source-control/bas
 import type { FactoryRunBindingRecord, WorkItemSubscription } from '../storage/domains/work-items/base.js';
 import { createProviderWorkItemForTests } from '../storage/test-utils.js';
 import type { FactoryDeliveryController } from './deliver.js';
-import { SIGNAL_RATE_LIMIT, SIGNAL_RATE_WINDOW_MS, createFactoryMessagingTools } from './messaging-tools.js';
+import {
+  SIGNAL_RATE_LIMIT,
+  SIGNAL_RATE_WINDOW_MS,
+  createFactoryMessagingTools as createFactoryMessagingToolsDefs,
+} from './messaging-tools.js';
 import type { FactoryMessagingToolDependencies } from './messaging-tools.js';
 import { FACTORY_TOOLS_WITHOUT_APPROVAL } from './permissions.js';
 import type { FactoryToolScope } from './scope.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
 import type { FactoryToolDependencies } from './index.js';
-import { createFactoryTools } from './index.js';
+import { createFactoryTools as createFactoryToolsDefs } from './index.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactoryMessagingTools = (...args: Parameters<typeof createFactoryMessagingToolsDefs>) =>
+  mastraSessionTools(createFactoryMessagingToolsDefs(...args), scopeToolContext(args[0]));
+const createFactoryTools = (...args: Parameters<typeof createFactoryToolsDefs>) =>
+  mastraSessionTools(createFactoryToolsDefs(...args), scopeToolContext(args[0].scope));
 
 const QUEUE_WAIT_MS = 1100;
 

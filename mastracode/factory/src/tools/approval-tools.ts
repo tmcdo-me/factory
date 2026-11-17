@@ -1,10 +1,9 @@
-import type { InteractionRequest } from '@factory/agent-runtime';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef, InteractionRequest } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { SuspensionAddress } from '@mastra/core/agent-controller';
 import { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
-import type { IntegrationTools } from '../integrations/base.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { checkedAnswer, pausedCalls, pausedToolInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
@@ -363,9 +362,9 @@ export const questionAnswerSchema = z.union([
 export function createFactoryApprovalTools(
   scope: FactoryToolScope,
   deps: FactoryApprovalToolDependencies,
-): IntegrationTools {
-  const answer = createTool({
-    id: 'factory_answer_approval',
+): Record<string, FactoryToolDef> {
+  const answer = defineFactoryTool({
+    name: 'factory_answer_approval',
     description: [
       'Approve or decline a tool call a session you follow is waiting on.',
       'The decision is recorded as yours; the run carries on as the owner of the session that asked.',
@@ -375,7 +374,7 @@ export function createFactoryApprovalTools(
       'A question (ask_user) takes an answer instead: use factory_answer_question.', // fork(claude-agent)
       'Answer only what the person in this conversation agreed to; decline with a reason the session will see.',
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         sessionId: z.string().uuid().describe('The session holding the call, from the approval notice.'),
         toolCallId: z.string().trim().min(1).max(200),
@@ -413,8 +412,8 @@ export function createFactoryApprovalTools(
   });
 
   // fork(claude-agent): a question a followed session asked (ask_user), answered from here.
-  const answerQuestion = createTool({
-    id: 'factory_answer_question',
+  const answerQuestion = defineFactoryTool({
+    name: 'factory_answer_question',
     description: [
       'Answer a question a session you follow is waiting on, on either agent runtime:',
       'an ask_user call (name its toolCallId), or a question a run ended its turn on in plain text (name its interactionId).',
@@ -425,7 +424,7 @@ export function createFactoryApprovalTools(
       "Only the asking session's owner or the person who filed its card may answer it (a follower may only approve or decline plans and tool calls).",
       'Answer only what the person in this conversation told you to answer.',
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         sessionId: z.string().uuid().describe('The session that asked, from factory_list_attention or its notice.'),
         toolCallId: z

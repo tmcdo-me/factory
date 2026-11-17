@@ -1,5 +1,6 @@
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import {
@@ -14,7 +15,6 @@ import {
 import type { BoardRegistry } from '../boards/index.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
-import type { IntegrationTools } from '../integrations/base.js';
 import { WorkItemUpdateConflictError } from '../storage/domains/work-items/base.js';
 import type { Card, WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import type { FactorySessionSourceLookup } from './binding-context.js';
@@ -52,7 +52,7 @@ export async function createFactoryTransitionTools(options: {
   transitionService: Pick<FactoryTransitionService, 'transition'>;
   sessions?: FactorySessionSourceLookup;
   boards?: BoardRegistry | ProjectBoardSource;
-}): Promise<IntegrationTools> {
+}): Promise<Record<string, FactoryToolDef>> {
   const resolution = await resolveFactorySessionAddress({
     requestContext: options.requestContext,
     storage: options.storage,
@@ -91,20 +91,21 @@ export async function createFactoryTransitionTools(options: {
 
   return {
     ...(recordsVerdict ? createReviewVerdictTool(options, availableBinding.workItemId) : {}),
-    factory_transition_work_item: createTool({
-      id: 'factory_transition_work_item',
+    factory_transition_work_item: defineFactoryTool({
+      name: 'factory_transition_work_item',
       description:
         'Request a governed stage transition for the Factory work item exactly bound to this thread. Use the current revision from the factory-phase signal and explain why the transition is appropriate.',
-      inputSchema: transitionInputSchema,
-      requireApproval: true,
+      input: transitionInputSchema,
+      approval: 'required',
       execute: async ({ stage, expectedRevision, rationale }, execution) => {
+        // fork(claude-agent): the turn's request context, as the tools were built for it (slice 4).
         const currentResolution = await resolveFactorySessionAddress({
-          requestContext: execution.requestContext,
+          requestContext: options.requestContext,
           storage: options.storage,
           sessions: options.sessions,
         });
         const currentAddress = currentResolution?.address ?? null;
-        const toolCallId = execution.agent?.toolCallId;
+        const toolCallId = execution.callId; // fork(claude-agent)
         if (!currentAddress || !toolCallId) {
           throw new Error('Factory transitions require an authenticated bound agent tool call.');
         }
@@ -178,17 +179,18 @@ function createReviewVerdictTool(
     boards?: BoardRegistry | ProjectBoardSource;
   },
   boundWorkItemId: string,
-): IntegrationTools {
+): Record<string, FactoryToolDef> {
   return {
-    factory_record_review_verdict: createTool({
-      id: 'factory_record_review_verdict',
+    factory_record_review_verdict: defineFactoryTool({
+      name: 'factory_record_review_verdict',
       description:
         'Record the review verdict and the head SHA it covers on the card bound to this thread, ending the review pass. In the phase that reviews pull requests it records the published PR verdict and the card stays put. In a self-review phase with no change request open yet, approve keeps the card in place for you to open the change request from the approved head; once a GitHub pull request opens from that head, Factory moves the card to pull request review itself (elsewhere, move it with factory_transition_work_item). Request changes sends it back to the build phase with your findings.',
-      inputSchema: reviewVerdictInputSchema,
-      requireApproval: false,
+      input: reviewVerdictInputSchema,
+      approval: 'none',
       execute: async ({ verdict, reviewedHeadSha, findings }, execution) => {
+        // fork(claude-agent): the turn's request context, as the tools were built for it (slice 4).
         const resolution = await resolveFactorySessionAddress({
-          requestContext: execution.requestContext,
+          requestContext: options.requestContext,
           storage: options.storage,
           sessions: options.sessions,
         });
@@ -229,7 +231,7 @@ function createReviewVerdictTool(
             verdict,
             reviewedHeadSha: reviewedHeadSha.toLowerCase(),
             findings,
-            toolCallId: execution.agent?.toolCallId,
+            toolCallId: execution.callId, // fork(claude-agent)
           });
         }
         if (
@@ -373,13 +375,13 @@ async function recordSelfReviewVerdict(input: {
  * a resumed model from inventing a false "blocked" state when the affordance it
  * expects has silently vanished.
  */
-function createRetiredSessionTool(workItemId: string, stage: string | undefined): IntegrationTools[string] {
-  return createTool({
-    id: 'factory_transition_work_item',
+function createRetiredSessionTool(workItemId: string, stage: string | undefined): FactoryToolDef {
+  return defineFactoryTool({
+    name: 'factory_transition_work_item',
     description:
       'This Factory session has been retired: its work item already reached a terminal stage and the run binding was revoked. No further transitions can be requested from this session.',
-    inputSchema: transitionInputSchema,
-    requireApproval: false,
+    input: transitionInputSchema,
+    approval: 'none',
     execute: async () => {
       throw new Error(
         `This Factory session has been retired: work item ${workItemId} reached a terminal stage${

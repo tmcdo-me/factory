@@ -1,11 +1,11 @@
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import { reviewedPullRequest, sourceExternalId } from '../boards/index.js';
 import type { BoardRegistry } from '../boards/index.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
-import type { IntegrationTools } from '../integrations/base.js';
 import type { Card, WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import type { FactorySessionSourceLookup } from './binding-context.js';
 import { resolveFactorySessionAddress } from './binding-context.js';
@@ -107,7 +107,7 @@ export async function createReviewSourceTool(options: {
    */
   uiOrigin: string | null;
   boards?: BoardRegistry | ProjectBoardSource;
-}): Promise<IntegrationTools> {
+}): Promise<Record<string, FactoryToolDef>> {
   if (options.uiOrigin === null) return {};
   const resolution = await resolveFactorySessionAddress({
     requestContext: options.requestContext,
@@ -139,11 +139,11 @@ export async function createReviewSourceTool(options: {
   const output: ReviewSourceOutput = { sessionUrl, triggeredBy, reviewTarget, boundRepository };
 
   return {
-    factory_review_source: createTool({
-      id: 'factory_review_source',
+    factory_review_source: defineFactoryTool({
+      name: 'factory_review_source',
       description:
         'Read the routing facts behind this review session: a deep-link back to the Factory session that produced the review, the PR/MR author recorded on the review card, and the review target (the PR/MR the session was intake-bound to). Publish the session URL in the required `Factory Session` block of every review body so a misattributed review can always be traced back to the run that produced it. Cross-check `triggeredBy` and `reviewTarget` against the PR/MR you fetched in Phase 1, using `boundRepository` as the intake-stamped repository identity when `reviewTarget.url` is null; do not publish the `triggeredBy`, `reviewTarget`, or `boundRepository` fields.',
-      inputSchema: z.object({}),
+      input: z.object({}),
       execute: async (): Promise<ReviewSourceOutput> => output,
     }),
   };

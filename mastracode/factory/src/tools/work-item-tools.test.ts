@@ -7,7 +7,12 @@ import type { FactoryDeferredDecisionRecord } from '../storage/domains/work-item
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { FACTORY_TOOLS_WITHOUT_APPROVAL } from './permissions.js';
 import type { FactoryToolScope } from './scope.js';
-import { createFactoryWorkItemTools } from './work-item-tools.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
+import { createFactoryWorkItemTools as createFactoryWorkItemToolsDefs } from './work-item-tools.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactoryWorkItemTools = (...args: Parameters<typeof createFactoryWorkItemToolsDefs>) =>
+  mastraSessionTools(createFactoryWorkItemToolsDefs(...args), scopeToolContext(args[0]));
 
 const scope: FactoryToolScope = {
   orgId: 'org-1',

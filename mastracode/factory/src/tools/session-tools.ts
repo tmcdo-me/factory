@@ -1,5 +1,6 @@
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
 import { boardForWorkItem } from '../boards/index.js';
@@ -7,7 +8,6 @@ import { workLaneForRole } from '../boards/legacy-plan-role.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
 import type { BoardRegistry } from '../boards/registry.js';
-import type { IntegrationTools } from '../integrations/base.js';
 import { factorySessionUrl, factoryWorkItemUrl } from '../links.js';
 import { buildModelCatalog, listSessionScopedCredentials } from '../routes/config.js';
 import { USER_SESSION_BRANCH_PREFIX } from '../routes/source-control-sessions.js';
@@ -111,7 +111,7 @@ function titleFrom(prompt: string): string {
 export function createFactorySessionTools(
   scope: FactoryToolScope,
   deps: FactorySessionToolDependencies,
-): IntegrationTools {
+): Record<string, FactoryToolDef> {
   /** The models a session can switch to, resolved from the target session's owner and project policy. */
   async function sessionModelCatalog(
     controller: FactoryMessaging['controller'],
@@ -174,11 +174,11 @@ export function createFactorySessionTools(
     );
   }
 
-  const switchModel = createTool({
-    id: 'factory_switch_session_model',
+  const switchModel = defineFactoryTool({
+    name: 'factory_switch_session_model',
     description:
       'Look up or switch the model of a session you own in this Factory (side, work item, or review session). When someone describes a model by purpose, family, or preference rather than an exact ID, call with sessionId alone first to list models the target session can actually use. Interpret their intent against that list, then call with the chosen exact modelId to switch; do not use their words as a guessed model ID. A running session switches immediately; a stopped one uses the model on its next run. User-scoped sessions use their owner credentials; Factory-scoped sessions use Factory credentials. Use a session ID from the Factory session or work item tools.',
-    inputSchema: z
+    input: z
       .object({
         sessionId: z.string().trim().min(1).max(200),
         modelId: z.string().trim().min(1).max(200).optional().describe('Omit to list usable models without switching.'),
@@ -219,8 +219,8 @@ export function createFactorySessionTools(
     },
   });
 
-  const start = createTool({
-    id: 'factory_start_session',
+  const start = defineFactoryTool({
+    name: 'factory_start_session',
     description: [
       'Start a side session in this Factory with a prompt. It runs on its own sandbox and branch as you, and reports back to this session with `factory-session` notifications.',
       'A side session uses this session’s model. Pass `model` to start it on another model the session credentials can run.',
@@ -228,7 +228,7 @@ export function createFactorySessionTools(
       'With `workItem` and `role` it starts that role on the work item instead, without moving the card, and this session follows the item.',
       "A role that already has a session on the item (current or past) can't be started again from here: message that session with factory_signal_session, or ask the person to start it from a signed-in chat.",
     ].join(' '),
-    inputSchema: z
+    input: z
       .object({
         prompt: z.string().trim().min(1).max(8000).describe('The first message the new session receives.'),
         title: z.string().trim().min(1).max(TITLE_LENGTH).optional(),

@@ -6,8 +6,13 @@ import { boardRegistryOf, defineBoard, workBoard } from '../boards/index.js';
 import { createPolicyTestRegistry, selfReviewWorkBoard, createTriageWorkRegistry } from '../boards/test-utils.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { createFactoryTransitionTools } from './tools.js';
+import { mastraCodeToolContext, mastraSessionTools } from '../tools/toolset.js'; // fork(claude-agent)
+import { createFactoryTransitionTools as createFactoryTransitionToolsDefs } from './tools.js';
 import { FactoryTransitionService } from './transition-service.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createFactoryTransitionTools = async (...args: Parameters<typeof createFactoryTransitionToolsDefs>) =>
+  mastraSessionTools(await createFactoryTransitionToolsDefs(...args), mastraCodeToolContext(args[0].requestContext));
 
 const PROJECT_ID = '11111111-2222-4333-8444-555555555555';
 
@@ -369,14 +374,8 @@ describe('factory_transition_work_item', () => {
     const service = new FactoryTransitionService({ storage, configVersion: 'rules-v1' });
     const context = requestContext();
     const tools = await createFactoryTransitionTools({ requestContext: context, storage, transitionService: service });
-    await expect(
-      execute(tools.factory_transition_work_item as ExecutableTool, requestContext({ threadId: 'other-thread' }), {
-        stage: 'planning',
-        expectedRevision: 1,
-        rationale: 'Continue.',
-      }),
-    ).rejects.toThrow(/binding is unavailable, revoked, or no longer matches/);
-
+    // fork(claude-agent): a definition acts for the turn it was built for (slice 4), so a call can't
+    // bring another thread's context; what is checked at execution is that turn's binding, read again.
     await storage.revokeRunBinding({
       orgId: 'org-1',
       factoryProjectId: PROJECT_ID,
