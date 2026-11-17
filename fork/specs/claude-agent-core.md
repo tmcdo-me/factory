@@ -905,13 +905,18 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
-   Still reading the turn's session straight from the request context's `controller` entry rather
-   than through `turnSession` (slice 4 moved the tools, the tool scope and the source-control and
-   GitHub subscription code): `factory.ts`, `workspace.ts`, `rules/binding-context.ts` (4 reads),
-   `rules/processor.ts`, `session/credential-policy.ts`, `session/environment-state-processor.ts`,
-   `session/thinking-default.ts`, `storage/domains/audit/agent-audit.ts`,
-   `storage/domains/audit/domain.ts`, `integrations/slack/integration.ts`,
-   `integrations/slack/channel-session-link-processor.ts`, `integrations/slack/run-error-card.ts`.
+   - **7a** ✅ The `controller` request-context entry is named in one file, `session/turn-session.ts`. Every
+     read-only use goes through `turnSession` (now also carrying the session's `modelId`): the audit domain
+     and git-command audit, Slack (pull request announcements, session link, run error card), the
+     credential policy, the thinking default, the environment processor and `binding-context.ts`
+     (coordinates, scope, binding lookup). The few Mastra Code internals that act on the live controller
+     session (healing a recovered session's state in `resolveFactorySessionAddress` and `hostInstructions`, the
+     workspace setting `projectPath`, the processor's review-runtime read and its memory-settings error
+     event) call `controllerEntry` instead; they move into the Mastra Code adapter with the processor
+     (owner decision), so the key leaves Factory core with them. Behaviour unchanged (same fields, same
+     fallbacks) except one fix: `AuditDomain.emitAgent` read `session.modelId` unguarded, so a Claude Agent turn
+     (whose entry has no `session`) threw into its catch and its agent audit row was dropped; it is now
+     recorded without a `modelId` (pinned by `domain.test.ts`). Suites for those modules pass unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

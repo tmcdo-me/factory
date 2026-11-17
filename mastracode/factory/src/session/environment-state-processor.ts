@@ -5,6 +5,7 @@ import type { RequestContext } from '@mastra/core/request-context';
 import { unchanged } from './context-providers.js';
 import type { ContextBlock, ContextProvider, ContextRequest } from './context-providers.js';
 import { computeMastraStateSignal } from './mastra-context.js';
+import { turnSession } from './turn-session.js';
 
 const STATE_ID = 'factory-environment';
 
@@ -112,8 +113,7 @@ function escapeText(value: string): string {
 // session id is required.
 function sessionIdFromContext(requestContext: RequestContext | undefined): string | null {
   if (!requestContext || typeof requestContext.get !== 'function') return null;
-  const controller = requestContext.get('controller') as { sessionId?: unknown } | undefined;
-  return typeof controller?.sessionId === 'string' && controller.sessionId ? controller.sessionId : null;
+  return turnSession(requestContext)?.sessionId || null;
 }
 
 function environmentCacheKey(state: SessionEnvironmentState): string {

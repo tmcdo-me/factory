@@ -1,4 +1,3 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute, IUserProvider } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';
@@ -7,6 +6,7 @@ import type { Context } from 'hono';
 import { getFactoryAuthUser } from '../../../auth.js';
 import { loose } from '../../../routes/route.js';
 import type { RouteAuth } from '../../../routes/route.js';
+import { turnSession } from '../../../session/turn-session.js';
 import type { FactoryProjectsStorage } from '../projects/base.js';
 import { auditActionsInNamespaces, isAuditAction, isAuditNamespace } from './actions.js';
 import type { AuditAction } from './actions.js';
@@ -56,7 +56,7 @@ export interface AuditSink {
   audit?(args: { event: AuditEventRow }): Promise<void>;
 }
 
-interface FactorySessionState {
+interface FactorySessionState extends Record<string, unknown> {
   factoryProjectId?: string;
   projectRepositoryId?: string;
 }
@@ -234,17 +234,15 @@ export class AuditDomain implements AuditEmitter, AuditAgentEmitter {
     input: EmitAgentAuditInput;
   }): Promise<void> {
     try {
-      const context = requestContext.get('controller') as
-        | AgentControllerRequestContext<FactorySessionState>
-        | undefined;
+      const context = turnSession<FactorySessionState>(requestContext);
       const tenant = this.#agentTenant?.(requestContext);
       const orgId = tenant?.orgId;
       const userId = tenant?.userId;
       const threadId = context?.threadId;
-      const state = context?.getState();
+      const state = context?.state();
       if (!orgId || !userId || !threadId || !state?.factoryProjectId) return;
 
-      const modelId = context.session.modelId?.trim();
+      const modelId = context.modelId;
       await this.record({
         orgId,
         actorId: `agent:${threadId}`,
