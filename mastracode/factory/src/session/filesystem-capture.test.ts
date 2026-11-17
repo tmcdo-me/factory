@@ -14,6 +14,7 @@ import {
   observeSessionFilesystem,
   parseFilesystemCaptureFiles,
   waitForPendingFilesystemCapture,
+  noteSessionRunEnding,
   ROOT_FILES_LIST_COMMAND,
 } from './filesystem-capture.js';
 import type { FilesystemCaptureDependencies, FilesystemCaptureSession } from './filesystem-capture.js';
@@ -732,6 +733,28 @@ describe('waitForPendingFilesystemCapture', () => {
     releaseExec?.(commandResult());
     await wait;
     // The persist happened before the reader's wait resolved.
+    expect(dependencies.filesystem.replaceFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reader driven by the controller end waits through the gap before the hub tells the capture', async () => {
+    const { session, emit, touchWorkspace } = createSession(undefined, 'resource-wait-gap');
+    const dependencies = createDependencies();
+    const hub = hubOf(session);
+    observeSessionFilesystem(session, { ...dependencies, events: hub.events });
+    touchWorkspace();
+
+    // The controller ended the run (synchronously noted); the hub has not told the capture yet.
+    noteSessionRunEnding('resource-wait-gap');
+    let waitSettled = false;
+    const wait = waitForPendingFilesystemCapture('resource-wait-gap').then(() => {
+      waitSettled = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(waitSettled).toBe(false);
+
+    // The end reaches the capture: it is scheduled, then the wait covers its persist.
+    emit({ type: 'agent_end', reason: 'complete' });
+    await wait;
     expect(dependencies.filesystem.replaceFiles).toHaveBeenCalledTimes(1);
   });
 

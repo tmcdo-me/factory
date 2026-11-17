@@ -209,14 +209,59 @@ export async function captureSessionFilesystem(
 const pendingCaptures = new Map<string, Promise<void>>();
 
 /**
+ * Run ends the session's controller has reported that the event hub has not yet told the capture
+ * about (it hears a run's end once the end is stored). A reader driven by the controller's own end
+ * must not find nothing pending in that gap: each end noted here holds the wait until the capture
+ * has decided what to do with it (schedule one, or skip a turn that never touched the workspace).
+ */
+const endingRuns = new Map<string, Array<(() => void) & { gate: Promise<void> }>>();
+const ENDING_RUN_SAFETY_MS = 30_000;
+
+/**
+ * fork(claude-agent): slice 7. Called synchronously when the session's controller ends a run, before
+ * the end is stored and heard on the hub. Settled by the hub's `run.ended` (or after a safety delay
+ * if that never comes).
+ */
+export function noteSessionRunEnding(sessionId: string): void {
+  let settle!: () => void;
+  const gate = new Promise<void>(resolve => {
+    settle = resolve;
+  });
+  const done = Object.assign(
+    () => {
+      clearTimeout(timer);
+      settle();
+    },
+    { gate },
+  );
+  const timer = setTimeout(() => settleOne(sessionId, done), ENDING_RUN_SAFETY_MS);
+  timer.unref?.();
+  endingRuns.set(sessionId, [...(endingRuns.get(sessionId) ?? []), done]);
+}
+
+function settleOne(sessionId: string, one?: (() => void) & { gate: Promise<void> }): void {
+  const list = endingRuns.get(sessionId);
+  if (!list) return;
+  const index = one ? list.indexOf(one) : 0;
+  if (index === -1) return;
+  const [done] = list.splice(index, 1);
+  if (list.length === 0) endingRuns.delete(sessionId);
+  done?.();
+}
+
+function settleAllEndings(sessionId: string): void {
+  for (const done of endingRuns.get(sessionId) ?? []) done();
+  endingRuns.delete(sessionId);
+}
+
+/**
  * Resolve once the session's in-flight filesystem capture (if any) has
  * persisted, or after `timeoutMs` so a reader that arrives mid-capture is
  * never blocked by the execs' worst-case 30s timeouts. Never rejects: the
  * capture body is fully try/catch contained.
  */
 export async function waitForPendingFilesystemCapture(sessionId: string, timeoutMs = 10_000): Promise<void> {
-  let pending = pendingCaptures.get(sessionId);
-  if (!pending) return;
+  if (!pendingCaptures.has(sessionId) && !endingRuns.has(sessionId)) return;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let timedOut = false;
   const deadline = new Promise<void>(resolve => {
@@ -226,6 +271,11 @@ export async function waitForPendingFilesystemCapture(sessionId: string, timeout
     }, timeoutMs);
   });
   try {
+    // A run the controller ended that the hub has not yet told the capture about.
+    for (const done of [...(endingRuns.get(sessionId) ?? [])]) {
+      await Promise.race([done.gate, deadline]);
+    }
+    let pending = pendingCaptures.get(sessionId);
     // A turn that ends while we wait chains a successor capture; keep waiting
     // until the latest chain settles so the final snapshot is not lost.
     while (pending && !timedOut) {
@@ -304,7 +354,7 @@ export function observeSessionFilesystem(
   }
   if (sessionId === undefined) return () => {};
   rememberThread();
-  return dependencies.events.listen(sessionId, ({ event }) => {
+  const stopListening = dependencies.events.listen(sessionId, ({ event }) => {
     switch (event.type) {
       case 'tool.started': {
         toolNames.set(event.callId, event.name);
@@ -335,8 +385,16 @@ export function observeSessionFilesystem(
         for (const id of toolNames.keys()) {
           if (!suspended.has(id)) toolNames.delete(id);
         }
-        capture();
+        try {
+          capture();
+        } finally {
+          settleOne(sessionId!);
+        }
       }
     }
   });
+  return () => {
+    stopListening();
+    settleAllEndings(sessionId!);
+  };
 }

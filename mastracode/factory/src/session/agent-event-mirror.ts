@@ -30,6 +30,8 @@ export function observeSessionAgentEvents(
     contextWindow?: (modelId: string | undefined) => number | undefined;
     /** Factory's interaction broker, told of every call the session holds for a person and when it stops holding it. */
     interactions?: SessionInteractionRecords;
+    /** Told synchronously when the controller ends a run, before its end is stored (see `noteSessionRunEnding`). */
+    onRunEnding?: () => void;
   } = {},
 ): void {
   if (mirrored.has(session)) return;
@@ -44,10 +46,17 @@ export function observeSessionAgentEvents(
     );
   };
   const publisher = new SessionPublisher(hub, sessionId, { onError: error => warnOnce('storing events', error) });
-  mirrorSessionEvents(session, publisher.emit, {
-    onError: error => warnOnce('mapping an event', error),
-    ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
-  });
+  mirrorSessionEvents(
+    session,
+    event => {
+      if (event.type === 'run.ended') options.onRunEnding?.();
+      publisher.emit(event);
+    },
+    {
+      onError: error => warnOnce('mapping an event', error),
+      ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
+    },
+  );
   if (options.interactions) recordSessionInteractions(session, options.interactions);
 }
 

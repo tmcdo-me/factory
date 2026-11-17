@@ -183,7 +183,7 @@ import { hydrateSessionDefaultModel } from './session/default-model-hydration.js
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
 import { FactoryEnvironmentStateProcessor } from './session/environment-state-processor.js';
 import { createSourceControlSessionLookup } from './session/factory-session.js';
-import { observeSessionFilesystem } from './session/filesystem-capture.js';
+import { noteSessionRunEnding, observeSessionFilesystem } from './session/filesystem-capture.js';
 import { observeSessionFirstExec } from './session/first-exec-capture.js';
 import { observeSessionFirstMessage } from './session/first-message-capture.js';
 import { liveSessionsTouchingTheFeed } from './session/live-sessions.js';
@@ -2825,6 +2825,8 @@ export class MastraFactory {
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {
         contextWindow: sessionModelContextWindow(session),
+        // The filesystem capture hears the end later, from the hub: readers wait for it meanwhile.
+        onRunEnding: () => noteSessionRunEnding(hubSessionId),
         // Slice 5a: what the session waits on a person for is kept in the interaction broker.
         ...(this.#interactionRecords ? { interactions: this.#interactionRecords } : {}),
       });

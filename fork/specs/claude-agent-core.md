@@ -857,11 +857,14 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Filesystem capture (`observeSessionFilesystem(session, {events, filesystem, sourceControl})`) listens
      to the same stream: its `onBeforeAgentEnd` hook becomes `run.ended` (the tool bookkeeping reads
      `tool.started`/`tool.ended`/`interaction.*` as first-exec capture does), so a capture is scheduled
-     when the run's end is stored rather than just before the controller emits `agent_end`. The hub tells
-     `listen` observers before `subscribe` clients, and the capture is registered first (`factory.ts`), so
-     it is pending (`waitForPendingFilesystemCapture`) before anything reacting to the end can read the
-     listing; the thread is the one the session last reported (deleteSession clears it before the end is
-     stored, #24893). Still on controller events: `rules/watch-run.ts`.
+     when the run's end is stored rather than just before the controller emits `agent_end`. To keep
+     `waitForPendingFilesystemCapture` honest in that gap, the event mirror notes the end synchronously
+     (`noteSessionRunEnding`, from `observeSessionAgentEvents`'s `onRunEnding`) and the wait holds on it
+     until the hub's `run.ended` reaches the capture (which then schedules one or skips a turn that never
+     touched the workspace; a 30 s safety release, and release on dispose); so a reader driven by the
+     controller's own end (sandbox retirement, session deletion, the GitHub routes) still sees the
+     capture pending. The thread is the one the session last reported (deleteSession clears it before
+     the end is stored, #24893). Test: a reader waits through the gap. Still on controller events: `rules/watch-run.ts`.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.

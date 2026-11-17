@@ -37,12 +37,19 @@ export function observeSessionFirstMessage(
   { sourceControl, events }: FirstMessageCaptureDependencies,
 ): () => void {
   let seen = false;
-  const unsubscribe = events.listen(session.identity.getId(), ({ event }) => {
+  let sessionId: string;
+  try {
+    sessionId = session.identity.getId();
+  } catch {
+    // No identity, nothing to stamp.
+    return () => {};
+  }
+  const unsubscribe = events.listen(sessionId, ({ event }) => {
     if (seen || event.type !== 'message.started' || event.signal) return;
     seen = true;
     unsubscribe();
     void sourceControl.sessions
-      .markFirstMessage({ sessionId: session.identity.getId() })
+      .markFirstMessage({ sessionId })
       .catch(error => console.warn('[Factory first-message capture] Unable to persist first message time.', error));
   });
   return unsubscribe;
