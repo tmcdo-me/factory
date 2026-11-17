@@ -44,7 +44,9 @@ export function answersWithDecision(request: InteractionRequest): boolean {
 /**
  * The `blocked` report a session's followers get when it starts waiting on a person, as they get one
  * when a Mastra Code run parks: it names the call, so a yes or no can come from
- * `factory_answer_approval` or the notice's buttons. A Claude Agent session's thread is its own id.
+ * `factory_answer_approval` or the notice's buttons. A Claude Agent session's thread is its own id; that
+ * is why only its records come through here: a record a runtime holds (Mastra Code, whose session may run
+ * on another thread than its id) is announced by that runtime's own observer with the real thread.
  */
 export function waitingReport(record: InteractionRecord): {
   sessionId: string;
