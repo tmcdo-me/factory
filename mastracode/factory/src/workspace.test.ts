@@ -2,6 +2,7 @@ import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mastraCodeWorkspaceBuilders } from '@factory/runtime-mastra-code';
 import { loadSessionInstructions } from '@mastra/code-sdk/agents/prompts/agent-instructions';
 import { RequestContext } from '@mastra/core/request-context';
 import { FactorySandbox, LocalSandbox, WORKSPACE_TOOLS } from '@mastra/core/workspace';
@@ -1163,6 +1164,7 @@ describe('GitHub session workspace preparation', () => {
     mocks.localRoot = root;
     const github = fakeGithubIntegration();
     const resolver = createWorkspaceFactory({
+      builders: mastraCodeWorkspaceBuilders,
       sandbox: new CallbackFactorySandbox(mocks.createSandbox as any),
       github: github as any,
       workItems: {
@@ -1277,6 +1279,7 @@ describe('GitHub session workspace preparation', () => {
     }));
     const workspace = eager(
       createWorkspaceFactory({
+        builders: mastraCodeWorkspaceBuilders,
         sandbox: new CallbackFactorySandbox(mocks.createSandbox as any),
         sourceControls: [
           {
@@ -1980,6 +1983,7 @@ describe('GitHub session workspace preparation', () => {
     const sourceControl = fakeGithubIntegration().sourceControlStorage;
     const getBySessionId = vi.spyOn(sourceControl.sessions, 'getBySessionId');
     const resolver = createWorkspaceFactory({
+      builders: mastraCodeWorkspaceBuilders,
       projects: projects as any,
       sourceControls: [{ id: 'github', versionControl: {} as any, storage: sourceControl as any }],
     });
@@ -2394,6 +2398,7 @@ describe('GitHub session workspace preparation', () => {
     // No localRoot: the factory takes the remote path (in-VM workdirs).
     return eager(
       createWorkspaceFactory({
+        builders: mastraCodeWorkspaceBuilders,
         sandbox: new CallbackFactorySandbox(mocks.createSandbox as any),
         github: fakeGithubIntegration() as any,
         workItems: { findActiveRunBindingForSession: mocks.findActiveRunBindingForSession } as any,
@@ -3421,6 +3426,7 @@ describe('GitHub session workspace preparation', () => {
 
   it('serves no host workspace even on deploys with no sandbox config', async () => {
     const resolver = createWorkspaceFactory({
+      builders: mastraCodeWorkspaceBuilders,
       github: fakeGithubIntegration() as any,
       workItems: { findActiveRunBindingForSession: mocks.findActiveRunBindingForSession } as any,
     });
@@ -3438,6 +3444,7 @@ describe('GitHub session workspace preparation', () => {
       tempDirs.push(root);
       mocks.localRoot = root;
       return createWorkspaceFactory({
+        builders: mastraCodeWorkspaceBuilders,
         sandbox: new CallbackFactorySandbox(mocks.createSandbox as any),
         github: fakeGithubIntegration() as any,
         workItems: { findActiveRunBindingForSession: mocks.findActiveRunBindingForSession } as any,
@@ -3954,6 +3961,7 @@ describe('factory environment sandbox context', () => {
     const projects = { get: vi.fn(async ({ id }: { id: string }) => (id === project.id ? project : null)) };
     const sandbox = new RecordingFactorySandbox();
     const resolver = createWorkspaceFactory({
+      builders: mastraCodeWorkspaceBuilders,
       sandbox,
       github: github as any,
       projects: projects as any,

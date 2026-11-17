@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs';
 import path, { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { SandboxFilesystem } from '@mastra/code-sdk/agents/sandbox-filesystem';
-import { createMastraCodeWorkspaceTools } from '@mastra/code-sdk/agents/tool-availability';
-import type { getDynamicWorkspace, WorkspaceSkillExtension } from '@mastra/code-sdk/agents/workspace';
-import { DEFAULT_CONFIG_DIR } from '@mastra/code-sdk/constants';
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
+import type {
+  RuntimeSkillExtension,
+  RuntimeWorkspaceBuilders,
+  RuntimeWorkspaceContext,
+  RuntimeWorkspaceSession,
+} from '@factory/agent-runtime';
 import { InlineSkillSource } from '@mastra/core/skills';
 import type { InlineSkill } from '@mastra/core/skills';
 import { LocalSkillSource, Workspace } from '@mastra/core/workspace';
@@ -88,7 +88,6 @@ const isGithubTokenStale = (registration: { tokenIssuedAt: number; patInstalled:
   !registration.patInstalled && Date.now() - registration.tokenIssuedAt >= GITHUB_TOKEN_REFRESH_AFTER_MS;
 /** The Factory UI renders plans only from `.artifacts/`, so every session writes them there. */
 export const FACTORY_PLANS_DIR = '.artifacts/plans';
-const FACTORY_WORKSPACE_TOOLS = createMastraCodeWorkspaceTools(false, FACTORY_PLANS_DIR);
 const bundleDirectory = dirname(fileURLToPath(import.meta.url));
 const bundledFactorySkillsPath = join(bundleDirectory, 'factory-skills');
 export const BUNDLED_FACTORY_SKILLS_PATH =
@@ -415,7 +414,7 @@ function createFactorySkillExtension(
   isReviewSession: () => Promise<boolean>,
   codeSkills: readonly InlineSkill[],
   skillOverrides: () => Promise<ReadonlyMap<string, FactorySkillOverride>>,
-): WorkspaceSkillExtension {
+): RuntimeSkillExtension {
   return {
     id: 'web-factory',
     paths: [FACTORY_SKILLS_MOUNT],
@@ -438,7 +437,7 @@ function isActiveReviewBinding(
   return runBinding?.role === REVIEW_CONTEXT && runBinding.status === 'active' && !!orgId && runBinding.orgId === orgId;
 }
 
-type DynamicWorkspaceContext = Parameters<typeof getDynamicWorkspace>[0];
+type DynamicWorkspaceContext = RuntimeWorkspaceContext;
 
 /**
  * When a session's sandbox boots: on the agent's first command (`'lazy'`, the
@@ -459,6 +458,8 @@ export interface WorkspaceSourceControlProvider {
 }
 
 export interface CreateWorkspaceFactoryOptions {
+  /** The runtime's workspace pieces (its sandbox filesystem, workspace tools and config directory). */
+  builders: RuntimeWorkspaceBuilders;
   /** The normalized factory sandbox constructing one sandbox per session. */
   sandbox?: FactorySandbox;
   /** Defaults to `'lazy'`. */
@@ -695,13 +696,14 @@ export function environmentSandboxContext(
   };
 }
 
-export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = {}) {
-  const { sandbox: sandboxConfig, github, projects, workItems, skillOverrides, sandboxEnvs } = options;
+export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions) {
+  const { builders, sandbox: sandboxConfig, github, projects, workItems, skillOverrides, sandboxEnvs } = options;
   const sourceControls: WorkspaceSourceControlProvider[] =
     options.sourceControls ??
     (github
       ? [{ id: github.id, versionControl: github.versionControl, storage: github.sourceControlStorage, github }]
       : []);
+  const workspaceTools = builders.workspaceTools(FACTORY_PLANS_DIR);
   const eagerSandboxStart = options.sandboxStart === 'eager';
   const workspaceRegistry = options.workspaceRegistry ?? new FactoryWorkspaceRegistry();
   type GithubTokenRegistration = {
@@ -753,7 +755,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
 
   const resolve = async ({ requestContext, mastra, skillExtension }: DynamicWorkspaceContext) => {
     // The live controller session: the workspace sets its project path.
-    const ctx = controllerEntry<AgentControllerRequestContext<MastraCodeState>>(requestContext);
+    const ctx = controllerEntry<RuntimeWorkspaceSession>(requestContext);
     const resolvedSession = ctx?.sessionId ? await resolveSourceControlSession(sourceControls, ctx.sessionId) : null;
     const session = resolvedSession?.session ?? null;
     const sourceControl = resolvedSession?.provider;
@@ -1270,7 +1272,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
       return loading;
     };
     const loadedOverrideRevision = async () => (await skillOverrideStates.get(workspaceId))?.revision;
-    const configDir = DEFAULT_CONFIG_DIR;
+    const configDir = builders.configDir;
 
     const getRepositoryAccess = () => repositoryAccess(repository.id);
     // Mint one token per group of up to ten environment repositories: the
@@ -1492,7 +1494,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     }
     existing ??= constructedWorkspaces.get(workspaceId);
     if (existing) {
-      existing.setToolsConfig(FACTORY_WORKSPACE_TOOLS);
+      existing.setToolsConfig(workspaceTools);
       // The skill cache does not recheck the source on get(), so rescan when the
       // session's role flips; otherwise a cached review skill outlives the review binding.
       // Likewise when the project's skill-override revision moves: a save or revert
@@ -1880,7 +1882,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
     // resolutions (thread-list polling) construct but never start.
     const sessionSandbox: SessionSandbox = requireExec(sessionEntry.sandbox);
 
-    const filesystem = new SandboxFilesystem({
+    const filesystem = builders.createSandboxFilesystem({
       id: `sandbox-fs:${workspaceId}`,
       sandbox: sessionSandbox,
       // Lazy: a remote workdir is only knowable once a VM runs. The first
@@ -1908,7 +1910,7 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
       name: 'Mastra Code Factory Session Workspace',
       filesystem,
       sandbox: sessionSandbox as unknown as ConstructorParameters<typeof Workspace>[0]['sandbox'],
-      tools: FACTORY_WORKSPACE_TOOLS,
+      tools: workspaceTools,
       skills: skillPaths,
       // Project skill roots live in the sandbox checkout; guard them so skill
       // discovery before materialization (e.g. kickoff skill resolution in the

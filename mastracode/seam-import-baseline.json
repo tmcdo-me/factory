@@ -8,8 +8,7 @@
     "src/rules/mastra-code-sessions.ts",
     "src/rules/start-coordinator.ts",
     "src/session/controller-event-hub.ts",
-    "src/session/factory-session.ts",
-    "src/workspace.ts"
+    "src/session/factory-session.ts"
   ],
   "factoryUi": [
     "src/ui/domains/chat/context/useChatCommandRegistry.ts",
