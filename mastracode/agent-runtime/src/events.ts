@@ -72,6 +72,12 @@ export type FactoryEvent =
       messageId: string;
       role: 'assistant' | 'user';
       runId?: string;
+      /**
+       * The text reached the session as a runtime signal (Mastra Code delivers what a person typed that
+       * way), not as a message of its own. Consumers that count real conversation, such as the time to
+       * first interaction, ignore it.
+       */
+      signal?: true;
       meta?: MessageMeta;
       attachments?: MessageAttachment[];
     }

@@ -276,6 +276,7 @@ export class MastraCodeEventMapper {
             type: 'message.started',
             messageId: message.id,
             role: 'user',
+            signal: true,
             ...runId,
             ...(Object.keys(meta).length ? { meta } : {}),
           },

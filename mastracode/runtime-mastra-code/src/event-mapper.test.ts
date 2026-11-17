@@ -359,6 +359,7 @@ describe('richer Mastra events', () => {
         type: 'message.started',
         messageId: 'u1',
         role: 'user',
+        signal: true,
         meta: {
           author: { id: 'u-1', name: 'Tim' },
           channel: { platform: 'slack', userId: 'U1', authorName: 'Tim M' },
@@ -385,7 +386,7 @@ describe('user messages', () => {
       message('u2', 'user', [{ type: 'text', text: 'persisted form' }]),
     ]);
     expect(events).toEqual([
-      { type: 'message.started', messageId: 'u1', role: 'user' },
+      { type: 'message.started', messageId: 'u1', role: 'user', signal: true },
       { type: 'message.delta', messageId: 'u1', part: 'text', delta: 'line one\nline two' },
       { type: 'message.started', messageId: 'u2', role: 'user' },
       { type: 'message.delta', messageId: 'u2', part: 'text', delta: 'persisted form' },

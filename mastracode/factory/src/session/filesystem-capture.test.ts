@@ -3,10 +3,10 @@ import { mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type { SessionBeforeAgentEndListener } from '@mastra/core/agent-controller';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { __clearSessionSandboxesForTests, getSessionSandbox } from '../sandbox/session-sandbox.js';
+import { hubOf } from './controller-event-hub.js';
 import { __clearSessionEnvironmentsForTests, recordSessionEnvironment } from './environment-state-processor.js';
 import type { SessionEnvironmentRepositoryState } from './environment-state-processor.js';
 import {
@@ -14,6 +14,7 @@ import {
   observeSessionFilesystem,
   parseFilesystemCaptureFiles,
   waitForPendingFilesystemCapture,
+  noteSessionRunEnding,
   ROOT_FILES_LIST_COMMAND,
 } from './filesystem-capture.js';
 import type { FilesystemCaptureDependencies, FilesystemCaptureSession } from './filesystem-capture.js';
@@ -35,9 +36,8 @@ function createSession(
   sessionId = resourceId,
 ) {
   const executeCommand = vi.fn(async () => results.shift() ?? commandResult());
-  const listeners: SessionBeforeAgentEndListener[] = [];
   const eventListeners: Array<(event: unknown) => void> = [];
-  const session: FilesystemCaptureSession = {
+  const session = {
     identity: { getId: () => sessionId, getResourceId: () => resourceId },
     thread: { requireId: () => 'thread-1' },
     getWorkspace: () => ({
@@ -48,21 +48,14 @@ function createSession(
         executeCommand,
       },
     }),
-    onBeforeAgentEnd: listener => {
-      listeners.push(listener);
+    subscribe: (listener: (event: unknown) => void) => {
+      eventListeners.push(listener);
       return () => {
-        const index = listeners.indexOf(listener);
-        if (index !== -1) listeners.splice(index, 1);
-      };
-    },
-    subscribe: listener => {
-      eventListeners.push(listener as (event: unknown) => void);
-      return () => {
-        const index = eventListeners.indexOf(listener as (event: unknown) => void);
+        const index = eventListeners.indexOf(listener);
         if (index !== -1) eventListeners.splice(index, 1);
       };
     },
-  };
+  } as FilesystemCaptureSession & { subscribe: (listener: (event: unknown) => void) => () => void };
 
   const emit = (event: unknown) => {
     for (const listener of [...eventListeners]) listener(event);
@@ -76,7 +69,9 @@ function createSession(
     emit({ type: 'tool_end', toolCallId, isError: false });
   };
 
-  return { session, executeCommand, listeners, emit, touchWorkspace };
+  // What ended the run used to be a before-end listener; the run's end now arrives as an event.
+  const listeners = [(event: unknown) => emit(event)];
+  return { session, executeCommand, listeners, eventListeners, emit, touchWorkspace };
 }
 
 /**
@@ -281,7 +276,7 @@ describe('captureSessionFilesystem across environment repositories', () => {
       return answers[args[3]!] ?? commandResult();
     });
     const base = createSession([]);
-    const session: FilesystemCaptureSession = {
+    const session = {
       ...base.session,
       getWorkspace: () => ({ sandbox: { id: 'sandbox-1', name: 'Test sandbox', provider: 'test', executeCommand } }),
     };
@@ -467,7 +462,7 @@ describe('observeSessionFilesystem', () => {
     async reason => {
       const { session, listeners, touchWorkspace } = createSession();
       const dependencies = createDependencies();
-      observeSessionFilesystem(session, dependencies);
+      observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
       // The listener no longer returns the capture chain; the capture still
       // runs and persists in the background.
@@ -484,7 +479,7 @@ describe('observeSessionFilesystem', () => {
     // an unchanged listing.
     const { session, executeCommand, listeners } = createSession();
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
     await Promise.resolve();
@@ -497,7 +492,7 @@ describe('observeSessionFilesystem', () => {
   it('non-workspace, failed, and denied tool calls do not count as touching the workspace', async () => {
     const { session, executeCommand, listeners, emit } = createSession();
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     // Non-workspace tool.
     emit({ type: 'tool_start', toolCallId: 't1', toolName: 'notification_inbox' });
@@ -524,7 +519,7 @@ describe('observeSessionFilesystem', () => {
       commandResult(),
     ]);
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     // Turn 1 touches the workspace: capture runs.
     touchWorkspace();
@@ -550,7 +545,7 @@ describe('observeSessionFilesystem', () => {
     };
     const dependencies = createDependencies();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -575,7 +570,7 @@ describe('observeSessionFilesystem', () => {
       sandbox: { executeCommand: vi.fn(() => gatedExec) } as any,
     });
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     const listenerResult = listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -599,7 +594,7 @@ describe('observeSessionFilesystem', () => {
       .mockImplementation(async () => commandResult());
     session.getWorkspace = () => ({ sandbox: { executeCommand } as any });
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -623,7 +618,7 @@ describe('observeSessionFilesystem', () => {
           completeFirstCapture = resolve;
         }),
     );
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -655,8 +650,8 @@ describe('observeSessionFilesystem', () => {
       .mockImplementation(async () => commandResult());
     first.session.getWorkspace = () => ({ sandbox: { executeCommand: firstExec } as any });
     const dependencies = createDependencies();
-    observeSessionFilesystem(first.session, dependencies);
-    observeSessionFilesystem(second.session, dependencies);
+    observeSessionFilesystem(first.session, { ...dependencies, events: hubOf(first.session).events });
+    observeSessionFilesystem(second.session, { ...dependencies, events: hubOf(second.session).events });
 
     first.touchWorkspace();
     first.listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -676,7 +671,7 @@ describe('observeSessionFilesystem', () => {
   it('disposing the listener does not cancel an in-flight capture', async () => {
     // A final-turn capture may still be running when the session tears the
     // listener down; the chain must run to completion and persist.
-    const { session, listeners, touchWorkspace } = createSession(undefined, 'resource-dispose');
+    const { session, listeners, eventListeners, touchWorkspace } = createSession(undefined, 'resource-dispose');
     let releaseExec: ((value: ReturnType<typeof commandResult>) => void) | undefined;
     const gate = new Promise<ReturnType<typeof commandResult>>(resolve => {
       releaseExec = resolve;
@@ -687,14 +682,14 @@ describe('observeSessionFilesystem', () => {
       .mockImplementation(async () => commandResult());
     session.getWorkspace = () => ({ sandbox: { executeCommand } as any });
     const dependencies = createDependencies();
-    const dispose = observeSessionFilesystem(session, dependencies);
+    const dispose = observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
     await vi.waitFor(() => expect(executeCommand).toHaveBeenCalledTimes(1));
 
     dispose();
-    expect(listeners).toHaveLength(0);
+    expect(eventListeners).toHaveLength(0);
 
     releaseExec?.(commandResult());
     await vi.waitFor(() => expect(dependencies.filesystem.replaceFiles).toHaveBeenCalledTimes(1));
@@ -721,7 +716,7 @@ describe('waitForPendingFilesystemCapture', () => {
       .mockImplementation(async () => commandResult());
     session.getWorkspace = () => ({ sandbox: { executeCommand } as any });
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -738,6 +733,28 @@ describe('waitForPendingFilesystemCapture', () => {
     releaseExec?.(commandResult());
     await wait;
     // The persist happened before the reader's wait resolved.
+    expect(dependencies.filesystem.replaceFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('a reader driven by the controller end waits through the gap before the hub tells the capture', async () => {
+    const { session, emit, touchWorkspace } = createSession(undefined, 'resource-wait-gap');
+    const dependencies = createDependencies();
+    const hub = hubOf(session);
+    observeSessionFilesystem(session, { ...dependencies, events: hub.events });
+    touchWorkspace();
+
+    // The controller ended the run (synchronously noted); the hub has not told the capture yet.
+    noteSessionRunEnding('resource-wait-gap');
+    let waitSettled = false;
+    const wait = waitForPendingFilesystemCapture('resource-wait-gap').then(() => {
+      waitSettled = true;
+    });
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(waitSettled).toBe(false);
+
+    // The end reaches the capture: it is scheduled, then the wait covers its persist.
+    emit({ type: 'agent_end', reason: 'complete' });
+    await wait;
     expect(dependencies.filesystem.replaceFiles).toHaveBeenCalledTimes(1);
   });
 
@@ -760,7 +777,7 @@ describe('waitForPendingFilesystemCapture', () => {
       return commandResult();
     });
     session.getWorkspace = () => ({ sandbox: { executeCommand } as any });
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });
@@ -791,7 +808,7 @@ describe('waitForPendingFilesystemCapture', () => {
       sandbox: { executeCommand: vi.fn(() => new Promise<never>(() => {})) } as any,
     });
     const dependencies = createDependencies();
-    observeSessionFilesystem(session, dependencies);
+    observeSessionFilesystem(session, { ...dependencies, events: hubOf(session).events });
 
     touchWorkspace();
     listeners[0]!({ type: 'agent_end', reason: 'complete' });

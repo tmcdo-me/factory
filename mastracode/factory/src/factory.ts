@@ -183,7 +183,7 @@ import { hydrateSessionDefaultModel } from './session/default-model-hydration.js
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
 import { FactoryEnvironmentStateProcessor } from './session/environment-state-processor.js';
 import { createSourceControlSessionLookup } from './session/factory-session.js';
-import { observeSessionFilesystem } from './session/filesystem-capture.js';
+import { noteSessionRunEnding, observeSessionFilesystem } from './session/filesystem-capture.js';
 import { observeSessionFirstExec } from './session/first-exec-capture.js';
 import { observeSessionFirstMessage } from './session/first-message-capture.js';
 import { liveSessionsTouchingTheFeed } from './session/live-sessions.js';
@@ -2765,11 +2765,16 @@ export class MastraFactory {
     const hubObservers = createReplaceableObservers();
     prepared.base.controller.onSessionCreated(session => {
       const hubSessionId = session.identity.getId();
-      observeSessionFilesystem(session, {
+      // The capture hears a run's end first (the hub tells its listeners in the order they were added),
+      // so it is pending before anything that reacts to that end can read the listing.
+      const stopFilesystem = observeSessionFilesystem(session, {
+        events: agentEventHub,
         filesystem: filesystemStorage,
         sourceControl: { sessions: sourceControlSessions },
       });
-      observeSessionFirstMessage(session, {
+      const stopFirstMessage = observeSessionFirstMessage(session, {
+        // fork(claude-agent): slice 7. Heard on the event hub, as the first exec is.
+        events: agentEventHub,
         sourceControl: { sessions: sourceControlSessions },
       });
       const stopFirstExec = observeSessionFirstExec(session, {
@@ -2815,11 +2820,13 @@ export class MastraFactory {
           ),
         },
       );
-      hubObservers.replace(hubSessionId, [stopFirstExec, stopRunEnd, stopRunReports]);
+      hubObservers.replace(hubSessionId, [stopFilesystem, stopFirstMessage, stopFirstExec, stopRunEnd, stopRunReports]);
       observeSessionThreadStamp(session);
       // fork(claude-agent): a custom provider's model carries its context window, for the context meter.
       observeSessionAgentEvents(session, agentEventHub, {
         contextWindow: sessionModelContextWindow(session),
+        // The filesystem capture hears the end later, from the hub: readers wait for it meanwhile.
+        onRunEnding: () => noteSessionRunEnding(hubSessionId),
         // Slice 5a: what the session waits on a person for is kept in the interaction broker.
         ...(this.#interactionRecords ? { interactions: this.#interactionRecords } : {}),
       });

@@ -1,13 +1,14 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import type { EventEnvelope } from '@factory/agent-runtime';
 
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 
 export interface FirstMessageCaptureSession {
   readonly identity: { getId(): string };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 export interface FirstMessageCaptureDependencies {
+  /** fork(claude-agent): slice 7. The session's events are heard on Factory's event hub. */
+  events: { listen(sessionId: string, listener: (envelope: EventEnvelope) => void): () => void };
   sourceControl: {
     sessions: Pick<SourceControlStorageHandle['sessions'], 'markFirstMessage'>;
   };
@@ -17,8 +18,8 @@ export interface FirstMessageCaptureDependencies {
  * Record when a session's agent first produced an actual conversational
  * message (the TTFI anchor — "time to first interaction").
  *
- * We stamp on the first `message_start` whose role is `user` or `assistant`.
- * The coordinator writes `role='signal'` rows into the thread (skill loads,
+ * We stamp on the first `message.started` that is not a signal (a user's text delivered as a runtime
+ * signal carries `signal: true`). The coordinator writes `role='signal'` rows into the thread (skill loads,
  * phase markers, memory reminders) before the model is ever invoked; those
  * signals used to trigger a stamp via `agent_start`, giving every session —
  * including zero-message model-init failures — a false TTFI of a few seconds.
@@ -33,17 +34,22 @@ export interface FirstMessageCaptureDependencies {
  */
 export function observeSessionFirstMessage(
   session: FirstMessageCaptureSession,
-  { sourceControl }: FirstMessageCaptureDependencies,
+  { sourceControl, events }: FirstMessageCaptureDependencies,
 ): () => void {
   let seen = false;
-  const unsubscribe = session.subscribe(event => {
-    if (seen || event.type !== 'message_start') return;
-    const role = event.message.role;
-    if (role !== 'user' && role !== 'assistant') return;
+  let sessionId: string;
+  try {
+    sessionId = session.identity.getId();
+  } catch {
+    // No identity, nothing to stamp.
+    return () => {};
+  }
+  const unsubscribe = events.listen(sessionId, ({ event }) => {
+    if (seen || event.type !== 'message.started' || event.signal) return;
     seen = true;
     unsubscribe();
     void sourceControl.sessions
-      .markFirstMessage({ sessionId: session.identity.getId() })
+      .markFirstMessage({ sessionId })
       .catch(error => console.warn('[Factory first-message capture] Unable to persist first message time.', error));
   });
   return unsubscribe;

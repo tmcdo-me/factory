@@ -7,7 +7,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import { observeSessionRunReports } from '../tools/run-watch.js';
+import { observeSessionFilesystem } from './filesystem-capture.js';
 import { observeSessionFirstExec } from './first-exec-capture.js';
+import { observeSessionFirstMessage } from './first-message-capture.js';
 import { observeSessionRunEnd, recordSessionRunStart } from './run-audit.js';
 
 function setup() {
@@ -117,5 +119,62 @@ describe('observers on the event hub', () => {
     await settle();
 
     expect(markFirstMeaningfulExec).toHaveBeenCalledOnce();
+  });
+
+  it('marks the first message on the first reply, not on a typed message delivered as a signal', async () => {
+    const { hub, session, emit, settle } = setup();
+    const markFirstMessage = vi.fn(async () => {});
+    observeSessionFirstMessage(session, { events: hub, sourceControl: { sessions: { markFirstMessage } } });
+    const message = (id: string, role: string, parts: unknown[] = []) => ({
+      type: 'message_start',
+      message: { id, role, createdAt: new Date(), content: { format: 2, parts } },
+    });
+
+    emit(
+      { type: 'agent_start' },
+      message('s1', 'signal', [{ type: 'data-user-message', data: { contents: 'hello' } }]),
+      message('s2', 'signal'),
+    );
+    await settle();
+    expect(markFirstMessage).not.toHaveBeenCalled();
+
+    emit(message('a1', 'assistant'));
+    await settle();
+    expect(markFirstMessage).toHaveBeenCalledExactlyOnceWith({ sessionId: 'session-1' });
+  });
+
+  it('captures the filesystem when a run that touched the workspace ends, and not a chat-only run', async () => {
+    const { hub, session, emit, settle } = setup();
+    const executeCommand = vi.fn(async () => ({
+      success: true,
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      executionTimeMs: 1,
+    }));
+    const captured = vi.fn(async () => {});
+    const getBySessionId = vi.fn(async () => null);
+    observeSessionFilesystem(
+      {
+        ...session,
+        thread: { requireId: () => 'thread-1' },
+        getWorkspace: () => ({ sandbox: { executeCommand } }),
+      },
+      { events: hub, filesystem: { replaceFiles: captured }, sourceControl: { sessions: { getBySessionId } } },
+    );
+
+    emit({ type: 'agent_start' }, { type: 'agent_end', reason: 'complete' });
+    await settle();
+    await Promise.resolve();
+    expect(getBySessionId).not.toHaveBeenCalled();
+
+    emit(
+      { type: 'agent_start' },
+      { type: 'tool_start', toolCallId: 'c1', toolName: 'execute_command', args: {} },
+      { type: 'tool_end', toolCallId: 'c1', result: 'ok', isError: false },
+      { type: 'agent_end', reason: 'complete' },
+    );
+    await settle();
+    await vi.waitFor(() => expect(getBySessionId).toHaveBeenCalled());
   });
 });
