@@ -7,7 +7,7 @@
  * transcript items one at a time later; this file is the only place that knows both shapes.
  */
 import type { AgentControllerTaskSnapshot } from '@mastra/client-js';
-import type { MastraDBMessage, MastraMessagePart } from '@mastra/core/agent-controller';
+import type { MastraDBMessage, MastraMessagePart } from './message-types';
 import type {
   InteractionItem,
   MessageItem,

@@ -3,7 +3,7 @@ import type { ToolCallExit } from '@mastra/playground-ui/components/ai/tool-call
 import type { ActivityStatus } from '@mastra/playground-ui/components/ai/activity';
 import type { AgentControllerEvent, AgentControllerTaskSnapshot } from '@mastra/client-js';
 import { isKnownAgentControllerEvent } from '@mastra/client-js';
-import type { MastraDBMessage, MastraMessagePart } from '@mastra/core/agent-controller';
+import type { MastraDBMessage, MastraMessagePart } from './message-types';
 import type { MastraErrorPart } from '@mastra/core/agent/message-list';
 import { z } from 'zod';
 

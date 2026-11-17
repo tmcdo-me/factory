@@ -1,4 +1,4 @@
-import type { MastraDBMessage } from '@mastra/core/agent-controller';
+import type { MastraDBMessage } from '../services/message-types';
 import { useQueryClient } from '@tanstack/react-query';
 import { useNavigate, useParams } from 'react-router';
 
