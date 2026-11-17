@@ -1,5 +1,4 @@
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentController } from '@mastra/core/agent-controller';
+import type { RuntimeController, RuntimeLiveSession } from '@factory/agent-runtime'; // fork(claude-agent)
 import { RequestContext } from '@mastra/core/request-context';
 
 import { boardForWorkItem, hasPullRequest, isPullRequestReviewPhase, REVIEW_CONTEXT } from '../boards/index.js';
@@ -130,8 +129,8 @@ export interface FactoryStartPreparedResult {
   replayed: boolean;
 }
 
-type FactoryController = AgentController<MastraCodeState>;
-type FactorySession = Awaited<ReturnType<FactoryController['createSession']>>;
+type FactoryController = RuntimeController;
+type FactorySession = RuntimeLiveSession;
 
 async function resolveSourceSession(
   storage: SourceControlStorageHandle,

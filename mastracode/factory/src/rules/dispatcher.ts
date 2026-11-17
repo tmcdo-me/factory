@@ -1,7 +1,12 @@
 import { InteractionAnswerRefusedError } from '@factory/agent-runtime'; // fork(claude-agent)
-import type { InteractionBroker, InteractionRecord, InteractionResponse } from '@factory/agent-runtime'; // fork(claude-agent)
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentController, AgentControllerEventListener, Session } from '@mastra/core/agent-controller';
+import type {
+  InteractionBroker,
+  InteractionRecord,
+  InteractionResponse,
+  RuntimeController,
+  RuntimeLiveSession,
+  RuntimeSessionEvent,
+} from '@factory/agent-runtime'; // fork(claude-agent)
 import { classifyProviderError, PROVIDER_CALL_ERROR_NAME } from '@mastra/core/error';
 import { RequestContext } from '@mastra/core/request-context';
 import type { GoalObjectiveRecord } from '@mastra/core/storage';
@@ -221,11 +226,11 @@ interface DispatcherSession extends SkillSession {
     },
     options: { requestContext: RequestContext; requireDelivery?: boolean },
   ): { accepted: Promise<{ accepted: true; runId?: string; action?: string }> };
-  subscribe(listener: AgentControllerEventListener): () => void;
+  subscribe(listener: (event: RuntimeSessionEvent) => void | Promise<void>): () => void;
 }
 
-type FactoryController = Pick<AgentController<MastraCodeState>, 'getSession' | 'listActiveThreadRuns'>;
-type BoundDispatcherSession = Session<MastraCodeState>;
+type FactoryController = RuntimeController;
+type BoundDispatcherSession = RuntimeLiveSession;
 
 // fork(claude-agent): a board run on another runtime, as the dispatcher drives it through the seam.
 interface SeamWorkingPhase {

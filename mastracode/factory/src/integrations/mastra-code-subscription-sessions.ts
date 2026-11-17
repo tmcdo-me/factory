@@ -1,6 +1,6 @@
 // fork(claude-agent): how a provider event reaches a Mastra Code session. Mastra Code internal: it moves
 // into `@factory/runtime-mastra-code` with the adapter (slice 7); the integrations see `SubscriptionSessions`.
-import type { MountedMastraCode } from '@mastra/code-sdk';
+import type { RuntimeController } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { AgentChannels } from '@mastra/core/channels';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
 import { RequestContext } from '@mastra/core/request-context';
@@ -8,7 +8,7 @@ import { RequestContext } from '@mastra/core/request-context';
 import { hasResolvedOrg, seedSessionOrg } from '../session/org-seed.js';
 import type { FactorySessionOwner, SubscriptionSessionLookup, SubscriptionSessionRow } from './subscription-session.js';
 
-export type MastraCodeController = MountedMastraCode['controller'];
+export type MastraCodeController = RuntimeController;
 
 /** A subscribed thread's session, open for delivery. */
 export interface SubscriptionSession {

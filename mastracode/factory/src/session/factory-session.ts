@@ -1,6 +1,4 @@
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentController } from '@mastra/core/agent-controller';
-
+import type { RuntimeLiveSession } from '@factory/agent-runtime'; // fork(claude-agent)
 import { resolveTenantProviderDefaultModel } from '../routes/tenant-credentials.js';
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { ModelCredentialsStorage } from '../storage/domains/credentials/base.js';
@@ -18,7 +16,7 @@ import { legacyGithubWorkItemBranch } from '../work-item-branch.js';
 import { resolveEnvironmentRepositories } from './environment-repositories.js';
 import { seedSessionOrg } from './org-seed.js';
 
-type FactorySession = Awaited<ReturnType<AgentController<MastraCodeState>['createSession']>>;
+type FactorySession = RuntimeLiveSession;
 
 export class FactorySourceControlConflictError extends Error {}
 

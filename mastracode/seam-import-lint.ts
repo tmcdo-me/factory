@@ -19,12 +19,6 @@ export const factoryAllowList: string[] = [
   'src/factory.ts',
   'src/integrations/base.ts',
   'src/integrations/github/routes.ts',
-  'src/integrations/mastra-code-subscription-sessions.ts',
-  'src/rules/dispatcher.ts',
-  'src/rules/mastra-code-sessions.ts',
-  'src/rules/start-coordinator.ts',
-  'src/session/controller-event-hub.ts',
-  'src/session/factory-session.ts',
 ];
 
 /** Files under `mastracode/factory-ui` that still import Mastra Code's SDK or controller types. */
