@@ -23,7 +23,7 @@ export interface SessionInteractionRecords {
  * session. Safe to call again for the same session object.
  */
 export function observeSessionAgentEvents(
-  session: MirrorableSession,
+  session: MirrorableSession & { thread?: { getId(): string | null | undefined } },
   hub: SessionEventHub,
   options: {
     /** The context window of the model that produced a step, when known (a custom provider's model). */
@@ -54,6 +54,7 @@ export function observeSessionAgentEvents(
     },
     {
       onError: error => warnOnce('mapping an event', error),
+      ...(session.thread ? { threadId: () => session.thread?.getId() ?? undefined } : {}),
       ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
     },
   );

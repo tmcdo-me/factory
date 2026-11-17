@@ -64,7 +64,13 @@ export interface TaskSnapshot {
 
 export type FactoryEvent =
   /** `input` is absent when the runtime started the run itself or the adapter can't attribute it. */
-  | { type: 'run.started'; runId: string; input?: TurnInput }
+  | {
+      type: 'run.started';
+      runId: string;
+      input?: TurnInput;
+      /** The thread the session was on when the run began (Mastra Code sessions move between threads). */
+      threadId?: string;
+    }
   /** `error` is the failure's text when `reason` is `error` and the runtime said why. */
   | { type: 'run.ended'; runId: string; reason: RunEndReason; error?: string }
   | {

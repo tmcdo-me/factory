@@ -122,6 +122,15 @@ describe('MastraCodeEventMapper', () => {
     });
   });
 
+  it('names the thread the session is on when a run starts, and none when it has none', () => {
+    let thread: string | undefined = 't1';
+    const mapper = new MastraCodeEventMapper({ sessionId: 's1', newRunId: () => 'r', threadId: () => thread });
+    expect(mapper.map({ type: 'agent_start' } as never)).toEqual([{ type: 'run.started', runId: 'r', threadId: 't1' }]);
+    mapper.map({ type: 'agent_end', reason: 'complete' } as never);
+    thread = undefined;
+    expect(mapper.map({ type: 'agent_start' } as never)).toEqual([{ type: 'run.started', runId: 'r' }]);
+  });
+
   it('records a denied approval as a resolved interaction and an errored tool call', () => {
     const transcript = toTranscript(
       mapAll([

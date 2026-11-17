@@ -182,6 +182,7 @@ import { resolveFactoryCredentialTenant, resolveFactoryModelPolicy } from './ses
 import { hydrateSessionDefaultModel } from './session/default-model-hydration.js';
 import { environmentSlugs, resolveSessionRepositories } from './session/environment-repositories.js';
 import { FactoryEnvironmentStateProcessor } from './session/environment-state-processor.js';
+import { eventTranscriptReader } from './session/event-transcript-reader.js';
 import { createSourceControlSessionLookup } from './session/factory-session.js';
 import { noteSessionRunEnding, observeSessionFilesystem } from './session/filesystem-capture.js';
 import { observeSessionFirstExec } from './session/first-exec-capture.js';
@@ -970,7 +971,8 @@ export class MastraFactory {
     const queueHealthStorage = storage.registerDomain(new QueueHealthStorage());
     // fork(claude-agent): the agent runtime seam's event log and interaction store. Mastra Code
     // sessions are mirrored into the log (shadow write) until the UI and board rules read from it.
-    const agentEventHub = new SessionEventHub(storage.registerDomain(new AgentEventsStorage()));
+    const agentEventsStorage = storage.registerDomain(new AgentEventsStorage());
+    const agentEventHub = new SessionEventHub(agentEventsStorage);
     const agentSessionsStorage = storage.registerDomain(new AgentSessionsStorage());
     const agentInteractionsStorage = storage.registerDomain(new AgentInteractionsStorage());
     // fork(claude-agent): Factory's messages to Claude Agent sessions, kept across restarts.
@@ -1685,12 +1687,8 @@ export class MastraFactory {
                   findOwnBranchPullRequest(githubIntegration, sourceControlStorage.forIntegration('github'), binding),
               }
             : {}),
-          messageReader: {
-            listMessages: async input => {
-              const memory = await storage.getMastraStorage().getStore('memory');
-              return memory ? memory.listMessages(input) : { messages: [], hasMore: false };
-            },
-          },
+          // fork(claude-agent): slice 7. The board reads finished tool calls from Factory's transcript.
+          messageReader: eventTranscriptReader(agentEventsStorage),
         })
       : undefined;
     const workItemProcessor = workItemsReady
