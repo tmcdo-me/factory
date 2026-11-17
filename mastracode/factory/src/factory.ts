@@ -242,7 +242,7 @@ import {
   logTiming,
   timedPhase,
 } from './timing.js';
-import { deliverFactorySessionNotification } from './tools/deliver.js';
+import { deliverFactorySessionNotification, factoryNotificationReader } from './tools/deliver.js'; // fork(claude-agent)
 import { applyFactoryToolPermissions, createFactoryTools, resolveFactoryToolScope } from './tools/index.js';
 import type { FactoryToolDependencies } from './tools/index.js';
 import {
@@ -1358,7 +1358,8 @@ export class MastraFactory {
       const messaging = await factoryMessaging();
       if (!messaging) return null;
       return {
-        notifications: messaging.notifications,
+        // fork(claude-agent): a report kept for a Claude Agent follower counts for the backstop too.
+        notifications: factoryNotificationReader(messaging.notifications, messaging.runtime),
         deliver: (target, notification, options) =>
           deliverFactorySessionNotification({
             controller: messaging.controller,

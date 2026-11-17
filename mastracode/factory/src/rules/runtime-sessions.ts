@@ -100,7 +100,8 @@ export interface FactoryRuntimeSessions {
    * Tell the session something from Factory (a rule's message, activity on the card's source).
    * `wake` starts a turn with it (queued behind a run in flight), named by the `runId` it resolves
    * with; otherwise it is kept (across restarts, where the server stores it) for the next turn, and
-   * resolves with no run. Rejects when it could not be kept.
+   * resolves with no run. Rejects when it could not be kept. `duplicate` when one with the same
+   * `dedupeKey` already reached the session (nothing was kept or started).
    */
   message(
     sessionId: string,
@@ -123,7 +124,7 @@ export interface FactoryRuntimeSessions {
       dedupeKey?: string;
     },
     requestContext: RequestContext,
-  ): Promise<{ runId?: string }>;
+  ): Promise<{ runId?: string; duplicate?: boolean }>;
   /** The notifications sessions here were sent (see `message`'s `delivery`). */
   deliveries?: Pick<
     AgentMessageStore,

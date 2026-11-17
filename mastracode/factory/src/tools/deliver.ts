@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
-import type { MountedMastraCode } from '@mastra/code-sdk';
-import type { NotificationRecord, SendNotificationSignalInput } from '@mastra/core/notifications';
+import { deliverMastraCodeNotification } from '@factory/runtime-mastra-code'; // fork(claude-agent)
+import type { MastraCodeDeliveryController } from '@factory/runtime-mastra-code'; // fork(claude-agent)
+import type { NotificationRecord, NotificationsStorage, SendNotificationSignalInput } from '@mastra/core/notifications';
 import { RequestContext } from '@mastra/core/request-context';
 
 import { createSessionAsRowOwner } from '../integrations/subscription-session.js';
@@ -9,22 +10,15 @@ import type { FactoryRuntimeSessions } from '../rules/runtime-sessions.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { listFactorySessionThreads, sessionMemoryResourceId, sessionStampCounts } from '../session/session-threads.js';
 import type { FactorySessionOwnership, SessionRunBindings } from '../session/session-threads.js';
+import { dedupedMessageId } from '../storage/domains/agent-messages/base.js'; // fork(claude-agent)
 import type { AgentMessageRecord } from '../storage/domains/agent-messages/base.js'; // fork(claude-agent)
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 
 /** Notifications between Factory sessions all carry this source. */
 export const FACTORY_SESSION_NOTIFICATION_SOURCE = 'factory-session';
 
-export type FactoryDeliveryController = Pick<
-  MountedMastraCode['controller'],
-  | 'queryThreadById'
-  | 'queryThreads'
-  | 'setThreadModel'
-  | 'listAvailableModels'
-  | 'getSession'
-  | 'createSession'
-  | 'getCurrentAgent'
->;
+/** fork(claude-agent): the Mastra Code controller, as its adapter names the slice messaging uses. */
+export type FactoryDeliveryController = MastraCodeDeliveryController;
 
 /** fork(claude-agent): sessions on another agent runtime (Claude Agent) take their notifications through it. */
 export type FactoryRuntimeDelivery = Pick<
@@ -54,21 +48,20 @@ export type FactoryDeliveryResult =
   | {
       delivered: 'skipped';
       notificationId?: string;
-      reason: 'thread-not-found' | 'thread-not-owned' | 'session-not-found' | 'offline' | 'discarded';
+      /** fork(claude-agent): `duplicate`, a notification with the same dedupe key already reached the session. */
+      reason: 'thread-not-found' | 'thread-not-owned' | 'session-not-found' | 'offline' | 'discarded' | 'duplicate';
     };
 
 /**
- * Deliver a notification to a Factory session's stored thread.
+ * Deliver a notification to a Factory session's stored thread, through the runtime the session
+ * runs on (fork(claude-agent)). The thread must be the session's own, whatever the runtime.
  *
- * Sent through the target's agent with an explicit `{ resourceId, threadId }`,
- * never `Session.sendNotificationSignal`: that one builds the wake from the
- * sender's request context and aims at the target's current thread. On this
- * path the SDK builds the wake from the session that owns the target resource,
- * so the woken run is the target row's owner, with that owner's credentials.
- *
- * A target that isn't live is created first, as its row's owner and bound to
- * the stored thread: waking a resource no session owns starts a run with no
- * model. A live session's thread is never switched.
+ * - Mastra Code (`deliverMastraCodeNotification`): Mastra's notification inbox, on the stored
+ *   thread under the resource that owns it, as the target row's owner. A target that isn't live is
+ *   created first, as its row's owner and bound to the stored thread. A live session's thread is
+ *   never switched. The record is Mastra's notification store.
+ * - Claude Agent (`FactoryRuntimeSessions.message`): the runtime's `agent-messages` record, which
+ *   wakes the session or waits for its next turn.
  */
 export async function deliverFactorySessionNotification({
   controller,
@@ -110,48 +103,29 @@ export async function deliverFactorySessionNotification({
     return deliverOnRuntime(runtime, target.sessionId, target.threadId, row, notification, onlyIfLive);
   }
 
-  // No request context: without a user the controller's access check is a no-op,
-  // and this is a server-side lookup on the target's behalf, not the sender's.
-  let session = await controller.getSession(target.sessionId);
-  if (!session) {
-    if (onlyIfLive) return { delivered: 'skipped', reason: 'offline' };
-    const row = await loadRow();
-    if (!row?.factoryProjectId) return { delivered: 'skipped', reason: 'session-not-found' };
-    session = await createSessionAsRowOwner(controller, {
-      sessionId: target.sessionId,
-      ownerResourceId,
-      row,
-      tags: {
-        factoryProjectId: row.factoryProjectId,
-        ...(row.projectRepositoryId ? { projectRepositoryId: row.projectRepositoryId } : {}),
+  // fork(claude-agent): Mastra Code's own inbox, through its adapter.
+  return deliverMastraCodeNotification(
+    controller,
+    { sessionId: target.sessionId, threadId: target.threadId, resourceId: ownerResourceId },
+    { ...notification, source: FACTORY_SESSION_NOTIFICATION_SOURCE },
+    {
+      onlyIfLive,
+      openAsOwner: async () => {
+        const row = await loadRow();
+        if (!row?.factoryProjectId) return undefined;
+        return createSessionAsRowOwner(controller, {
+          sessionId: target.sessionId,
+          ownerResourceId,
+          row,
+          tags: {
+            factoryProjectId: row.factoryProjectId,
+            ...(row.projectRepositoryId ? { projectRepositoryId: row.projectRepositoryId } : {}),
+          },
+          threadId: target.threadId,
+        });
       },
-      threadId: target.threadId,
-    });
-  }
-
-  // Read before sending: the send itself starts a run on an idle target. Delivery is per thread,
-  // so a run on another thread of the same session leaves the target thread idle.
-  const busy = session.stream.isActive() && session.thread.getId() === target.threadId;
-  const result = await controller
-    .getCurrentAgent(session)
-    .sendNotificationSignal(
-      { ...notification, source: FACTORY_SESSION_NOTIFICATION_SOURCE },
-      { resourceId: ownerResourceId, threadId: target.threadId },
-    );
-  await Promise.all([result.persisted, result.accepted].filter(Boolean));
-
-  const notificationId = result.record.id;
-  const reason = result.decision.reason ? { reason: result.decision.reason } : {};
-  switch (result.decision.action) {
-    case 'deliver':
-      return { delivered: busy ? 'mid-run' : 'woken', notificationId, ...reason };
-    case 'summarize':
-      return { delivered: 'summarized', notificationId, ...reason };
-    case 'discard':
-      return { delivered: 'skipped', notificationId, reason: 'discarded' };
-    default:
-      return { delivered: 'persisted', notificationId, ...reason };
-  }
+    },
+  );
 }
 
 /**
@@ -174,8 +148,9 @@ async function deliverOnRuntime(
   requestContext.set('user', { workosId: row.userId, organizationId: row.orgId });
   const attributes: Record<string, string> = { kind: notification.kind, ...notification.attributes };
   // The id Claude sees the message by, and answers it with: the notification's id, as in Mastra Code.
-  const notificationId = randomUUID();
-  const { runId } = await runtime.message(
+  // One with a dedupe key (a gate's approval notice) has the same id each time, so it lands once.
+  const notificationId = notification.dedupeKey ? dedupedMessageId(sessionId, notification.dedupeKey) : randomUUID();
+  const { runId, duplicate } = await runtime.message(
     sessionId,
     {
       text: notification.summary,
@@ -189,9 +164,11 @@ async function deliverOnRuntime(
         priority: notification.priority ?? 'medium',
         ...(notification.sourceId ? { sourceId: notification.sourceId } : {}),
       },
+      ...(notification.dedupeKey ? { dedupeKey: notification.dedupeKey } : {}),
     },
     requestContext,
   );
+  if (duplicate) return { delivered: 'skipped', notificationId, reason: 'duplicate' };
   if (!runId) return { delivered: 'held', notificationId, reason: 'next-turn' };
   return { delivered: running ? 'mid-run' : 'woken', notificationId };
 }
@@ -237,8 +214,50 @@ function asNotificationRecord(record: AgentMessageRecord): NotificationRecord | 
     attributes,
     ...(delivery.sourceId ? { sourceId: delivery.sourceId } : {}),
     createdAt: record.createdAt,
+    // Never changed once kept: what it said is what it said when it was sent.
+    updatedAt: record.createdAt,
   } as unknown as NotificationRecord;
 }
+
+/**
+ * fork(claude-agent): the `factory-session` notifications addressed to a thread, on either runtime,
+ * newest first: Mastra Code's in Mastra's notification store, Claude Agent's kept by its runtime.
+ * What the rate limit, "already answered" and the report backstop read.
+ */
+export async function factoryNotificationsOnThread(
+  notifications: Pick<NotificationsStorage, 'listNotifications'>,
+  runtime: Pick<FactoryRuntimeSessions, 'deliveries'> | undefined,
+  threadId: string,
+  limit: number,
+): Promise<NotificationRecord[]> {
+  const [stored, kept] = await Promise.all([
+    notifications.listNotifications({ threadId, source: FACTORY_SESSION_NOTIFICATION_SOURCE, limit }),
+    runtimeDeliveriesOnThread(runtime, threadId, limit),
+  ]);
+  if (kept.length === 0) return stored;
+  return [...stored, ...kept].sort((a, b) => b.updatedAt.getTime() - a.updatedAt.getTime()).slice(0, limit);
+}
+
+/**
+ * fork(claude-agent): Mastra's notification store, with what sessions on another runtime were sent
+ * counted in its `factory-session` lists (`factoryNotificationsOnThread`), for readers that list them.
+ */
+export function factoryNotificationReader(
+  notifications: Pick<NotificationsStorage, 'listNotifications'>,
+  runtime: Pick<FactoryRuntimeSessions, 'deliveries'> | undefined,
+): Pick<NotificationsStorage, 'listNotifications'> {
+  if (!runtime?.deliveries) return notifications;
+  return {
+    listNotifications: input =>
+      input.source === FACTORY_SESSION_NOTIFICATION_SOURCE && Object.keys(input).every(key => LISTED_BY.has(key))
+        ? factoryNotificationsOnThread(notifications, runtime, input.threadId, input.limit ?? DEFAULT_LIST_LIMIT)
+        : notifications.listNotifications(input),
+  };
+}
+
+/** The list filters `factoryNotificationReader` reads both runtimes for; any other filter reads Mastra's store alone. */
+const LISTED_BY = new Set(['threadId', 'source', 'limit']);
+const DEFAULT_LIST_LIMIT = 100;
 
 export interface FactorySessionActivity {
   /** Whether the session's agent is mid-run in this process. */

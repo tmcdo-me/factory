@@ -1,5 +1,5 @@
 // fork(claude-agent): Factory's live Claude Agent sessions.
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { readdirSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -42,6 +42,7 @@ import { UniqueViolationError } from '@mastra/core/storage';
 
 import { FactoryDispatchError } from '../rules/dispatch-errors.js';
 import type { FactoryRuntimeSessions, RuntimeRunEnd, RuntimeRunUsage } from '../rules/runtime-sessions.js';
+import { dedupedMessageId } from '../storage/domains/agent-messages/base.js';
 import type { AgentMessage, AgentMessageStore } from '../storage/domains/agent-messages/base.js';
 import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
@@ -964,8 +965,9 @@ export class ClaudeAgentSessions {
       },
       message: async (sessionId, message, requestContext) => {
         const kept = this.#message(sessionId, message);
-        // fork(claude-agent): told this already (the same event by another way, or before a restart).
-        if (message.dedupeKey && !message.delivery && (await this.#messages.get(sessionId, kept.id))) return {};
+        // fork(claude-agent): told this already (the same event by another way, or before a restart). A
+        // notification with a key carries the id the key gives it (`dedupedMessageId`), so it is found too.
+        if (message.dedupeKey && (await this.#messages.get(sessionId, kept.id))) return { duplicate: true };
         // Two of the same at once: the one whose write lands second is the duplicate.
         const duplicate = (error: unknown) => Boolean(message.dedupeKey) && error instanceof UniqueViolationError;
         if (!message.wake) {
@@ -974,6 +976,7 @@ export class ClaudeAgentSessions {
             await this.#messages.hold(kept, MAX_WAITING_MESSAGES);
           } catch (error) {
             if (!duplicate(error)) throw error;
+            return { duplicate: true };
           }
           return {};
         }
@@ -987,7 +990,7 @@ export class ClaudeAgentSessions {
         try {
           await this.#messages.told(kept);
         } catch (error) {
-          if (duplicate(error)) return {};
+          if (duplicate(error)) return { duplicate: true };
           throw error;
         }
         try {
@@ -1258,10 +1261,6 @@ interface OpenSession {
 }
 
 /** fork(claude-agent): the id a deduplicated message is kept under: one per session and key. */
-function dedupedMessageId(sessionId: string, key: string): string {
-  return `dedupe-${createHash('sha256').update(`${sessionId}\u0000${key}`).digest('hex').slice(0, 40)}`;
-}
-
 function contextNotice({ kind, tag, text, attributes }: ClaudeAgentContextBlock): ClaudeTurnNotice {
   return { kind, tag, text, ...(attributes ? { attributes } : {}) };
 }

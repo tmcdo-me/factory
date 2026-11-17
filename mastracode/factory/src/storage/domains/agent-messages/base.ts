@@ -1,4 +1,6 @@
 // fork(claude-agent): Factory's messages to sessions on another agent runtime (Claude Agent).
+import { createHash } from 'node:crypto';
+
 import { FactoryStorageDomain, UniqueViolationError } from '@mastra/core/storage';
 import type { CollectionSchema } from '@mastra/core/storage';
 
@@ -52,6 +54,14 @@ const PRUNE_BATCH = 200;
 
 /** The mark that `sessionId` answered message `id`. */
 export const replyClaimId = (id: string, sessionId: string) => `reply:${id}:${sessionId}`;
+
+/**
+ * The id a message with a dedupe key is kept under, the same each time it is sent to that session:
+ * of two, the second is the duplicate (`UniqueViolationError`, or found already kept).
+ */
+export function dedupedMessageId(sessionId: string, key: string): string {
+  return `dedupe-${createHash('sha256').update(`${sessionId}\u0000${key}`).digest('hex').slice(0, 40)}`;
+}
 
 /** A session-to-session notification a message carries, as Factory's messaging tools read it back. */
 export interface AgentMessageDelivery {

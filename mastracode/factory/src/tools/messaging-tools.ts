@@ -25,8 +25,9 @@ import type { FactoryInteractions } from './approval-tools.js'; // fork(claude-a
 import {
   FACTORY_SESSION_NOTIFICATION_SOURCE,
   deliverFactorySessionNotification,
+  factoryNotificationReader,
+  factoryNotificationsOnThread,
   resolveSessionThread,
-  runtimeDeliveriesOnThread,
   runtimeDelivery,
 } from './deliver.js';
 import type { FactoryDeliveryController, FactoryDeliveryResult, FactoryRuntimeDelivery } from './deliver.js';
@@ -197,12 +198,8 @@ export function createFactoryMessagingTools(
   });
   // fork(claude-agent): deliveries to Claude Agent sessions are kept by their runtime, not as
   // notification records; they count all the same.
-  const recent = async ({ notifications, runtime }: FactoryMessaging, threadId: string) => [
-    ...(await storedRecent(notifications, threadId)),
-    ...(await runtimeDeliveriesOnThread(runtime, threadId, RECENT_SCAN)),
-  ];
-  const storedRecent = (notifications: FactoryMessaging['notifications'], threadId: string) =>
-    notifications.listNotifications({ threadId, source: FACTORY_SESSION_NOTIFICATION_SOURCE, limit: RECENT_SCAN });
+  const recent = ({ notifications, runtime }: FactoryMessaging, threadId: string) =>
+    factoryNotificationsOnThread(notifications, runtime, threadId, RECENT_SCAN);
 
   const actor = (): QueuedDelivery['actor'] => ({
     actorId: human ? scope.userId : `agent:${scope.threadId}`,
@@ -504,11 +501,13 @@ export function createFactoryMessagingTools(
           },
           settled,
         );
-      // fork(claude-agent): the runtime takes the right to answer atomically, so of two answers to
-      // one message in the same turn only one goes. The claim is leased until the answer goes out:
-      // confirmed then, given back when it can't be sent, and lapsing if the server stops first
-      // (a queued answer is lost with it), so a later answer isn't refused for good.
-      const deliveries = kept ? messaging.runtime?.deliveries : undefined;
+      // fork(claude-agent): the right to answer is taken atomically, so of two answers to one message
+      // in the same turn only one goes, on either runtime (a Mastra Code message's claim is kept with
+      // Claude Agent's, by the answering session and the message's id; upstream only looked for an
+      // answer already sent, which two answers at once both pass). The claim is leased until the
+      // answer goes out: confirmed then, given back when it can't be sent, and lapsing if the server
+      // stops first (a queued answer is lost with it), so a later answer isn't refused for good.
+      const deliveries = messaging.runtime?.deliveries;
       if (!deliveries) return answer();
       const sessionId = scope.sessionId;
       if (!(await deliveries.claimReply(sessionId, inReplyTo, new Date(Date.now() + REPLY_LEASE_MS)))) {
@@ -649,7 +648,8 @@ export function createFactoryMessagingTools(
         {
           sessions: deps.sessions,
           workItems: deps.workItems,
-          notifications: messaging?.notifications ?? null,
+          // fork(claude-agent): a side session's reports on either runtime.
+          notifications: messaging ? factoryNotificationReader(messaging.notifications, messaging.runtime) : null,
           isRunning: async sessionId => (await messaging?.controller.getSession(sessionId))?.stream.isActive() ?? false,
           isParked: sessionId => deps.liveSessions?.()?.parked(sessionId) !== undefined,
           model: messaging
