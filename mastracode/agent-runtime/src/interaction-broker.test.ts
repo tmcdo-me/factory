@@ -268,6 +268,17 @@ describe('InteractionBroker with interactions a runtime holds', () => {
     expect((await store.get(dropped.id))?.resolvedBy).toBeUndefined();
   });
 
+  // Review fix: an in-session answer whose resume failed (the call reported waiting again) names nobody.
+  it('forgets who answered in the session when the call comes back waiting', async () => {
+    const { broker, store, ask } = heldSetup(async () => ({ ok: true }));
+    const held = await ask('call-1');
+    broker.attribute(held.id, { resolvedBy: 'u1' });
+    expect((await ask('call-1')).id).toBe(held.id);
+    await broker.settleHeld(held.id, { status: 'resolved', response: { kind: 'question', answer: 'main' } });
+
+    expect((await store.get(held.id))?.resolvedBy).toBeUndefined();
+  });
+
   it('keeps one record per waiting call, and a fresh one when the call id comes back after it settled', async () => {
     const { broker, ask } = heldSetup(async () => ({ ok: true }));
     const first = await ask();

@@ -128,7 +128,19 @@ export const LEAVING_GRACE_MS = 15_000;
 type DisplaySnapshot = {
   pendingApprovals?: unknown;
   pendingSuspensions?: unknown;
+  /** The calls the run is carrying on, by tool call id. */
+  activeTools?: unknown;
 };
+
+/** The calls a snapshot says the run is carrying on (running, or ended with a result). */
+function carriedOn(snapshot: DisplaySnapshot): Set<string> {
+  const ids = new Set<string>();
+  for (const [toolCallId, entry] of entries(snapshot.activeTools)) {
+    if (isRecord(entry) && entry.status === 'streaming_input') continue;
+    ids.add(toolCallId);
+  }
+  return ids;
+}
 
 function entries(value: unknown): Array<[string, unknown]> {
   if (value instanceof Map) return [...value.entries()];
@@ -213,6 +225,8 @@ export function observeMastraCodeInteractions(
   const open = new Map<string, { kind: InteractionRequest['kind']; gate: boolean }>();
   /** Calls that left the snapshot, awaiting their outcome. */
   const leaving = new Map<string, { timer: ReturnType<typeof setTimeout> }>();
+  /** The calls the latest snapshot says the run carries on: a gate's only evidence it was approved. */
+  let active = new Set<string>();
   const report = (work: () => void) => {
     try {
       work();
@@ -249,14 +263,22 @@ export function observeMastraCodeInteractions(
   };
   const unsubscribe = session.subscribe(event => {
     if (event.type === 'display_state_changed') {
-      const calls = waitingCalls((event.displayState ?? {}) as DisplaySnapshot);
+      const snapshot = (event.displayState ?? {}) as DisplaySnapshot;
+      const calls = waitingCalls(snapshot);
+      active = carriedOn(snapshot);
       for (const [toolCallId, call] of calls) {
         const kind = mastraCodeInteractionRequest(call).kind;
-        const reported = open.get(toolCallId)?.kind;
-        if (reported === kind && !leaving.has(toolCallId)) continue;
-        if (reported !== undefined && reported !== kind) {
-          // The same call now asks something else (a gate, then the tool's own question).
-          settle(toolCallId, () => ({ status: 'cancelled', reason: HELD_INTERACTION_GONE }));
+        const reported = open.get(toolCallId);
+        if (reported?.kind === kind && !leaving.has(toolCallId)) continue;
+        if (reported !== undefined && reported.kind !== kind) {
+          // The same call now asks something else (a gate, then the tool's own question): a gate it
+          // passed was approved, anything else is no longer asked.
+          const wasGate = reported.gate;
+          settle(toolCallId, asked =>
+            wasGate && asked.kind === 'tool_approval'
+              ? { status: 'resolved', response: { kind: 'tool_approval', approved: true } }
+              : { status: 'cancelled', reason: HELD_INTERACTION_GONE },
+          );
         } else {
           const left = leaving.get(toolCallId);
           if (left) clearTimeout(left.timer);
@@ -266,11 +288,12 @@ export function observeMastraCodeInteractions(
       }
       for (const [toolCallId, { gate }] of open) {
         if (calls.has(toolCallId) || leaving.has(toolCallId)) continue;
-        // A gate that let its call through (a decline or an abort ends the call at once, denied).
+        // A gate that let its call through (a decline or an abort ends the call at once, denied). Only
+        // a run still carrying the call on says so: a run parked or detached without it approved nothing.
         const timer = setTimeout(
           () =>
             settle(toolCallId, asked =>
-              gate && asked.kind === 'tool_approval'
+              gate && asked.kind === 'tool_approval' && active.has(toolCallId)
                 ? { status: 'resolved', response: { kind: 'tool_approval', approved: true } }
                 : { status: 'cancelled', reason: HELD_INTERACTION_GONE },
             ),
@@ -285,7 +308,12 @@ export function observeMastraCodeInteractions(
     if (event.type === 'tool_end') {
       const { result } = event;
       const denied = event.denied === true;
+      const gate = open.get(event.toolCallId)?.gate === true;
       settle(event.toolCallId, request => {
+        // A gated call that ran was approved, whether or not it then failed.
+        if (gate && !denied && request.kind === 'tool_approval') {
+          return { status: 'resolved', response: { kind: 'tool_approval', approved: true } };
+        }
         // A call that failed, or a paused one its run dropped (an abort ends it denied), was never
         // answered; a gated call that was denied was declined.
         const answered = !event.isError && (!denied || request.kind === 'tool_approval');

@@ -222,6 +222,8 @@ export class InteractionBroker {
    */
   #reported(record: InteractionRecord): InteractionRecord {
     if (this.#answering.has(record.id)) this.#answering.set(record.id, undefined);
+    // Whoever answered it in the session didn't: their answer didn't take.
+    this.#attributions.delete(record.id);
     this.#store.adopt?.(record);
     return record;
   }

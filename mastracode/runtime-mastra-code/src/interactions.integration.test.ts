@@ -144,6 +144,33 @@ describe('observeMastraCodeInteractions on a real AgentController session', () =
     expect(errors).toEqual([]);
   });
 
+  // Review fix: a gate the person approved is recorded approved even when its tool then fails.
+  it('settles a gated call approved, not cancelled, when its tool fails after the approval', async () => {
+    const ship = createTool({
+      id: 'ship_release',
+      description: 'Ship a release',
+      inputSchema: z.object({ version: z.string() }),
+      requireApproval: true,
+      execute: async () => {
+        throw new Error('registry down');
+      },
+    });
+    const { session, requested, settled, errors } = await sessionCalling(
+      'ship_release',
+      { version: '1.2.0' },
+      { ship_release: ship },
+    );
+
+    void session.sendMessage({ content: 'Ship it' });
+    expect(await until(() => requested.length > 0)).toBe(true);
+    session.respondToToolApproval({ decision: 'approve', toolCallId: 'call-1' });
+    expect(await until(() => settled.length > 0)).toBe(true);
+    expect(settled).toEqual([
+      { callId: 'call-1', settlement: { status: 'resolved', response: { kind: 'tool_approval', approved: true } } },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
   it('reports an ask_user question with its options, and settles it when the run is aborted', async () => {
     const { session, requested, settled, errors } = await sessionCalling(
       'ask_user',
@@ -220,9 +247,17 @@ function scriptedSession() {
 }
 
 const question = { toolName: 'ask_user', suspendPayload: { question: 'Which branch?' } };
-const snapshot = (suspensions: Record<string, unknown>, approvals: Record<string, unknown> = {}) => ({
+const snapshot = (
+  suspensions: Record<string, unknown>,
+  approvals: Record<string, unknown> = {},
+  activeTools: Record<string, { status: string }> = {},
+) => ({
   type: 'display_state_changed',
-  displayState: { pendingSuspensions: suspensions, pendingApprovals: approvals },
+  displayState: {
+    pendingSuspensions: suspensions,
+    pendingApprovals: approvals,
+    activeTools: new Map(Object.entries(activeTools)),
+  },
 });
 
 describe('observeMastraCodeInteractions, as calls leave and come back', () => {
@@ -253,18 +288,27 @@ describe('observeMastraCodeInteractions, as calls leave and come back', () => {
     expect(events).toEqual(['requested question:call-1', 'left call-1', 'requested question:call-1']);
   });
 
-  it('settles a call whose kind changed, and asks again', () => {
+  it('settles a gate whose call now asks its own question as approved, and asks again', () => {
     const { session, events } = watch();
     session.emit(snapshot({}, { 'call-1': { toolName: 'ask_user', args: {} } }));
     session.emit(snapshot({ 'call-1': question }));
 
-    expect(events).toEqual(['requested tool_approval:call-1', 'settled call-1 cancelled', 'requested question:call-1']);
+    expect(events).toEqual(['requested tool_approval:call-1', 'settled call-1 resolved', 'requested question:call-1']);
+  });
+
+  it('settles a gated call that ran and failed as approved', () => {
+    const { session, events } = watch();
+    session.emit(snapshot({}, { 'call-1': { toolName: 'ship', args: {} } }));
+    session.emit({ type: 'tool_end', toolCallId: 'call-1', result: 'registry down', isError: true });
+
+    expect(events).toEqual(['requested tool_approval:call-1', 'settled call-1 resolved']);
   });
 
   it('settles a gate that let its call through as approved, and a paused call as gone, after the grace window', async () => {
     const { session, events } = watch();
     session.emit(snapshot({ 'call-2': question }, { 'call-1': { toolName: 'ship', args: {} } }));
-    session.emit(snapshot({}));
+    // The run carries the gated call on: its only sign it was approved.
+    session.emit(snapshot({}, {}, { 'call-1': { status: 'running' } }));
 
     await vi.waitFor(() => expect(events).toHaveLength(6));
     expect(events.slice(2).sort()).toEqual([
@@ -273,6 +317,16 @@ describe('observeMastraCodeInteractions, as calls leave and come back', () => {
       'settled call-1 resolved',
       'settled call-2 cancelled',
     ]);
+  });
+
+  // Review fix: a gate that left while its run was parked or detached (nothing carries the call on) approved nothing.
+  it('settles a gate that left without its call running as gone, after the grace window', async () => {
+    const { session, events } = watch();
+    session.emit(snapshot({}, { 'call-1': { toolName: 'ship', args: {} } }));
+    session.emit(snapshot({}));
+
+    await vi.waitFor(() => expect(events).toHaveLength(3));
+    expect(events).toEqual(['requested tool_approval:call-1', 'left call-1', 'settled call-1 cancelled']);
   });
 
   it('settles a call it let go of when the session switches threads', () => {
