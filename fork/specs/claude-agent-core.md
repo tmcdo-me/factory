@@ -252,8 +252,10 @@ inside a product to _other_ users, which this fork does not do.
 
 - **Context providers** replace Mastra state-signal input processors: work item, phase, environment,
   repo instructions. The seam evaluates them at each turn and hands them to the adapter.
-- **Goals** (`maxRuns` re-kick until the exit tool succeeds) move from Mastra's objective API into a
-  Factory-owned loop over `RuntimeSession` — runtime-neutral.
+- **Goals** (`maxRuns` re-kick until the exit tool succeeds): Claude Agent runs use a Factory-owned
+  loop over `RuntimeSession` (`#holdSeamGoal` / `judgeRuntimeGoal`). Mastra Code keeps its own objective
+  loop (`FactoryRuntimeSessions.ownsGoal`). Owner decision (permanent, not interim): there is no plan to
+  move Mastra's objective API into the Factory loop; the two coexist behind `ownsGoal`.
 - **Models:** `runtime.listModels()`; session model = `{ runtimeId, modelId }` stored on Factory's
   session row. Project default `{runtimeId, modelId}`; per-session override.
 - **Credentials:** adapter-specific. Mastra Code keeps the tenant credential resolver; Claude Agent
