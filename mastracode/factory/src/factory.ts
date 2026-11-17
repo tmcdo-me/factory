@@ -49,6 +49,7 @@ import type { FactorySandbox, FactorySandboxDescription, WorkspaceSandbox } from
 import {
   buildAuthDisabledRoutes,
   buildAuthRoutes,
+  createCoreToolExecutionBlock, // fork(claude-agent)
   createFactoryAuthGate,
   createFactoryInteractiveMarker,
   createFactoryRouteAuth,
@@ -2551,6 +2552,7 @@ export class MastraFactory {
             return {
               middleware: [
                 ...timing,
+                createCoreToolExecutionBlock(), // fork(claude-agent)
                 createFactoryInteractiveMarker(),
                 createCustomProvidersPrimer({ auth: routeAuth, storage: customProvidersStorage, authEnabled: false }),
                 ...spa,

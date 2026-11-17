@@ -44,6 +44,12 @@ We are replacing Factory's hard-wired Mastra Code agent with a Factory-owned age
 - **Integrations: GitHub and Slack only.** Linear, GitLab, Jira, incident.io, Vanta, Dependabot
   and the WorkOS audit mirror were removed from Factory (server, settings UI, web entry). An
   upstream sync that touches them resolves by keeping them deleted.
+- **Core's tool-execute routes are closed.** Factory serves none of
+  `POST /api/agents/:agentId/tools/:toolId/execute`, `/api/tools/:toolId/execute` or
+  `/api/mcp/:serverId/tools/:toolId/execute` (404 from its auth gate, auth on or off): they run a
+  tool outside any model turn with a request context taken from the request. `@mastra/server`
+  also reserves the `controller` and `factoryInteractive` request-context keys, so no request
+  body or query names a turn's session or marks it interactive. An upstream sync keeps both.
 - Fork-only code lives in new paths (`fork/`, `mastracode/agent-runtime`,
   `mastracode/runtime-*`, `mastracode/sandbox-*`) so upstream never touches it.
 - Specs and decisions: [`fork/specs/`](fork/specs/).

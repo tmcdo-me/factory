@@ -37,8 +37,22 @@ describe('isReservedRequestContextKey', () => {
     expect(requestContext.get('locale')).toBe('en');
   });
 
+  // fork(claude-agent)
+  it("reserves the agent controller's session and Factory's interactive marker so a request body cannot set them", () => {
+    const requestContext = new RequestContext();
+    mergeBodyRequestContext(requestContext, {
+      controller: { sessionId: 'someone-elses-session', threadId: 'their-thread' },
+      factoryInteractive: true,
+      locale: 'en',
+    });
+
+    expect(requestContext.get('controller')).toBeUndefined();
+    expect(requestContext.get('factoryInteractive')).toBeUndefined();
+    expect(requestContext.get('locale')).toBe('en');
+  });
+
   it('reserves every key in the shared reserved-key list', () => {
-    expect(RESERVED_REQUEST_CONTEXT_KEYS).toHaveLength(14);
+    expect(RESERVED_REQUEST_CONTEXT_KEYS).toHaveLength(16); // fork(claude-agent): + controller, factoryInteractive
     expect(new Set(RESERVED_REQUEST_CONTEXT_KEYS).size).toBe(RESERVED_REQUEST_CONTEXT_KEYS.length);
     expect(RESERVED_REQUEST_CONTEXT_KEYS).toEqual(
       expect.arrayContaining([
@@ -47,6 +61,8 @@ describe('isReservedRequestContextKey', () => {
         MASTRA_INHERITED_MEMORY_KEY,
         'mastra__factoryMemorySettings',
         'organizationId',
+        'controller', // fork(claude-agent)
+        'factoryInteractive', // fork(claude-agent)
       ]),
     );
     for (const key of RESERVED_REQUEST_CONTEXT_KEYS) {
