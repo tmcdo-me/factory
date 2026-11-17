@@ -1,4 +1,4 @@
-import type { MastraDBMessage } from '@mastra/core/agent-controller';
+import type { MastraDBMessage } from '../services/message-types';
 
 import type { TimelineEntry } from '../services/transcript';
 import { isRecord } from './transcript-shared';

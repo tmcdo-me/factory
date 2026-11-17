@@ -1,6 +1,6 @@
 // fork(claude-agent): how full the model's context is, for the composer's context meter.
 import type { Transcript } from '@factory/agent-runtime/browser';
-import type { TokenUsage } from '@mastra/core/agent-controller';
+import type { TokenUsage } from './message-types';
 
 /**
  * Tokens in the main agent's context: the whole prompt of its latest model call, a snapshot rather
