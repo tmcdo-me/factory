@@ -122,6 +122,17 @@ export interface FactoryRuntimeSessions {
        * message with the same key is dropped, for as long as the first is remembered.
        */
       dedupeKey?: string;
+      /** How urgently Mastra Code's inbox treats it (default `high`); Claude Agent ignores it. */
+      priority?: 'low' | 'medium' | 'high' | 'urgent';
+      /** What the notification names as its source, for Mastra Code's inbox; Claude Agent ignores it. */
+      sourceId?: string;
+      /** The decision's idempotency key: Mastra Code's inbox drops a second message with it. Claude Agent ignores it. */
+      idempotencyKey?: string;
+      /**
+       * The thread the message is for, when the session may be on another (Mastra Code sessions switch
+       * threads; the session is moved to it first). Claude Agent sessions have one thread.
+       */
+      thread?: { id: string; resourceId: string };
     },
     requestContext: RequestContext,
   ): Promise<{ runId?: string; duplicate?: boolean }>;

@@ -1,5 +1,7 @@
 // fork(claude-agent)
+import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it, vi } from 'vitest';
+import { FactoryDispatchError } from './dispatch-errors.js';
 
 import { MastraCodeRuntimeSessions } from './mastra-code-sessions.js';
 
@@ -68,5 +70,99 @@ describe('MastraCodeRuntimeSessions', () => {
     expect(sessions.isThreadRunning('t2')).toBe(false);
     expect(sessions.anyRunning()).toBe(true);
     expect(setup(undefined).sessions.anyRunning()).toBe(false);
+  });
+});
+
+describe('MastraCodeRuntimeSessions.message', () => {
+  const ctx = () => {
+    const c = new RequestContext();
+    c.set('user', { workosId: 'u1', organizationId: 'o1' });
+    return c;
+  };
+  function messaging(over: { threadId?: string; accepted?: unknown } = {}) {
+    const send = vi.fn((_signal: unknown, _options: unknown) => ({
+      persisted: Promise.resolve(),
+      accepted: Promise.resolve(over.accepted ?? { action: 'deliver' }),
+    }));
+    const session = {
+      ...fakeSession({ threadId: over.threadId ?? 't1' }),
+      thread: {
+        ...fakeSession().thread,
+        getId: () => over.threadId ?? 't1',
+        requireId: () => over.threadId ?? 't1',
+        switch: vi.fn(async () => {}),
+      },
+      state: { get: () => ({}) },
+      identity: { getId: () => 's', getOwnerId: () => 'u1', getResourceId: () => 'r1' },
+      model: { get: () => 'm' },
+      getWorkspace: () => undefined,
+      sendNotificationSignal: send,
+    };
+    return { session, send, sessions: setup(session as never).sessions };
+  }
+
+  it('sends a notification with the rule message shape, as the session owner', async () => {
+    const { session, send, sessions } = messaging();
+    await sessions.message(
+      's',
+      {
+        text: 'hello',
+        source: 'rule-message',
+        wake: true,
+        priority: 'urgent',
+        sourceId: 'rec1',
+        idempotencyKey: 'idem',
+        thread: { id: 't1', resourceId: 'r1' },
+      },
+      ctx(),
+    );
+    expect(session.thread.switch).not.toHaveBeenCalled();
+    const [signal, options] = send.mock.calls[0]!;
+    expect(signal).toEqual({
+      source: 'factory',
+      kind: 'rule-message',
+      summary: 'hello',
+      priority: 'urgent',
+      payload: { message: 'hello' },
+      sourceId: 'rec1',
+      dedupeKey: 'idem',
+    });
+    expect(options).toMatchObject({ ifActive: { behavior: 'deliver' }, ifIdle: { behavior: 'wake' } });
+  });
+
+  it('persists when it should not wake, defaults to high, and switches to the message thread first', async () => {
+    const { session, send, sessions } = messaging({ threadId: 'other' });
+    await sessions.message(
+      's',
+      { text: 'x', source: 'rule-message', wake: false, thread: { id: 't1', resourceId: 'r1' } },
+      ctx(),
+    );
+    expect(session.thread.switch).toHaveBeenCalledWith(expect.objectContaining({ threadId: 't1' }));
+    const [signal, options] = send.mock.calls[0]!;
+    expect(signal).toMatchObject({ priority: 'high' });
+    expect(options).toMatchObject({ ifIdle: { behavior: 'persist' } });
+  });
+
+  it('fails as session_unavailable without a session, and as delivery failure when nothing reaches the agent', async () => {
+    await expect(
+      setup(undefined).sessions.message('s', { text: 'x', source: 'rule-message', wake: true }, ctx()),
+    ).rejects.toMatchObject({ code: 'session_unavailable' });
+    const { sessions } = messaging({ accepted: { action: 'persist' } });
+    await expect(sessions.message('s', { text: 'x', source: 'rule-message', wake: true }, ctx())).rejects.toMatchObject(
+      {
+        code: 'notification_delivery_failed',
+      },
+    );
+  });
+
+  it('lets a thread-switch or session-lookup failure through unwrapped (it classifies as unknown, as before the seam)', async () => {
+    const { session, sessions } = messaging({ threadId: 't0' });
+    session.thread.switch.mockRejectedValueOnce(new Error('model credentials could not be resolved'));
+    const failure = await sessions
+      .message('s', { text: 'x', source: 'rule-message', wake: true, thread: { id: 't1', resourceId: 'r1' } }, ctx())
+      .catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure).not.toBeInstanceOf(FactoryDispatchError);
+    expect(failure.message).toBe('model credentials could not be resolved');
   });
 });

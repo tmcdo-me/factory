@@ -72,9 +72,15 @@ import type { FactoryRunEndReporter } from '../tools/reports.js';
 import { withWorkItemDescription } from '../work-items/description-context.js';
 import { workItemProviderAdapter } from '../work-items/providers/index.js';
 import { decisionOvertaken } from './decision-applicability.js';
-import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata } from './dispatch-errors.js';
+import {
+  FactoryDispatchError,
+  factoryDispatchFailureCode,
+  factoryDispatchFailureMetadata,
+  MAX_ERROR_LENGTH,
+  sanitizeDispatchError,
+} from './dispatch-errors.js';
 import { isStatusEventDecision } from './event-rules.js';
-import { MastraCodeRuntimeSessions } from './mastra-code-sessions.js'; // fork(claude-agent)
+import { awaitNotification, factoryRequestContext, MastraCodeRuntimeSessions } from './mastra-code-sessions.js'; // fork(claude-agent)
 import { endPhaseGoal, PHASE_GOAL_METADATA_KEY, phaseGoalOf, startPhaseGoal } from './phase-goal.js';
 import {
   holdRuntimeGoal,
@@ -115,7 +121,6 @@ const MAX_PLAN_APPROVALS = 3;
 // fork(claude-agent): how long a run waits for the broker to record the call it paused on (it takes
 // a moment after the controller reports it) before leaving it for a person.
 const HELD_RECORD_WAIT_MS = 10_000;
-const MAX_ERROR_LENGTH = 512;
 const MAX_BACKOFF_MS = 60_000;
 // A run the registry no longer shows never started or ended unobserved:
 // checked at this cadence, and failed for retry.
@@ -452,14 +457,6 @@ interface SessionOwner {
   orgId: string;
 }
 
-interface FactoryNotificationResult {
-  persisted?: Promise<unknown>;
-  accepted?: Promise<{
-    action?: string;
-    output?: { consumeStream(): Promise<unknown> };
-  }>;
-}
-
 interface DispatcherSession extends SkillSession {
   thread: {
     switch(input: { threadId: string }): Promise<unknown>;
@@ -531,31 +528,6 @@ interface SeamRun {
   workItemName?: string;
   onStarted?: () => Promise<void>;
   onSuperseded?: () => Promise<void>;
-}
-
-function factoryRequestContext(input: {
-  session: BoundDispatcherSession;
-  binding: FactoryRunBindingRecord;
-  userId: string;
-  orgId: string;
-}): RequestContext {
-  const { session, binding, userId, orgId } = input;
-  const requestContext = new RequestContext();
-  requestContext.set('user', { workosId: userId, organizationId: orgId });
-  requestContext.set('controller', {
-    state: session.state.get(),
-    getState: () => session.state.get(),
-    sessionId: binding.sessionId,
-    threadId: binding.threadId,
-    resourceId: binding.resourceId,
-    session: {
-      id: session.identity.getId(),
-      ownerId: session.identity.getOwnerId(),
-      modelId: session.model.get() ?? '',
-    },
-    workspace: session.getWorkspace(),
-  });
-  return requestContext;
 }
 
 export interface FactoryBindingPreparationInput {
@@ -660,45 +632,6 @@ function positiveMs(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.floor(value) : fallback;
 }
 
-// Provider and source-control key prefixes; run errors carry provider text verbatim.
-const KEY_SHAPED_TOKEN =
-  /\b(?:sk-[A-Za-z0-9_-]{3,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}|xox[abprs]-[A-Za-z0-9-]{10,})/g;
-
-// Mixed-case alphanumeric runs read as keys; lowercase hex SHAs, UUIDs, path segments and
-// hyphenated names such as branches stay readable.
-function looksLikeSecret(token: string): boolean {
-  return /[A-Z]/.test(token) && /[a-z]/.test(token) && /\d/.test(token) && /[A-Za-z0-9]{16,}/.test(token);
-}
-
-// Base64 keys can contain `/`. A `/`-joined token is redacted whole unless one of its pieces is a
-// plain word, which paths and branches nearly always have (`fix`, `cache`, `Users`, `Documents`);
-// those are redacted piece by piece instead.
-function redactSecretRun(token: string): string {
-  if (looksLikeSecret(token) && !token.split('/').some(piece => /^[A-Za-z][a-z]+$/.test(piece))) return '[redacted]';
-  return token.replace(/[A-Za-z0-9_+=-]{24,}/g, piece =>
-    looksLikeSecret(piece) || isGroupedKey(piece) ? '[redacted]' : piece,
-  );
-}
-
-// Keys printed in `-`/`_` groups (`x7Kp9-Qm2Rt-…`) have no long unbroken run, but every group mixes
-// upper, lower and digits; branch and identifier words such as `Parked-snapshot-lease2-loss` do not.
-function isGroupedKey(token: string): boolean {
-  const groups = token.split(/[-_]/);
-  return groups.length >= 4 && groups.every(group => /[A-Z]/.test(group) && /[a-z]/.test(group) && /\d/.test(group));
-}
-
-function sanitizeDispatchError(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return (
-    message
-      .replace(KEY_SHAPED_TOKEN, '[redacted]')
-      .replace(/\b[A-Za-z0-9_+=/-]{24,}/g, redactSecretRun)
-      // `Authorization: Bearer <value>` names the scheme first; consume it so the value goes too.
-      .replace(/\b(?:bearer|token|api[-_ ]?key|authorization)\s*[:=]?\s*(?:bearer\s+)?[^\s,;]+/gi, '[redacted]')
-      .slice(0, MAX_ERROR_LENGTH)
-  );
-}
-
 function retryAt(now: Date, attempts: number): Date {
   return new Date(now.getTime() + Math.min(1_000 * 2 ** Math.max(0, attempts - 1), MAX_BACKOFF_MS));
 }
@@ -767,47 +700,6 @@ function leaseIdentity(
   ownerId: string,
 ) {
   return { id: record.id, orgId: record.orgId, factoryProjectId: record.factoryProjectId, ownerId };
-}
-
-async function awaitNotification(
-  send: () => Promise<FactoryNotificationResult>,
-  requireDelivery = false,
-): Promise<{ action?: string } | undefined> {
-  try {
-    const notification = await send();
-    const [, accepted] = await Promise.all([notification.persisted, notification.accepted]);
-    if (!accepted) {
-      if (requireDelivery) {
-        throw new FactoryDispatchError(
-          'notification_delivery_failed',
-          'Factory notification was persisted without agent delivery.',
-        );
-      }
-      return undefined;
-    }
-    if (!requireDelivery) return accepted;
-    if (accepted.action === 'wake') {
-      if (!accepted.output) {
-        throw new FactoryDispatchError('notification_delivery_failed', 'Factory notification wake had no output.');
-      }
-      await accepted.output.consumeStream();
-      return accepted;
-    }
-    if (accepted.action !== 'deliver') {
-      throw new FactoryDispatchError(
-        'notification_delivery_failed',
-        `Factory notification did not reach the agent (${String(accepted.action)}).`,
-      );
-    }
-    return accepted;
-  } catch (error) {
-    if (error instanceof FactoryDispatchError) throw error;
-    throw new FactoryDispatchError(
-      'notification_delivery_failed',
-      `Factory notification delivery failed: ${sanitizeDispatchError(error)}`,
-      { cause: error },
-    );
-  }
 }
 
 export class FactoryDecisionDispatcher {
@@ -1860,32 +1752,20 @@ export class FactoryDecisionDispatcher {
           return;
         }
         await this.#primeCredentials?.({ orgId: record.orgId, userId: startedBy });
-        const session = await this.#requireSession(binding, { userId: startedBy, orgId: record.orgId });
-        const requestContext = factoryRequestContext({
-          session,
+        await this.#messageOnSeam(
           binding,
-          userId: startedBy,
-          orgId: record.orgId,
-        });
-        await awaitNotification(
-          () =>
-            session.sendNotificationSignal(
-              {
-                source: 'factory',
-                kind: 'rule-message',
-                summary: decision.message,
-                priority: decision.priority ?? 'high',
-                payload: { message: decision.message },
-                sourceId: record.id,
-                dedupeKey: record.idempotencyKey,
-              },
-              {
-                ifActive: { behavior: 'deliver' },
-                ifIdle: { behavior: decision.idleBehavior ?? 'wake' },
-                requestContext,
-              },
-            ),
-          true,
+          startedBy,
+          record.orgId,
+          {
+            text: decision.message,
+            source: 'rule-message',
+            wake: (decision.idleBehavior ?? 'wake') === 'wake',
+            priority: decision.priority ?? 'high',
+            sourceId: record.id,
+            idempotencyKey: record.idempotencyKey,
+            thread: { id: binding.threadId, resourceId: binding.resourceId },
+          },
+          this.#mastraCode,
         );
         return;
       }
@@ -3108,12 +2988,15 @@ export class FactoryDecisionDispatcher {
     binding: FactoryRunBindingRecord,
     startedBy: string,
     orgId: string,
-    message: { text: string; source: string; wake: boolean },
+    message: Parameters<FactoryRuntimeSessions['message']>[1],
+    seam: Pick<FactoryRuntimeSessions, 'message'> = this.#runtimeSessions!,
   ): Promise<void> {
     try {
-      await this.#runtimeSessions!.message(binding.sessionId, message, this.#seamRequestContext(startedBy, orgId));
+      await seam.message(binding.sessionId, message, this.#seamRequestContext(startedBy, orgId));
     } catch (error) {
-      if (error instanceof FactoryDispatchError) throw error;
+      // Mastra Code's adapter classifies its own failures: a session or thread-switch failure
+      // (memory/model credentials) propagates raw, as it did before the seam carried the message.
+      if (error instanceof FactoryDispatchError || seam === this.#mastraCode) throw error;
       throw new FactoryDispatchError(
         'notification_delivery_failed',
         `Factory message delivery failed: ${sanitizeDispatchError(error)}`,
