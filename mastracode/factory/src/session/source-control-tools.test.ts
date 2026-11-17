@@ -29,7 +29,7 @@ function requestContext({ orgId = 'org-1', userId = 'user-1' } = {}) {
   return requestContext;
 }
 
-async function fixture(integrationId = 'gitlab') {
+async function fixture(integrationId = 'acme-forge') {
   const storage = new SourceControlStorageInMemory(integrationId);
   const now = new Date();
   storage.installationsRows.push({
@@ -103,7 +103,7 @@ async function fixture(integrationId = 'gitlab') {
   const createPullRequest = vi.fn(async (input: { sourceId: string; baseBranch: string }) => ({
     id: input.sourceId === 'acme/other' ? '18' : '17',
     title: 'Ship it',
-    url: `https://gitlab.com/${input.sourceId}/-/merge_requests/${input.sourceId === 'acme/other' ? 18 : 17}`,
+    url: `https://forge.example.com/${input.sourceId}/-/merge_requests/${input.sourceId === 'acme/other' ? 18 : 17}`,
     author: 'bot',
     body: 'Body',
     state: 'open' as const,
@@ -121,12 +121,12 @@ async function fixture(integrationId = 'gitlab') {
     sourceId: repositoryId === 'repo-2' ? 'acme/other' : 'acme/repo',
   }));
   const getRepositoryAccess = vi.fn(async ({ repositoryId }: { repositoryId: string }) => ({
-    cloneUrl: `https://gitlab.com/${repositoryId === 'repo-2' ? 'acme/other' : 'acme/repo'}.git`,
+    cloneUrl: `https://forge.example.com/${repositoryId === 'repo-2' ? 'acme/other' : 'acme/repo'}.git`,
     authorization: { scheme: 'bearer' as const, token: 'glpat-secret', username: 'oauth2' },
   }));
   const createReviewComment = vi.fn(async () => ({
     id: 'discussion-note-1',
-    url: 'https://gitlab.com/acme/repo/-/merge_requests/17#note_1',
+    url: 'https://forge.example.com/acme/repo/-/merge_requests/17#note_1',
     author: 'bot',
     body: 'Comment',
     createdAt: now.toISOString(),
@@ -177,7 +177,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
 
@@ -199,7 +199,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
 
@@ -237,7 +237,7 @@ describe('createSourceControlTools', () => {
       }));
       const tools = await createSourceControlTools({
         requestContext: requestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
         selfReviewApprovedHead: async () => approvedHead,
       });
@@ -302,7 +302,7 @@ describe('createSourceControlTools', () => {
       } as AgentControllerRequestContext);
       const tools = await createSourceControlTools({
         requestContext: context,
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
         selfReviewApprovedHead: () =>
           selfReviewApprovedHead({
@@ -337,7 +337,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
 
@@ -393,7 +393,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
     const schema = tools.source_control_create_diff_comment!.inputSchema as {
@@ -461,7 +461,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
     const schema = tools.source_control_review_change_request!.inputSchema as {
@@ -478,7 +478,7 @@ describe('createSourceControlTools', () => {
     const setup = await fixture();
     const tools = await createSourceControlTools({
       requestContext: requestContext({ orgId: 'org-2' }),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+      providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
       audit: setup.audit,
     });
 
@@ -489,26 +489,13 @@ describe('createSourceControlTools', () => {
     expect(setup.createPullRequest).not.toHaveBeenCalled();
   });
 
-  it('rejects checkout refresh outside a bound GitLab MR review session', async () => {
-    const setup = await fixture();
-    const tools = await createSourceControlTools({
-      requestContext: requestContext(),
-      providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
-      audit: setup.audit,
-    });
-    await expect((tools.source_control_refresh_change_request_checkout!.execute as any)({})).rejects.toThrow(
-      'only available in a bound GitLab merge-request review session',
-    );
-    expect(setup.getRepositoryTarget).not.toHaveBeenCalled();
-  });
-
   it('fails closed when a session exists in more than one provider partition', async () => {
-    const first = await fixture('gitlab');
+    const first = await fixture('acme-forge');
     const second = await fixture('github');
     const tools = await createSourceControlTools({
       requestContext: requestContext(),
       providers: [
-        { id: 'gitlab', storage: first.storage, versionControl: first.versionControl },
+        { id: 'acme-forge', storage: first.storage, versionControl: first.versionControl },
         { id: 'github', storage: second.storage, versionControl: second.versionControl },
       ],
       audit: first.audit,
@@ -526,7 +513,7 @@ describe('createSourceControlTools', () => {
     await expect(
       createSourceControlTools({
         requestContext: new RequestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
       }),
     ).resolves.toEqual({});
@@ -546,7 +533,8 @@ describe('createSourceControlTools', () => {
             return { exitCode: checkouts.missingBranch?.includes(workdir) ? 1 : 0, stdout: '', stderr: '' };
           }
           if (args.includes('get-url')) {
-            const remote = checkouts.remotes?.[workdir] ?? `https://gitlab.com/acme/${workdir.split('/').pop()}.git`;
+            const remote =
+              checkouts.remotes?.[workdir] ?? `https://forge.example.com/acme/${workdir.split('/').pop()}.git`;
             return { exitCode: 0, stdout: `${remote}\n`, stderr: '' };
           }
           return { exitCode: 0, stdout: '', stderr: '' };
@@ -559,7 +547,7 @@ describe('createSourceControlTools', () => {
     async function tools(setup: Awaited<ReturnType<typeof fixture>>) {
       return createSourceControlTools({
         requestContext: requestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
       });
     }
@@ -669,7 +657,7 @@ describe('createSourceControlTools', () => {
       const built = await tools(setup);
       // The boot skipped acme/other for a directory-name collision.
       const { sandbox, pushes } = fakeSandbox({
-        remotes: { '/home/user/other': 'https://gitlab.com/elsewhere/other.git' },
+        remotes: { '/home/user/other': 'https://forge.example.com/elsewhere/other.git' },
       });
 
       await expect(
@@ -704,8 +692,8 @@ describe('createSourceControlTools', () => {
         repository: 'acme/other',
       });
 
-      expect(own.url).toBe('https://gitlab.com/acme/repo/-/merge_requests/17');
-      expect(other.url).toBe('https://gitlab.com/acme/other/-/merge_requests/18');
+      expect(own.url).toBe('https://forge.example.com/acme/repo/-/merge_requests/17');
+      expect(other.url).toBe('https://forge.example.com/acme/other/-/merge_requests/18');
       expect(setup.createPullRequest).toHaveBeenNthCalledWith(
         1,
         expect.objectContaining({ sourceId: 'acme/repo', baseBranch: 'main', headBranch: 'factory/issue-1' }),
@@ -719,12 +707,12 @@ describe('createSourceControlTools', () => {
         {
           projectRepositoryId: 'repo-link-1',
           changeRequestId: '17',
-          changeRequestUrl: 'https://gitlab.com/acme/repo/-/merge_requests/17',
+          changeRequestUrl: 'https://forge.example.com/acme/repo/-/merge_requests/17',
         },
         {
           projectRepositoryId: 'repo-link-2',
           changeRequestId: '18',
-          changeRequestUrl: 'https://gitlab.com/acme/other/-/merge_requests/18',
+          changeRequestUrl: 'https://forge.example.com/acme/other/-/merge_requests/18',
         },
       ]);
       const audited = setup.emitAgent.mock.calls.map(call => (call as any)[0].input);
@@ -745,7 +733,7 @@ describe('createSourceControlTools', () => {
       const [opened] = await setup.storage.sessionRepositories.listBySession({ sessionId: 'session-1' });
       // Opening the change request pushes nothing, so the push time stays.
       expect(opened?.pushedAt).toEqual(pushed?.pushedAt);
-      expect(opened?.changeRequestUrl).toBe('https://gitlab.com/acme/repo/-/merge_requests/17');
+      expect(opened?.changeRequestUrl).toBe('https://forge.example.com/acme/repo/-/merge_requests/17');
 
       await (built.source_control_push_branch!.execute as any)({}, { workspace: { sandbox } });
 
@@ -753,7 +741,7 @@ describe('createSourceControlTools', () => {
         {
           projectRepositoryId: 'repo-link-1',
           branch: 'factory/issue-1',
-          changeRequestUrl: 'https://gitlab.com/acme/repo/-/merge_requests/17',
+          changeRequestUrl: 'https://forge.example.com/acme/repo/-/merge_requests/17',
         },
       ]);
     });
@@ -765,7 +753,7 @@ describe('createSourceControlTools', () => {
       const setup = await fixture();
       const tools = await createSourceControlTools({
         requestContext: requestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
       });
       const run = (tools.source_control_review_change_request!.execute as any)({ changeRequestId: 17, ...input });
@@ -776,7 +764,7 @@ describe('createSourceControlTools', () => {
       const { setup } = await submit({});
       const tools = await createSourceControlTools({
         requestContext: requestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
       });
       const parsed = (tools.source_control_review_change_request!.inputSchema as any).safeParse({
@@ -842,7 +830,7 @@ describe('createSourceControlTools', () => {
       const { setup } = await submit({});
       const tools = await createSourceControlTools({
         requestContext: requestContext(),
-        providers: [{ id: 'gitlab', storage: setup.storage, versionControl: setup.versionControl }],
+        providers: [{ id: 'acme-forge', storage: setup.storage, versionControl: setup.versionControl }],
         audit: setup.audit,
       });
       const schema = tools.source_control_review_change_request!.inputSchema as any;
@@ -930,7 +918,7 @@ describe('createSourceControlTools', () => {
           : { id: '17', state: 'open', headSha: head, headBranch: 'factory/issue-1' }) as any,
       );
       const versionControl = { ...setup.versionControl, publishCommitCheck } as VersionControl;
-      const providers = [{ id: 'gitlab', storage: setup.storage, versionControl }];
+      const providers = [{ id: 'acme-forge', storage: setup.storage, versionControl }];
       return {
         setup,
         providers,
@@ -961,7 +949,7 @@ describe('createSourceControlTools', () => {
     it('names the repository, change request, and head the run reviews', async () => {
       const { resolve } = await reviewed();
       await expect(resolve()).resolves.toMatchObject({
-        provider: 'gitlab',
+        provider: 'acme-forge',
         repository: 'acme/repo',
         changeRequestId: '17',
         headSha: head,
@@ -1005,7 +993,7 @@ describe('createSourceControlTools', () => {
       const { resolve } = await reviewed({ publishCommitCheck: undefined });
       const changeRequest = await resolve();
       await expect(changeRequest!.publishCommitCheck({ ...check, headSha: head })).rejects.toThrow(
-        'gitlab does not support publishing commit checks; nothing was published.',
+        'acme-forge does not support publishing commit checks; nothing was published.',
       );
     });
   });
@@ -1013,219 +1001,226 @@ describe('createSourceControlTools', () => {
 
 // Each test spawns dozens of Git processes, which can exceed the default 5s
 // timeout while the rest of the suite saturates the CPU.
-describe.each(['github', 'gitlab'])('source_control_push_branch with real Git (%s)', { timeout: 10_000 }, provider => {
-  const roots: string[] = [];
-  const templates = new Map<string, { root: string; base: string }>();
-  const branch = 'factory/issue-1';
-  const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
-  // Spawning bare `git` makes libuv try every PATH entry, which costs tens of
-  // milliseconds per call with a long PATH and pushes these tests past their timeout.
-  const gitBinary = path.join(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), 'git');
-  const gitIn =
-    (checkout: string) =>
-    (...args: string[]) =>
-      execFileSync(gitBinary, ['-C', checkout, ...args], {
-        encoding: 'utf8',
-        env,
-        stdio: ['ignore', 'pipe', 'pipe'],
-      }).trim();
-  const commitIn = (checkout: string) => (text: string) => {
-    const git = gitIn(checkout);
-    writeFileSync(path.join(checkout, 'tracked.txt'), text);
-    git('add', 'tracked.txt');
-    git('commit', '-m', text);
-    return git('rev-parse', 'HEAD');
-  };
-
-  afterEach(() => {
-    for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
-  });
-
-  afterAll(() => {
-    for (const { root } of templates.values()) rmSync(root, { recursive: true, force: true });
-    templates.clear();
-  });
-
-  // Every test starts from the same seeded origin and checkout, so build it once
-  // per repository and copy it instead of spawning the same Git setup per test.
-  function seedTemplate(repository: string) {
-    const root = mkdtempSync(path.join(os.tmpdir(), 'factory-push-template-'));
-    const origin = path.join(root, 'origin.git');
-    const checkout = path.join(root, repository.split('/')[1]!);
-    const git = gitIn(checkout);
-    execFileSync(gitBinary, ['init', '--bare', '--initial-branch=main', origin], { env, stdio: 'pipe' });
-    execFileSync(gitBinary, ['init', '--initial-branch=main', checkout], { env, stdio: 'pipe' });
-    // Commits and receive-pack otherwise spawn `git maintenance run --auto`.
-    git('--git-dir', origin, 'config', 'maintenance.auto', 'false');
-    git('config', 'maintenance.auto', 'false');
-    git('config', 'user.name', 'Test');
-    git('config', 'user.email', 'test@example.com');
-    git('remote', 'add', 'origin', `https://${provider}.com/${repository}.git`);
-    // Keep provider checkout validation real, but push to a hermetic local remote.
-    git('remote', 'set-url', '--push', 'origin', origin);
-    const base = commitIn(checkout)('base');
-    git('push', 'origin', 'main');
-    templates.set(repository, { root, base });
-  }
-
-  async function checkoutFixture(repository: string) {
-    const setup = await fixture(provider);
-    const template = templates.get(repository)!;
-    const root = mkdtempSync(path.join(os.tmpdir(), 'factory-push-'));
-    roots.push(root);
-    cpSync(template.root, root, { recursive: true });
-    const origin = path.join(root, 'origin.git');
-    const checkout = path.join(root, repository.split('/')[1]!);
-    const config = path.join(checkout, '.git', 'config');
-    writeFileSync(config, readFileSync(config, 'utf8').replaceAll(template.root, root));
-    const cloneUrl = `https://${provider}.com/${repository}.git`;
-    const git = gitIn(checkout);
-    const commit = commitIn(checkout);
-    const base = template.base;
-    setup.getRepositoryAccess.mockResolvedValue({
-      cloneUrl,
-      authorization: { scheme: 'bearer', token: 'test-token', username: 'test' },
-    });
-    const built = await createSourceControlTools({
-      requestContext: requestContext(),
-      providers: [{ id: provider, storage: setup.storage, versionControl: setup.versionControl }],
-      audit: setup.audit,
-    });
-    const hooks: { afterCommand?: (args: string[]) => void } = {};
-    const sandbox = {
-      id: 'real-git',
-      provider: 'custom',
-      workingDirectory: root,
-      async executeCommand(command: string, args: string[] = [], options?: { env?: Record<string, string> }) {
-        const result = spawnSync(command === 'git' ? gitBinary : command, args, {
+describe.each(['github', 'acme-forge'])(
+  'source_control_push_branch with real Git (%s)',
+  { timeout: 10_000 },
+  provider => {
+    const roots: string[] = [];
+    const templates = new Map<string, { root: string; base: string }>();
+    const branch = 'factory/issue-1';
+    const env = { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' };
+    // Spawning bare `git` makes libuv try every PATH entry, which costs tens of
+    // milliseconds per call with a long PATH and pushes these tests past their timeout.
+    const gitBinary = path.join(execFileSync('git', ['--exec-path'], { encoding: 'utf8' }).trim(), 'git');
+    const gitIn =
+      (checkout: string) =>
+      (...args: string[]) =>
+        execFileSync(gitBinary, ['-C', checkout, ...args], {
           encoding: 'utf8',
-          env: { ...env, ...options?.env },
-          timeout: 10_000,
-        });
-        if (result.error) throw result.error;
-        hooks.afterCommand?.(args);
-        return { exitCode: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
-      },
+          env,
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim();
+    const commitIn = (checkout: string) => (text: string) => {
+      const git = gitIn(checkout);
+      writeFileSync(path.join(checkout, 'tracked.txt'), text);
+      git('add', 'tracked.txt');
+      git('commit', '-m', text);
+      return git('rev-parse', 'HEAD');
     };
-    const push = () =>
-      (built.source_control_push_branch!.execute as any)(repository === 'acme/repo' ? {} : { repository }, {
-        workspace: { sandbox },
+
+    afterEach(() => {
+      for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
+    });
+
+    afterAll(() => {
+      for (const { root } of templates.values()) rmSync(root, { recursive: true, force: true });
+      templates.clear();
+    });
+
+    // Every test starts from the same seeded origin and checkout, so build it once
+    // per repository and copy it instead of spawning the same Git setup per test.
+    function seedTemplate(repository: string) {
+      const root = mkdtempSync(path.join(os.tmpdir(), 'factory-push-template-'));
+      const origin = path.join(root, 'origin.git');
+      const checkout = path.join(root, repository.split('/')[1]!);
+      const git = gitIn(checkout);
+      execFileSync(gitBinary, ['init', '--bare', '--initial-branch=main', origin], { env, stdio: 'pipe' });
+      execFileSync(gitBinary, ['init', '--initial-branch=main', checkout], { env, stdio: 'pipe' });
+      // Commits and receive-pack otherwise spawn `git maintenance run --auto`.
+      git('--git-dir', origin, 'config', 'maintenance.auto', 'false');
+      git('config', 'maintenance.auto', 'false');
+      git('config', 'user.name', 'Test');
+      git('config', 'user.email', 'test@example.com');
+      git('remote', 'add', 'origin', `https://${provider}.com/${repository}.git`);
+      // Keep provider checkout validation real, but push to a hermetic local remote.
+      git('remote', 'set-url', '--push', 'origin', origin);
+      const base = commitIn(checkout)('base');
+      git('push', 'origin', 'main');
+      templates.set(repository, { root, base });
+    }
+
+    async function checkoutFixture(repository: string) {
+      const setup = await fixture(provider);
+      const template = templates.get(repository)!;
+      const root = mkdtempSync(path.join(os.tmpdir(), 'factory-push-'));
+      roots.push(root);
+      cpSync(template.root, root, { recursive: true });
+      const origin = path.join(root, 'origin.git');
+      const checkout = path.join(root, repository.split('/')[1]!);
+      const config = path.join(checkout, '.git', 'config');
+      writeFileSync(config, readFileSync(config, 'utf8').replaceAll(template.root, root));
+      const cloneUrl = `https://${provider}.com/${repository}.git`;
+      const git = gitIn(checkout);
+      const commit = commitIn(checkout);
+      const base = template.base;
+      setup.getRepositoryAccess.mockResolvedValue({
+        cloneUrl,
+        authorization: { scheme: 'bearer', token: 'test-token', username: 'test' },
       });
-    const remote = (...args: string[]) => git('--git-dir', origin, ...args);
-    return { ...setup, root, checkout, git, commit, base, push, remote, hooks };
-  }
+      const built = await createSourceControlTools({
+        requestContext: requestContext(),
+        providers: [{ id: provider, storage: setup.storage, versionControl: setup.versionControl }],
+        audit: setup.audit,
+      });
+      const hooks: { afterCommand?: (args: string[]) => void } = {};
+      const sandbox = {
+        id: 'real-git',
+        provider: 'custom',
+        workingDirectory: root,
+        async executeCommand(command: string, args: string[] = [], options?: { env?: Record<string, string> }) {
+          const result = spawnSync(command === 'git' ? gitBinary : command, args, {
+            encoding: 'utf8',
+            env: { ...env, ...options?.env },
+            timeout: 10_000,
+          });
+          if (result.error) throw result.error;
+          hooks.afterCommand?.(args);
+          return { exitCode: result.status ?? 1, stdout: result.stdout, stderr: result.stderr };
+        },
+      };
+      const push = () =>
+        (built.source_control_push_branch!.execute as any)(repository === 'acme/repo' ? {} : { repository }, {
+          workspace: { sandbox },
+        });
+      const remote = (...args: string[]) => git('--git-dir', origin, ...args);
+      return { ...setup, root, checkout, git, commit, base, push, remote, hooks };
+    }
 
-  describe.each(['acme/repo', 'acme/other'])('%s', repository => {
-    beforeAll(() => seedTemplate(repository));
+    describe.each(['acme/repo', 'acme/other'])('%s', repository => {
+      beforeAll(() => seedTemplate(repository));
 
-    // A session ref left at the base used to push no agent commits. (#27667)
-    it('pushes the active commit from an existing stale session branch without losing dirty work', async () => {
-      const { checkout, git, commit, base, push, remote } = await checkoutFixture(repository);
-      git('branch', branch);
-      git('switch', '-c', 'agent-work');
-      const head = commit('agent change');
-      writeFileSync(path.join(checkout, 'staged.txt'), 'staged work');
-      git('add', 'staged.txt');
-      writeFileSync(path.join(checkout, 'tracked.txt'), 'unstaged work');
-      writeFileSync(path.join(checkout, 'untracked.txt'), 'untracked work');
-      const status = git('status', '--porcelain');
-      const diff = git('diff');
-      const staged = git('diff', '--cached');
-
-      await push();
-
-      expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(head);
-      expect(remote('show', `${branch}:tracked.txt`)).toBe('agent change');
-      expect(git('symbolic-ref', '--short', 'HEAD')).toBe(branch);
-      expect(git('rev-parse', 'main')).toBe(base);
-      expect(git('rev-parse', 'agent-work')).toBe(head);
-      expect(git('status', '--porcelain')).toBe(status);
-      expect(git('diff')).toBe(diff);
-      expect(git('diff', '--cached')).toBe(staged);
-    });
-
-    it.each(['missing', 'same-tip', 'detached'])('keeps subsequent commits on the session branch (%s)', async state => {
-      const { git, commit, push, remote } = await checkoutFixture(repository);
-      if (state !== 'missing') git('branch', branch);
-      if (state === 'detached') git('switch', '--detach');
-      await push();
-      expect(git('symbolic-ref', '--short', 'HEAD')).toBe(branch);
-      const next = commit('next change');
-      await push();
-      expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(next);
-    });
-
-    it('pushes an ahead session branch without moving the active checkout', async () => {
-      const { checkout, git, commit, base, push, remote, storage } = await checkoutFixture(repository);
-      git('switch', '-c', branch);
-      const sessionHead = commit('session work');
-      git('switch', 'main');
-      writeFileSync(path.join(checkout, 'tracked.txt'), 'uncommitted main work');
-      const dirty = git('status', '--porcelain');
-
-      await expect(push()).resolves.toEqual({ pushed: true, branch, repository });
-
-      expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(sessionHead);
-      expect(remote('show', `${branch}:tracked.txt`)).toBe('session work');
-      expect(git('rev-parse', branch)).toBe(sessionHead);
-      expect(git('rev-parse', 'HEAD')).toBe(base);
-      expect(git('symbolic-ref', '--short', 'HEAD')).toBe('main');
-      expect(git('status', '--porcelain')).toBe(dirty);
-      expect(git('diff')).toContain('+uncommitted main work');
-      expect(await storage.sessionRepositories.listBySession({ sessionId: 'session-1' })).toMatchObject([{ branch }]);
-    });
-
-    it('refuses to discard divergent session commits or publish a stale ref', async () => {
-      const { git, commit, push, remote, storage } = await checkoutFixture(repository);
-      git('switch', '-c', branch);
-      const sessionHead = commit('session work');
-      git('switch', 'main');
-      const activeHead = commit('other work');
-
-      await expect(push()).rejects.toMatchObject({ code: 'push-failed' });
-
-      expect(git('rev-parse', branch)).toBe(sessionHead);
-      expect(git('rev-parse', 'HEAD')).toBe(activeHead);
-      expect(git('symbolic-ref', '--short', 'HEAD')).toBe('main');
-      expect(remote('for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).toBe('');
-      expect(await storage.sessionRepositories.listBySession({ sessionId: 'session-1' })).toEqual([]);
-    });
-
-    it.each(['--is-ancestor', '--porcelain'])(
-      'preserves concurrent session commits and refuses to publish after %s',
-      async checkpoint => {
-        const { git, commit, base, push, remote, storage, hooks } = await checkoutFixture(repository);
+      // A session ref left at the base used to push no agent commits. (#27667)
+      it('pushes the active commit from an existing stale session branch without losing dirty work', async () => {
+        const { checkout, git, commit, base, push, remote } = await checkoutFixture(repository);
         git('branch', branch);
-        const activeHead = commit('active work');
-        const concurrentHead = git('commit-tree', 'HEAD^{tree}', '-p', base, '-m', 'concurrent session work');
-        // Schedule a real ref update between validation and materialization. (#27667)
-        hooks.afterCommand = args => {
-          if (args.includes(checkpoint)) {
-            git('update-ref', `refs/heads/${branch}`, concurrentHead, base);
-            hooks.afterCommand = undefined;
-          }
-        };
+        git('switch', '-c', 'agent-work');
+        const head = commit('agent change');
+        writeFileSync(path.join(checkout, 'staged.txt'), 'staged work');
+        git('add', 'staged.txt');
+        writeFileSync(path.join(checkout, 'tracked.txt'), 'unstaged work');
+        writeFileSync(path.join(checkout, 'untracked.txt'), 'untracked work');
+        const status = git('status', '--porcelain');
+        const diff = git('diff');
+        const staged = git('diff', '--cached');
 
-        const outcome = await push().catch((error: unknown) => error);
+        await push();
 
-        expect(git('rev-parse', branch)).toBe(concurrentHead);
-        expect(outcome).toMatchObject({ code: 'push-failed' });
+        expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(head);
+        expect(remote('show', `${branch}:tracked.txt`)).toBe('agent change');
+        expect(git('symbolic-ref', '--short', 'HEAD')).toBe(branch);
+        expect(git('rev-parse', 'main')).toBe(base);
+        expect(git('rev-parse', 'agent-work')).toBe(head);
+        expect(git('status', '--porcelain')).toBe(status);
+        expect(git('diff')).toBe(diff);
+        expect(git('diff', '--cached')).toBe(staged);
+      });
+
+      it.each(['missing', 'same-tip', 'detached'])(
+        'keeps subsequent commits on the session branch (%s)',
+        async state => {
+          const { git, commit, push, remote } = await checkoutFixture(repository);
+          if (state !== 'missing') git('branch', branch);
+          if (state === 'detached') git('switch', '--detach');
+          await push();
+          expect(git('symbolic-ref', '--short', 'HEAD')).toBe(branch);
+          const next = commit('next change');
+          await push();
+          expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(next);
+        },
+      );
+
+      it('pushes an ahead session branch without moving the active checkout', async () => {
+        const { checkout, git, commit, base, push, remote, storage } = await checkoutFixture(repository);
+        git('switch', '-c', branch);
+        const sessionHead = commit('session work');
+        git('switch', 'main');
+        writeFileSync(path.join(checkout, 'tracked.txt'), 'uncommitted main work');
+        const dirty = git('status', '--porcelain');
+
+        await expect(push()).resolves.toEqual({ pushed: true, branch, repository });
+
+        expect(remote('rev-parse', `refs/heads/${branch}`)).toBe(sessionHead);
+        expect(remote('show', `${branch}:tracked.txt`)).toBe('session work');
+        expect(git('rev-parse', branch)).toBe(sessionHead);
+        expect(git('rev-parse', 'HEAD')).toBe(base);
+        expect(git('symbolic-ref', '--short', 'HEAD')).toBe('main');
+        expect(git('status', '--porcelain')).toBe(dirty);
+        expect(git('diff')).toContain('+uncommitted main work');
+        expect(await storage.sessionRepositories.listBySession({ sessionId: 'session-1' })).toMatchObject([{ branch }]);
+      });
+
+      it('refuses to discard divergent session commits or publish a stale ref', async () => {
+        const { git, commit, push, remote, storage } = await checkoutFixture(repository);
+        git('switch', '-c', branch);
+        const sessionHead = commit('session work');
+        git('switch', 'main');
+        const activeHead = commit('other work');
+
+        await expect(push()).rejects.toMatchObject({ code: 'push-failed' });
+
+        expect(git('rev-parse', branch)).toBe(sessionHead);
         expect(git('rev-parse', 'HEAD')).toBe(activeHead);
         expect(git('symbolic-ref', '--short', 'HEAD')).toBe('main');
         expect(remote('for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).toBe('');
         expect(await storage.sessionRepositories.listBySession({ sessionId: 'session-1' })).toEqual([]);
-      },
-    );
+      });
 
-    it('refuses to reset a session branch checked out in another worktree', async () => {
-      const { root, git, commit, base, push, remote } = await checkoutFixture(repository);
-      git('branch', branch);
-      git('worktree', 'add', path.join(root, 'other-worktree'), branch);
-      const head = commit('active work');
-      await expect(push()).rejects.toMatchObject({ code: 'push-failed' });
-      expect(git('rev-parse', branch)).toBe(base);
-      expect(git('rev-parse', 'HEAD')).toBe(head);
-      expect(remote('for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).toBe('');
+      it.each(['--is-ancestor', '--porcelain'])(
+        'preserves concurrent session commits and refuses to publish after %s',
+        async checkpoint => {
+          const { git, commit, base, push, remote, storage, hooks } = await checkoutFixture(repository);
+          git('branch', branch);
+          const activeHead = commit('active work');
+          const concurrentHead = git('commit-tree', 'HEAD^{tree}', '-p', base, '-m', 'concurrent session work');
+          // Schedule a real ref update between validation and materialization. (#27667)
+          hooks.afterCommand = args => {
+            if (args.includes(checkpoint)) {
+              git('update-ref', `refs/heads/${branch}`, concurrentHead, base);
+              hooks.afterCommand = undefined;
+            }
+          };
+
+          const outcome = await push().catch((error: unknown) => error);
+
+          expect(git('rev-parse', branch)).toBe(concurrentHead);
+          expect(outcome).toMatchObject({ code: 'push-failed' });
+          expect(git('rev-parse', 'HEAD')).toBe(activeHead);
+          expect(git('symbolic-ref', '--short', 'HEAD')).toBe('main');
+          expect(remote('for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).toBe('');
+          expect(await storage.sessionRepositories.listBySession({ sessionId: 'session-1' })).toEqual([]);
+        },
+      );
+
+      it('refuses to reset a session branch checked out in another worktree', async () => {
+        const { root, git, commit, base, push, remote } = await checkoutFixture(repository);
+        git('branch', branch);
+        git('worktree', 'add', path.join(root, 'other-worktree'), branch);
+        const head = commit('active work');
+        await expect(push()).rejects.toMatchObject({ code: 'push-failed' });
+        expect(git('rev-parse', branch)).toBe(base);
+        expect(git('rev-parse', 'HEAD')).toBe(head);
+        expect(remote('for-each-ref', '--format=%(refname)', `refs/heads/${branch}`)).toBe('');
+      });
     });
-  });
-});
+  },
+);

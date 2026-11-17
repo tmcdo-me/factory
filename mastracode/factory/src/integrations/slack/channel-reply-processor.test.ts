@@ -73,7 +73,7 @@ describe('FactoryChannelReplyProcessor', () => {
       expect(text).toContain('[#28467](https://github.com/<owner>/<repo>/pull/28467)');
       expect(text).toContain("Don't guess a URL");
       expect(text).toContain('the repositories listed in your environment');
-      expect(text).toContain('workspace URL pattern in the `linear_get_issue` tool description');
+      expect(text).toContain('Build other links from a URL a tool returned');
     }
   });
 

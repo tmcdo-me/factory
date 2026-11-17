@@ -119,150 +119,6 @@ const FIXTURES: Fixture[] = [
     boardKeys: ['factoryAuthored', 'authorTrusted', 'autoStartCandidate', 'reviewVerdict', 'reviewedHeadSha'],
   },
   {
-    name: 'gitlab issue',
-    input: {
-      title: 'Issue 42',
-      externalSource: {
-        integrationId: 'gitlab',
-        type: 'issue',
-        externalId: 'gitlab-issue:42',
-        url: 'https://gitlab.example.com/acme/app/-/issues/42',
-      },
-      metadata: {
-        gitlabHost: 'gitlab.example.com',
-        gitlabProjectId: 101,
-        gitlabIssueIid: 42,
-        identifier: 'acme/app#42',
-        state: 'closed',
-        stateType: 'completed',
-        author: 'Maintainer Person',
-        authorTrusted: true,
-        labels: ['bug'],
-        labelColors: { bug: '#428BCA' },
-      },
-    },
-    expected: { provider: 'gitlab', key: 'acme/app#42', state: 'closed', labels: ['bug'] },
-    providerKeys: ['gitlabHost', 'gitlabProjectId', 'gitlabIssueIid', 'identifier', 'labelColors', 'stateType'],
-    boardKeys: ['authorTrusted'],
-  },
-  {
-    name: 'gitlab merge request',
-    input: {
-      title: 'MR 17',
-      externalSource: {
-        integrationId: 'gitlab',
-        type: 'pull-request',
-        externalId: 'gitlab-pr:17',
-        url: 'https://gitlab.example.com/acme/app/-/merge_requests/17',
-      },
-      metadata: {
-        gitlabHost: 'gitlab.example.com',
-        gitlabProjectId: 101,
-        gitlabMergeRequestIid: 17,
-        state: 'opened',
-        merged: false,
-        author: 'maintainer',
-        authorTrusted: true,
-        factoryPullRequestReconciliation: 'merged',
-      },
-    },
-    expected: { provider: 'gitlab', key: 'acme/app!17', state: 'opened' },
-    providerKeys: ['gitlabMergeRequestIid', 'merged'],
-    boardKeys: ['authorTrusted', 'factoryPullRequestReconciliation'],
-  },
-  {
-    name: 'jira issue',
-    input: {
-      title: 'Jira issue',
-      externalSource: {
-        integrationId: 'jira',
-        type: 'issue',
-        externalId: 'jira-issue:conn-1:ENG-42:10001',
-        url: 'https://acme.atlassian.net/browse/ENG-42',
-      },
-      metadata: {
-        identifier: 'ENG-42',
-        issueRef: 'jira-issue:conn-1:ENG-42:10001',
-        autoStartCandidate: true,
-        state: 'To Do',
-        stateType: 'unstarted',
-        priority: 'High',
-        project: 'ENG',
-        assignee: 'Ada',
-        creator: 'Grace',
-        labels: ['bug'],
-      },
-    },
-    expected: { provider: 'jira', key: 'ENG-42', state: 'To Do', author: 'Grace' },
-    providerKeys: ['identifier', 'issueRef', 'priority', 'project', 'assignee', 'creator'],
-    boardKeys: ['autoStartCandidate'],
-  },
-  {
-    name: 'linear issue',
-    input: {
-      title: 'Fix intake',
-      externalSource: {
-        integrationId: 'linear',
-        type: 'issue',
-        externalId: 'linear:ENG-7',
-        url: 'https://linear.app/acme/issue/ENG-7',
-      },
-      metadata: {
-        linearIssueId: 'issue-1',
-        linearProjectId: 'linear-project:1',
-        identifier: 'ENG-7',
-        linearState: 'Todo',
-        linearStateType: 'unstarted',
-        linearCreator: 'Ada',
-        linearTeam: 'ENG',
-        labels: ['bug'],
-      },
-    },
-    expected: { provider: 'linear', key: 'ENG-7', state: 'Todo', author: 'Ada' },
-    providerKeys: ['linearIssueId', 'linearProjectId', 'linearState', 'linearTeam'],
-    boardKeys: [],
-  },
-  {
-    name: 'incident.io incident',
-    input: {
-      title: 'Requests failing',
-      externalSource: {
-        integrationId: 'incidentio',
-        type: 'issue',
-        externalId: 'incidentio:incident:incident-1',
-        url: 'https://app.incident.io/acme/incidents/incident-1',
-      },
-      metadata: {
-        identifier: 'INC-42',
-        incidentioItemType: 'incident',
-        incidentioState: 'Learning',
-        incidentioDescription: 'Requests are failing.',
-        source: 'Incident',
-        autoStartCandidate: true,
-        author: 'Ada Lovelace',
-        labels: ['Major'],
-      },
-    },
-    expected: { provider: 'incidentio', key: 'INC-42', state: 'Learning' },
-    providerKeys: ['incidentioItemType', 'incidentioDescription', 'source'],
-    boardKeys: ['autoStartCandidate'],
-  },
-  {
-    name: 'incident.io follow-up',
-    input: {
-      title: 'Add a retry',
-      externalSource: {
-        integrationId: 'incidentio',
-        type: 'issue',
-        externalId: 'incidentio:follow-up:01HFOLLOWUP',
-      },
-      metadata: { identifier: 'INC-42-1', incidentioItemType: 'follow-up', state: 'Open' },
-    },
-    expected: { provider: 'incidentio', key: 'INC-42-1', state: 'Open' },
-    providerKeys: ['incidentioItemType'],
-    boardKeys: [],
-  },
-  {
     name: 'slack thread',
     input: {
       title: 'Fix the bug',
@@ -510,7 +366,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('work item split
     const cards = await seed(workItems);
     await seedLegacy(storage);
     await migrateWorkItemSplit(storage);
-    const id = cards.get('jira issue')!;
+    const id = cards.get('slack thread')!;
     const copied = (await readSplit(storage)).boardItems.get(id)!;
 
     // An old replica still serving the legacy table moves the card.
@@ -683,7 +539,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('work item split
     await seedLegacy(storage);
     await migrateWorkItemSplit(storage);
     const recopy = cards.get('github issue')!;
-    const skip = cards.get('jira issue')!;
+    const skip = cards.get('slack thread')!;
     const copied = (await readSplit(storage)).boardItems.get(skip)!;
     const edited = new Date(copied.updated_at.getTime() + 1_000);
     await storage.ops.updateMany(
@@ -860,7 +716,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('work item split
     const { storage, workItems } = await createStorage(backend);
     const cards = await seed(workItems);
     await seedLegacy(storage);
-    const later = new Set([cards.get('jira issue')!, cards.get('linear issue')!]);
+    const later = new Set([cards.get('slack thread')!, cards.get('github pull request')!]);
 
     const first = await migrateWorkItemSplit(storage, { include: row => !later.has(row.id) });
 
@@ -931,7 +787,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('work item split
     await migrateWorkItemSplit(storage);
     const watermark = await readLegacyWatermark(storage.ops);
     await recordWorkItemSplitComplete(storage.ops, watermark);
-    const id = cards.get('jira issue')!;
+    const id = cards.get('slack thread')!;
     await storage.ops.updateMany(
       'work_items',
       { id },
@@ -1060,7 +916,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])('work item split
     const cards = await seed(workItems);
     await seedLegacy(storage);
     const plain = cards.get('factory card')!;
-    const deleted = cards.get('jira issue')!;
+    const deleted = cards.get('slack thread')!;
     const held = cards.get('github issue')!;
     await storage.ops.insertOne(FACTORY_BOARD_ITEM_TOMBSTONES_SCHEMA.name, {
       id: deleted,

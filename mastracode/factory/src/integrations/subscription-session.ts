@@ -14,8 +14,8 @@ export interface SubscriptionSessionLookup {
 
 /**
  * Bring the session that owns a subscribed thread online so a provider event
- * can be delivered to it. Provider-neutral: GitHub and GitLab subscriptions
- * carry the same session binding and differ only in their target data.
+ * can be delivered to it. Provider-neutral: every source-control provider's
+ * subscriptions carry the same session binding and differ only in their target data.
  */
 export type SubscriptionSessionRow = IntegrationSubscription<{
   projectRepositoryId: string;

@@ -680,19 +680,6 @@ function deferredActor(record: FactoryDeferredDecisionRecord): FactoryRuleActor 
       factoryAuthored: actor.factoryAuthored,
     };
   }
-  if (
-    actor?.type === 'gitlab' &&
-    typeof actor.username === 'string' &&
-    typeof actor.trusted === 'boolean' &&
-    typeof actor.factoryAuthored === 'boolean'
-  ) {
-    return {
-      type: 'gitlab',
-      username: actor.username,
-      trusted: actor.trusted,
-      factoryAuthored: actor.factoryAuthored,
-    };
-  }
   return { type: 'system', id: 'factory-rule-dispatcher' };
 }
 
@@ -1912,26 +1899,6 @@ export class FactoryDecisionDispatcher {
     }
   }
 
-  /**
-   * The project's card for a Linear issue by its stable id, wherever its identifier now points.
-   * A live card wins over finished ones, as in the Linear rules and issue detail route.
-   */
-  async #linearCardByIssueId(
-    record: FactoryDeferredDecisionRecord,
-    decision: Extract<FactoryCommitDecision, { type: 'upsertLinkedWorkItem' }>,
-    boards: BoardRegistry,
-  ) {
-    const issueId = decision.metadata?.linearIssueId;
-    if (decision.source !== 'linear-issue' || typeof issueId !== 'string') return null;
-    const items = await this.#storage.listShared({ orgId: record.orgId, factoryProjectId: record.factoryProjectId });
-    const cards = items.filter(
-      item => item.externalSource?.integrationId === 'linear' && item.workItem.metadata?.linearIssueId === issueId,
-    );
-    const card = cards.find(item => !isTerminalWorkItem(boards, item)) ?? cards[0];
-    // The shared list is the cache itself: hand on a copy of the card.
-    return card ? structuredClone(card) : null;
-  }
-
   async #upsertLinkedItem(
     record: FactoryDeferredDecisionRecord,
     requested: Extract<FactoryCommitDecision, { type: 'upsertLinkedWorkItem' }>,
@@ -1999,17 +1966,13 @@ export class FactoryDecisionDispatcher {
     // back down to the stage this decision filed it at.
     if (materializedHere && requested.skipRules === true) return;
     const boards = await this.#boards.load(record);
-    // A Linear identifier changes when its issue moves teams; the card filed
-    // under the old one is still this issue's card.
-    const renamed = existing ? null : await this.#linearCardByIssueId(record, requested, boards);
     // Intake routes place only a card this decision files (or is still filing,
     // on a retry); a card already on the board stays where it is.
-    const current = existing ?? renamed;
-    const decision = !current
+    const decision = !existing
       ? await this.#routeArrival(record, requested, boards)
       : materializedHere
-        ? await this.#resumeRoutedCard(record, current, requested, boards)
-        : this.#keepRoutedCard(current, requested, boards);
+        ? await this.#resumeRoutedCard(record, existing, requested, boards)
+        : this.#keepRoutedCard(existing, requested, boards);
     if (materializedHere) {
       for (const suffix of ['destination', 'initial-entry']) {
         const replay = await this.#storage.getTransitionResultByIngress(
@@ -2038,28 +2001,22 @@ export class FactoryDecisionDispatcher {
         decision,
       })) ??
       null;
-    let result: UpsertWorkItemResult = renamed
-      ? {
-          created: false,
-          item: renamed,
-          previous: { stages: renamed.stages, sessionRoles: Object.keys(renamed.sessions) },
-        }
-      : await this.#storage.upsert({
-          orgId: record.orgId,
-          userId: 'factory-rule-dispatcher',
-          factoryProjectId: record.factoryProjectId,
-          input: {
-            externalSource: externalSourceForDecision(decision),
-            parentWorkItemId,
-            title: decision.title,
-            ...(decision.description ? { description: decision.description } : {}),
-            board: decision.board,
-            stages: [entryStage],
-            sessions: {},
-            metadata: { ...decision.metadata, [FACTORY_RULE_MATERIALIZATION_KEY]: record.idempotencyKey },
-          },
-          reuseMode: 'preserve',
-        });
+    let result: UpsertWorkItemResult = await this.#storage.upsert({
+      orgId: record.orgId,
+      userId: 'factory-rule-dispatcher',
+      factoryProjectId: record.factoryProjectId,
+      input: {
+        externalSource: externalSourceForDecision(decision),
+        parentWorkItemId,
+        title: decision.title,
+        ...(decision.description ? { description: decision.description } : {}),
+        board: decision.board,
+        stages: [entryStage],
+        sessions: {},
+        metadata: { ...decision.metadata, [FACTORY_RULE_MATERIALIZATION_KEY]: record.idempotencyKey },
+      },
+      reuseMode: 'preserve',
+    });
     const itemBoard = boardForWorkItem(result.item);
     // A pull request's own card already on another board that reviews pull requests (the retired
     // Review board, for a project still using it) stays there: filing its pull request again acts

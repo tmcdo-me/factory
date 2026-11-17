@@ -6,74 +6,74 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 
 ## Server — `mastracode/factory/src`
 
-| Done | File                                                   |  LOC | Slice | Note                                                                                       |
-| ---- | ------------------------------------------------------ | ---: | ----- | ------------------------------------------------------------------------------------------ |
-| [ ]  | `auth.ts`                                              | 1022 | 7     |                                                                                            |
-| [ ]  | `boards/define-board.ts`                               |  790 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `default-thinking-level.ts`                            |    3 | 7     |                                                                                            |
-| [ ]  | `factory.ts`                                           | 2644 | 2→7   | composition root; shrinks every slice                                                      |
-| [ ]  | `integrations/base.ts`                                 |  322 | 7     |                                                                                            |
-| [ ]  | `integrations/github/routes.ts`                        | 1771 | 7     |                                                                                            |
-| [ ]  | `integrations/github/session-subscriptions.ts`         |  375 | 7     |                                                                                            |
-| [ ]  | `integrations/github/webhook.ts`                       |  649 | 7     |                                                                                            |
-| [ ]  | `integrations/gitlab/agent-tools.ts`                   |   56 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/gitlab/session-subscriptions.ts`         |  254 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/gitlab/webhook-dispatch.ts`              |  363 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/incidentio/agent-tools.ts`               |  152 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/jira/agent-tools.ts`                     |  127 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/linear/agent-tools.ts`                   |  236 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/platform/github/event-worker.ts`         |  804 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/platform/gitlab/event-worker.ts`         |  406 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/platform/jira/agent-tools.ts`            |  120 | drop  | integration dropped                                                                        |
-| [ ]  | `integrations/slack/channel-session-link-processor.ts` |  121 | 7     |                                                                                            |
-| [ ]  | `integrations/slack/run-error-card.ts`                 |   64 | 7     |                                                                                            |
-| [ ]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                     |
-| [ ]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                            |
-| [ ]  | `integrations/subscription-session.ts`                 |  197 | 7     |                                                                                            |
-| [ ]  | `routes/config.ts`                                     | 1800 | 7     |                                                                                            |
-| [ ]  | `routes/contracts.ts`                                  | 1478 | 3     | session API                                                                                |
-| [ ]  | `routes/custom-provider-source.ts`                     |  186 | 7     |                                                                                            |
-| [ ]  | `routes/fs.ts`                                         | 1657 | 3     | session API                                                                                |
-| [ ]  | `routes/oauth.ts`                                      |  515 | 12    | Claude OAuth removed (slice 12); still imports the code-sdk for the other providers' flows |
-| [ ]  | `routes/provider-credentials.ts`                       |  182 | 7     |                                                                                            |
-| [ ]  | `routes/skills.ts`                                     |  320 | 3     | session API                                                                                |
-| [ ]  | `routes/source-control-sessions.ts`                    | 1057 | 3     | session API                                                                                |
-| [ ]  | `routes/surface.ts`                                    | 1074 | 3     | session API                                                                                |
-| [ ]  | `routes/tenant-credentials.ts`                         |  390 | 7     |                                                                                            |
-| [ ]  | `routes/voice.ts`                                      |  281 | drop  | voice dropped                                                                              |
-| [ ]  | `rules/binding-context.ts`                             |  210 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `rules/dispatcher.ts`                                  | 3008 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `rules/processor.ts`                                   |  834 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `rules/start-coordinator.ts`                           |  406 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `run-error.ts`                                         |  157 | 7     |                                                                                            |
-| [ ]  | `sandbox/context-sandboxes.ts`                         |  151 | 7     |                                                                                            |
-| [ ]  | `session/credential-policy.ts`                         |   99 | 7     |                                                                                            |
-| [ ]  | `session/factory-session.ts`                           |  423 | 7     |                                                                                            |
-| [ ]  | `session/filesystem-capture.ts`                        |  329 | 7     |                                                                                            |
-| [ ]  | `session/first-exec-capture.ts`                        |  127 | 7     |                                                                                            |
-| [ ]  | `session/first-message-capture.ts`                     |   50 | 7     |                                                                                            |
-| [ ]  | `session/live-sessions.ts`                             |  154 | 7     |                                                                                            |
-| [ ]  | `session/memory-settings-hydration.ts`                 |   46 | 7     |                                                                                            |
-| [ ]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                            |
-| [ ]  | `session/run-audit.ts`                                 |  302 | 7     |                                                                                            |
-| [ ]  | `session/session-threads.ts`                           |  179 | 7     |                                                                                            |
-| [ ]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                     |
-| [ ]  | `session/thinking-default.ts`                          |   60 | 7     |                                                                                            |
-| [ ]  | `session/thread-session-stamp.ts`                      |   21 | 7     |                                                                                            |
-| [ ]  | `session/thread-title-mirror.ts`                       |   75 | 7     |                                                                                            |
-| [ ]  | `skills/service.ts`                                    |  120 | 6     | dispatcher / boards / goals                                                                |
-| [ ]  | `storage/domains/audit/agent-audit.ts`                 |  122 | 7     |                                                                                            |
-| [ ]  | `storage/domains/audit/domain.ts`                      |  381 | 7     |                                                                                            |
-| [ ]  | `storage/domains/credentials/base.ts`                  |  430 | 7     |                                                                                            |
-| [ ]  | `storage/domains/model-defaults/base.ts`               |  126 | 7     |                                                                                            |
-| [ ]  | `storage/domains/projects/base.ts`                     |  592 | 7     |                                                                                            |
-| [ ]  | `tools/approval-tools.ts`                              |  220 | 5     | interactions                                                                               |
-| [ ]  | `tools/deliver.ts`                                     |  204 | 4     | tools → FactoryToolDef                                                                     |
-| [ ]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                     |
-| [ ]  | `tools/run-watch.ts`                                   |  183 | 5     | interactions                                                                               |
-| [ ]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                     |
-| [ ]  | `voice/transcription.ts`                               |  133 | drop  | voice dropped                                                                              |
-| [ ]  | `workspace.ts`                                         | 1967 | 2→7   | composition root; shrinks every slice                                                      |
+| Done | File                                                   |  LOC | Slice | Note                                                                                                             |
+| ---- | ------------------------------------------------------ | ---: | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| [ ]  | `auth.ts`                                              | 1022 | 7     |                                                                                                                  |
+| [ ]  | `boards/define-board.ts`                               |  790 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `default-thinking-level.ts`                            |    3 | 7     |                                                                                                                  |
+| [ ]  | `factory.ts`                                           | 2644 | 2→7   | composition root; shrinks every slice                                                                            |
+| [ ]  | `integrations/base.ts`                                 |  322 | 7     |                                                                                                                  |
+| [ ]  | `integrations/github/routes.ts`                        | 1771 | 7     |                                                                                                                  |
+| [ ]  | `integrations/github/session-subscriptions.ts`         |  375 | 7     |                                                                                                                  |
+| [ ]  | `integrations/github/webhook.ts`                       |  649 | 7     |                                                                                                                  |
+| [x]  | `integrations/gitlab/agent-tools.ts`                   |   56 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/gitlab/session-subscriptions.ts`         |  254 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/gitlab/webhook-dispatch.ts`              |  363 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/incidentio/agent-tools.ts`               |  152 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/jira/agent-tools.ts`                     |  127 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/linear/agent-tools.ts`                   |  236 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [ ]  | `integrations/platform/github/event-worker.ts`         |  804 | drop  | Platform-hosted GitHub, kept when the other integrations were dropped; goes with the Mastra platform paths (§11) |
+| [x]  | `integrations/platform/gitlab/event-worker.ts`         |  406 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [x]  | `integrations/platform/jira/agent-tools.ts`            |  120 | drop  | removed, not migrated (integration dropped)                                                                      |
+| [ ]  | `integrations/slack/channel-session-link-processor.ts` |  121 | 7     |                                                                                                                  |
+| [ ]  | `integrations/slack/run-error-card.ts`                 |   64 | 7     |                                                                                                                  |
+| [ ]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                                                  |
+| [ ]  | `integrations/subscription-session.ts`                 |  197 | 7     |                                                                                                                  |
+| [ ]  | `routes/config.ts`                                     | 1800 | 7     |                                                                                                                  |
+| [ ]  | `routes/contracts.ts`                                  | 1478 | 3     | session API                                                                                                      |
+| [ ]  | `routes/custom-provider-source.ts`                     |  186 | 7     |                                                                                                                  |
+| [ ]  | `routes/fs.ts`                                         | 1657 | 3     | session API                                                                                                      |
+| [ ]  | `routes/oauth.ts`                                      |  515 | 12    | Claude OAuth removed (slice 12); still imports the code-sdk for the other providers' flows                       |
+| [ ]  | `routes/provider-credentials.ts`                       |  182 | 7     |                                                                                                                  |
+| [ ]  | `routes/skills.ts`                                     |  320 | 3     | session API                                                                                                      |
+| [ ]  | `routes/source-control-sessions.ts`                    | 1057 | 3     | session API                                                                                                      |
+| [ ]  | `routes/surface.ts`                                    | 1074 | 3     | session API                                                                                                      |
+| [ ]  | `routes/tenant-credentials.ts`                         |  390 | 7     |                                                                                                                  |
+| [ ]  | `routes/voice.ts`                                      |  281 | drop  | voice dropped                                                                                                    |
+| [ ]  | `rules/binding-context.ts`                             |  210 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `rules/dispatcher.ts`                                  | 3008 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `rules/processor.ts`                                   |  834 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `rules/start-coordinator.ts`                           |  406 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `run-error.ts`                                         |  157 | 7     |                                                                                                                  |
+| [ ]  | `sandbox/context-sandboxes.ts`                         |  151 | 7     |                                                                                                                  |
+| [ ]  | `session/credential-policy.ts`                         |   99 | 7     |                                                                                                                  |
+| [ ]  | `session/factory-session.ts`                           |  423 | 7     |                                                                                                                  |
+| [ ]  | `session/filesystem-capture.ts`                        |  329 | 7     |                                                                                                                  |
+| [ ]  | `session/first-exec-capture.ts`                        |  127 | 7     |                                                                                                                  |
+| [ ]  | `session/first-message-capture.ts`                     |   50 | 7     |                                                                                                                  |
+| [ ]  | `session/live-sessions.ts`                             |  154 | 7     |                                                                                                                  |
+| [ ]  | `session/memory-settings-hydration.ts`                 |   46 | 7     |                                                                                                                  |
+| [ ]  | `session/reply-credential-processor.ts`                |   51 | 7     |                                                                                                                  |
+| [ ]  | `session/run-audit.ts`                                 |  302 | 7     |                                                                                                                  |
+| [ ]  | `session/session-threads.ts`                           |  179 | 7     |                                                                                                                  |
+| [ ]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `session/thinking-default.ts`                          |   60 | 7     |                                                                                                                  |
+| [ ]  | `session/thread-session-stamp.ts`                      |   21 | 7     |                                                                                                                  |
+| [ ]  | `session/thread-title-mirror.ts`                       |   75 | 7     |                                                                                                                  |
+| [ ]  | `skills/service.ts`                                    |  120 | 6     | dispatcher / boards / goals                                                                                      |
+| [ ]  | `storage/domains/audit/agent-audit.ts`                 |  122 | 7     |                                                                                                                  |
+| [ ]  | `storage/domains/audit/domain.ts`                      |  381 | 7     |                                                                                                                  |
+| [ ]  | `storage/domains/credentials/base.ts`                  |  430 | 7     |                                                                                                                  |
+| [ ]  | `storage/domains/model-defaults/base.ts`               |  126 | 7     |                                                                                                                  |
+| [ ]  | `storage/domains/projects/base.ts`                     |  592 | 7     |                                                                                                                  |
+| [ ]  | `tools/approval-tools.ts`                              |  220 | 5     | interactions                                                                                                     |
+| [ ]  | `tools/deliver.ts`                                     |  204 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `tools/run-watch.ts`                                   |  183 | 5     | interactions                                                                                                     |
+| [ ]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `voice/transcription.ts`                               |  133 | drop  | voice dropped                                                                                                    |
+| [ ]  | `workspace.ts`                                         | 1967 | 2→7   | composition root; shrinks every slice                                                                            |
 
 ## UI — `mastracode/factory-ui/src` (slice 3 unless noted)
 

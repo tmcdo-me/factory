@@ -3,9 +3,8 @@
  *
  * The consumer's deploy entry constructs deployment-specific config instances
  * (auth adapter, pubsub) and passes them here explicitly. The only provider
- * defaults constructed here are Platform GitHub, GitLab, Jira, incident.io, and
- * Linear integrations when Platform credentials exist and the caller did not
- * provide those integrations.
+ * default constructed here is the Platform GitHub integration when Platform
+ * credentials exist and the caller did not provide a GitHub integration.
  *
  * `prepare()` resolves feature readiness, threads every dependency explicitly,
  * assembles the web routes/middleware, and returns the constructor args for
@@ -92,10 +91,9 @@ import {
 } from './integrations/github/review-status-reporter.js';
 import { isFactoryGithubLogin, trustedCollaborator } from './integrations/github/rules.js';
 import { dismissStaleFactoryReviews } from './integrations/github/stale-reviews.js';
-import type { GitLabIntegrationBase } from './integrations/gitlab/integration.js';
 import { KeptCards } from './integrations/kept-cards.js';
 import { PlatformApiClient, platformApiClientConfigFromEnv } from './integrations/platform/api-client.js';
-import { buildConnectToolsRoute, buildPlatformConnectRoutes } from './integrations/platform/connect/routes.js';
+import { buildConnectToolsRoute } from './integrations/platform/connect/routes.js';
 import { platformConnectTools } from './integrations/platform/connect/session-tools.js';
 import { logIntegrationSummary } from './integrations/startup-summary.js';
 import { createSessionAsRowOwner, prepareSessionRunContext } from './integrations/subscription-session.js';
@@ -368,7 +366,7 @@ export interface MastraFactoryConfig {
    *
    * Defaults, with Platform credentials and `MASTRA_PROJECT_ID`, to the Mastra
    * Connect tools of every connection attached to the Platform project, minus
-   * tools named for deleting or archiving and GitHub or GitLab tools. Pass `{}`
+   * tools named for deleting or archiving and GitHub tools. Pass `{}`
    * to offer none.
    */
   tools?: FactoryTools;
@@ -404,11 +402,8 @@ export interface MastraFactoryConfig {
    * Registered capability providers. The factory registers the pieces each
    * `FactoryIntegration` instance provides — HTTP routes, storage domains,
    * agent/session tools, intake, source control, and diagnostics — into the
-   * system. When Platform credentials are configured, missing `github`,
-   * `gitlab`, and `linear` integrations default to their Platform-backed
-   * implementations. Missing `jira` and `incidentio` integrations also default
-   * to their Platform-backed implementations, which discover visible `jira` and
-   * `incident-io` connections at runtime.
+   * system. When Platform credentials are configured, a missing `github`
+   * integration defaults to its Platform-backed implementation.
    */
   integrations?: FactoryIntegration[];
   /**
@@ -868,48 +863,26 @@ export class MastraFactory {
     // provider and somewhere for clients to get tokens.
     const mcpEnabled = Boolean(auth) && mcpAuthorizationServers.length > 0;
 
-    // Explicit integrations win. Platform credentials fill only missing
-    // provider slots so callers can override each integration independently.
+    // Explicit integrations win. Platform credentials fill only a missing
+    // GitHub slot, so callers can override it.
     const integrations = [...(this.#config.integrations ?? [])];
     const explicitGithub = integrations.some(integration => integration.id === 'github');
     // Whether this boot constructed the GitHub integration on the caller's
     // behalf — `platform.github` is only meaningful in that case.
     let installedPlatformGithub = false;
-    if (hasPlatformCredentials()) {
-      if (!explicitGithub) {
-        // Forward `platform.github` to the integration the factory installs
-        // itself. `slug` falls back to the sibling `githubAppSlug` so existing
-        // deploys keep working; the constructor validates and freezes `rules`,
-        // so invalid ones fail boot.
-        const { PlatformGithubIntegration } = await import('./integrations/platform/github/integration.js');
-        integrations.push(
-          new PlatformGithubIntegration({
-            rules: this.#config.platform?.github?.rules,
-            slug: this.#config.platform?.github?.slug ?? this.#config.platform?.githubAppSlug,
-          }),
-        );
-        installedPlatformGithub = true;
-      }
-      if (!integrations.some(integration => integration.id === 'incidentio')) {
-        const { PlatformIncidentioIntegration } = await import('./integrations/platform/incidentio/integration.js');
-        integrations.push(new PlatformIncidentioIntegration());
-      }
-      if (!integrations.some(integration => integration.id === 'jira')) {
-        const { PlatformJiraIntegration } = await import('./integrations/platform/jira/integration.js');
-        integrations.push(new PlatformJiraIntegration());
-      }
-      if (!integrations.some(integration => integration.id === 'gitlab')) {
-        const { PlatformGitLabIntegration } = await import('./integrations/platform/gitlab/integration.js');
-        integrations.push(new PlatformGitLabIntegration());
-      }
-      if (!integrations.some(integration => integration.id === 'linear')) {
-        const { PlatformLinearIntegration } = await import('./integrations/platform/linear/integration.js');
-        integrations.push(new PlatformLinearIntegration());
-      }
-      if (!integrations.some(integration => integration.id === 'vanta')) {
-        const { PlatformVantaIntegration } = await import('./integrations/platform/vanta/integration.js');
-        integrations.push(new PlatformVantaIntegration());
-      }
+    if (hasPlatformCredentials() && !explicitGithub) {
+      // Forward `platform.github` to the integration the factory installs
+      // itself. `slug` falls back to the sibling `githubAppSlug` so existing
+      // deploys keep working; the constructor validates and freezes `rules`,
+      // so invalid ones fail boot.
+      const { PlatformGithubIntegration } = await import('./integrations/platform/github/integration.js');
+      integrations.push(
+        new PlatformGithubIntegration({
+          rules: this.#config.platform?.github?.rules,
+          slug: this.#config.platform?.github?.slug ?? this.#config.platform?.githubAppSlug,
+        }),
+      );
+      installedPlatformGithub = true;
     }
     // Never let the key be a silent no-op: it only applies to the integration
     // the factory installs itself, so warn when it had nothing to apply to.
@@ -1303,9 +1276,6 @@ export class MastraFactory {
     const githubIntegration = integrations.find(integration => integration.id === 'github') as
       | GithubIntegration
       | undefined;
-    const gitlabIntegration = integrations.find(
-      integration => integration.id === 'gitlab' && integration.intake && integration.versionControl,
-    ) as GitLabIntegrationBase | undefined;
     const workItemsReady = storage.isDomainReady('work-items');
     const sessionRetirement =
       sandboxConfig && storage.isDomainReady('source-control')
@@ -1564,9 +1534,9 @@ export class MastraFactory {
       versionControlIntegrationIds: integrations
         .filter(integration => integration.versionControl)
         .map(integration => integration.id),
-      ...(githubIntegration || gitlabIntegration
+      ...(githubIntegration
         ? {
-            resolveRepository: async ({ integrationId, orgId, userId, installationId, externalId, slug }) => {
+            resolveRepository: async ({ integrationId, orgId, installationId, externalId, slug }) => {
               if (githubIntegration && integrationId === githubIntegration.id) {
                 const installation = await githubIntegration.sourceControlStorage.installations.get({
                   orgId,
@@ -1586,46 +1556,11 @@ export class MastraFactory {
                   },
                 });
               }
-
-              if (
-                !gitlabIntegration?.intake ||
-                !gitlabIntegration.versionControl ||
-                integrationId !== gitlabIntegration.id
-              )
-                return null;
-              const handle = sourceControlStorage.forIntegration(gitlabIntegration.id);
-              const installation = await handle.installations.get({ orgId, id: installationId });
-              if (!installation) return null;
-              const sources = await gitlabIntegration.intake.listSources({ orgId, userId });
-              const selected = sources.find(
-                source =>
-                  source.name === slug &&
-                  typeof source.metadata?.projectId === 'string' &&
-                  source.metadata.projectId === externalId &&
-                  source.metadata.connectionId === installation.externalId,
-              );
-              if (!selected) return null;
-              const [repository] = await gitlabIntegration.versionControl.registerRepositories({
-                orgId,
-                installationId,
-                repositories: [
-                  {
-                    externalId,
-                    slug,
-                    defaultBranch:
-                      typeof selected.metadata?.defaultBranch === 'string' &&
-                      isValidGitRef(selected.metadata.defaultBranch)
-                        ? selected.metadata.defaultBranch
-                        : 'main',
-                    metadata: selected.metadata,
-                  },
-                ],
-              });
-              return repository ?? null;
+              return null;
             },
           }
         : {}),
-      ...(githubIntegration || gitlabIntegration
+      ...(githubIntegration
         ? {
             onProjectRepositoryLinked: ({ orgId, projectRepository }) => {
               void (async () => {
@@ -1640,17 +1575,6 @@ export class MastraFactory {
                     orgId,
                     projectRepositoryId: projectRepository.id,
                   });
-                } else if (gitlabIntegration) {
-                  const linkedInGitlab = await sourceControlStorage.forIntegration('gitlab').projectRepositories.get({
-                    orgId,
-                    id: projectRepository.id,
-                  });
-                  if (linkedInGitlab) {
-                    await gitlabIntegration.ingestLinkedRepositoryBacklog({
-                      orgId,
-                      projectRepositoryId: projectRepository.id,
-                    });
-                  }
                 }
               })().catch(error => {
                 console.warn('[factory] Failed to import a linked repository backlog:', error);
@@ -2265,7 +2189,7 @@ export class MastraFactory {
             // that lands on the wrong PR) be traced back to its run.
             //
             // The session URL is browser-facing (a human opens it from a
-            // GitHub/GitLab review comment), so it needs the UI host —
+            // GitHub review comment), so it needs the UI host —
             // the same origin Slack session deep-links resolve against
             // (`integrations/slack/slack.ts:168-171`, `:809-812`). In a
             // separate-SPA deployment `publicUrl` (i.e. `publicOrigin`)
@@ -2594,15 +2518,6 @@ export class MastraFactory {
             }),
           }),
           ...auditDomain.routes(),
-          // Connect/reconnect session minting for Platform-managed providers.
-          // Server-side because only the deploy holds Platform machine
-          // credentials; the SPA runs the OAuth popup with the minted token.
-          ...(hasPlatformCredentials()
-            ? buildPlatformConnectRoutes({
-                auth: routeAuth,
-                client: new PlatformApiClient(platformApiClientConfigFromEnv()),
-              })
-            : []),
           buildConnectToolsRoute(
             routeAuth,
             connectToolsProjectId

@@ -2,11 +2,6 @@ import type { FactoryIntegration } from './base.js';
 
 const DISPLAY_NAMES: Record<string, string> = {
   github: 'GitHub',
-  gitlab: 'GitLab',
-  incidentio: 'incident.io',
-  jira: 'Jira',
-  linear: 'Linear',
-  vanta: 'Vanta',
 };
 
 function displayName(id: string): string {

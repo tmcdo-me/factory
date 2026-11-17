@@ -400,7 +400,7 @@ describe('POST /web/factory/projects/:id/work-items', () => {
     expect(workItem.stageHistory[0].exitedAt).toBeUndefined();
   });
 
-  it('imports incident.io incidents and follow-ups onto an installed custom board at its initial phase', async () => {
+  it("imports another integration's items onto an installed custom board at its initial phase", async () => {
     const releaseBoard = defineBoard({
       id: 'release',
       title: 'Release',
@@ -415,19 +415,19 @@ describe('POST /web/factory/projects/:id/work-items', () => {
     const importedItems = [
       {
         externalSource: {
-          integrationId: 'incidentio',
+          integrationId: 'acme-tracker',
           type: 'issue',
-          externalId: 'incidentio:incident:incident-1',
-          url: 'https://app.incident.io/acme/incidents/incident-1',
+          externalId: 'acme-tracker:incident:incident-1',
+          url: 'https://tracker.example.com/acme/incidents/incident-1',
         },
         title: 'INC-42: API unavailable',
       },
       {
         externalSource: {
-          integrationId: 'incidentio',
+          integrationId: 'acme-tracker',
           type: 'issue',
-          externalId: 'incidentio:follow-up:follow-up-1',
-          url: 'https://app.incident.io/acme/incidents/incident-1',
+          externalId: 'acme-tracker:follow-up:follow-up-1',
+          url: 'https://tracker.example.com/acme/incidents/incident-1',
         },
         title: 'Add database failover alert',
       },
@@ -493,7 +493,7 @@ describe('POST /web/factory/projects/:id/work-items', () => {
     const bad = await json(
       'POST',
       `/web/factory/projects/${PROJECT_ID}/work-items`,
-      createBody({ externalSource: { integrationId: 'jira' } }),
+      createBody({ externalSource: { integrationId: 'acme-tracker' } }),
     );
     expect(bad.status).toBe(400);
   });
@@ -2732,9 +2732,9 @@ describe('run activity on the work-item listing', () => {
     it('finds a card by every word typed, in any case, in its title, its key, its number or its source id', async () => {
       await createCard('github:7:issue:12', { title: 'Fix the login flow', metadata: { number: 12 } });
       await createCard('github:7:issue:345', { title: 'Rework the login palette', metadata: { number: 345 } });
-      await createCard('linear:issue-uuid', {
+      await createCard('acme-tracker:issue-uuid', {
         title: 'Tidy the settings page',
-        externalSource: { integrationId: 'linear', type: 'issue', externalId: 'linear:issue-uuid' },
+        externalSource: { integrationId: 'acme-tracker', type: 'issue', externalId: 'acme-tracker:issue-uuid' },
         metadata: { identifier: 'ENG-77' },
       });
 
@@ -3361,30 +3361,29 @@ describe('GET /web/factory/projects/:id/boards/:boardKey/phases', () => {
       const pullRequest = await file('pr-7', {
         externalSource: { integrationId: 'github', type: 'pull-request', externalId: 'pr-7' },
         title: 'Tidy the palette',
-        metadata: { number: 7, labels: ['bug'], author: 'monalisa', requestedReviewers: ['defunkt'] },
+        metadata: {
+          number: 7,
+          labels: ['bug'],
+          author: 'monalisa',
+          assignees: ['ada'],
+          requestedReviewers: ['defunkt'],
+        },
       });
-      const linearA = await file('LIN-1', {
-        externalSource: { integrationId: 'linear', type: 'issue', externalId: 'LIN-1' },
+      const thread = await file('C1:1.000', {
+        externalSource: { integrationId: 'slack', type: 'slack-thread', externalId: 'C1:1.000' },
         title: 'Palette contrast',
-        metadata: { linearProjectId: 'project-a', assignee: 'Ada' },
-      });
-      const linearB = await file('LIN-2', {
-        externalSource: { integrationId: 'linear', type: 'issue', externalId: 'LIN-2' },
-        title: 'Slow sync',
-        metadata: { linearProjectId: 'project-b' },
       });
       const byHand = await file('', { externalSource: null, title: 'Write the changelog' }, teammate);
       return new Map([
         [issue.id, 'issue'],
         [pullRequest.id, 'pull request'],
-        [linearA.id, 'linear a'],
-        [linearB.id, 'linear b'],
+        [thread.id, 'slack thread'],
         [byHand.id, 'by hand'],
       ]);
     };
 
     it.each([
-      ['a search word', 'q=palette', ['linear a', 'pull request']],
+      ['a search word', 'q=palette', ['pull request', 'slack thread']],
       ['every search word', 'q=the%20login', ['issue']],
       ['a card number', 'q=%23101', ['issue']],
       ['a label', 'label=bug', ['issue', 'pull request']],
@@ -3392,11 +3391,10 @@ describe('GET /web/factory/projects/:id/boards/:boardKey/phases', () => {
       ['a source', 'source=github', ['issue', 'pull request']],
       ['cards filed by hand', 'source=manual', ['by hand']],
       ['pull requests', 'source=pull-request', ['pull request']],
-      ['any picked source', 'source=pull-request&source=linear', ['linear a', 'linear b', 'pull request']],
-      ['a Linear project picked alone', 'linearProject=project-a', ['linear a']],
+      ['any picked source', 'source=pull-request&source=slack', ['pull request', 'slack thread']],
       ['a source’s author', 'author=github:octocat', ['issue']],
       ['the person who filed a card by hand', 'author=factory:u2', ['by hand']],
-      ['an assignee', 'assignee=github:hubot&assignee=linear:ada', ['issue', 'linear a']],
+      ['an assignee', 'assignee=github:hubot&assignee=github:ada', ['issue', 'pull request']],
       ['a requested reviewer', 'reviewer=github:defunkt', ['pull request']],
       ['a person who worked on the card', 'worked=factory:u2', ['by hand']],
       ['a person involved in any way', 'teammate=github:defunkt&teammate=github:hubot', ['issue', 'pull request']],
@@ -3413,7 +3411,7 @@ describe('GET /web/factory/projects/:id/boards/:boardKey/phases', () => {
       expect(intake.total).toBe(expected.length);
       expect(body.matchingTotal).toBe(expected.length);
       // The board's own count ignores the search and the filters.
-      expect(body.boardTotal).toBe(5);
+      expect(body.boardTotal).toBe(4);
     });
   });
 
@@ -3671,8 +3669,9 @@ describe('GET /web/factory/projects/:id/work-items/filter-options', () => {
       externalSource: { integrationId: 'github', type: 'pull-request', externalId: 'pr-7' },
       metadata: { labels: ['bug', 'area: docs'], author: 'octocat', requestedReviewers: ['defunkt'] },
     });
+    // A Slack thread names no one, whatever its metadata says.
     await file({
-      externalSource: { integrationId: 'linear', type: 'issue', externalId: 'LIN-1' },
+      externalSource: { integrationId: 'slack', type: 'slack-thread', externalId: 'C1:1.000' },
       metadata: { assignee: 'Ada' },
     });
     await file({ externalSource: null, title: 'Filed by hand' }, { workosId: 'u2', organizationId: 'org1' });
@@ -3685,7 +3684,6 @@ describe('GET /web/factory/projects/:id/work-items/filter-options', () => {
     expect(body).toEqual({
       labels: ['area: docs', 'bug', 'Memory'],
       people: [
-        { id: 'linear:ada', name: 'Ada', source: 'linear' },
         { id: 'github:defunkt', name: 'defunkt', source: 'github' },
         { id: 'github:hubot', name: 'hubot', source: 'github' },
         { id: 'github:octocat', name: 'octocat', source: 'github' },

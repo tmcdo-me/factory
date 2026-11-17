@@ -124,7 +124,7 @@ function ordered(held: PhaseCards, sort: BoardPhasesView['sort']): readonly Plac
 /** Whether the view's search and filters keep a card; undefined when the view has none. */
 function viewMatcher(view: BoardPhasesView): ((card: Card) => boolean) | undefined {
   const words = searchWords(view.q ?? '');
-  const bySource = view.source.size > 0 || view.linearProject.size > 0;
+  const bySource = view.source.size > 0;
   const byLabel = view.label.size > 0;
   const byPeople = BOARD_PERSON_FIELDS.some(field => view[field].size > 0);
   if (words.length === 0 && !bySource && !byLabel && !byPeople) return undefined;

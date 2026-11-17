@@ -7,12 +7,7 @@ import { z } from 'zod';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext, getFactoryAuthUserId } from '../auth.js';
 import type { CommitCheck, CommitCheckStatus, VersionControl } from '../capabilities/version-control.js';
 import type { IntegrationTools } from '../integrations/base.js';
-import {
-  ensureLocalBranch,
-  isCheckoutOf,
-  pushRepositoryBranch,
-  refreshMergeRequestCheckout,
-} from '../integrations/github/sandbox.js';
+import { ensureLocalBranch, isCheckoutOf, pushRepositoryBranch } from '../integrations/github/sandbox.js';
 import { normalizedVerdictLine } from '../review-verdict.js';
 import type { ExecutableSandbox } from '../sandbox/materialization.js';
 import { resolveSessionWorkdir } from '../sandbox/session-sandbox.js';
@@ -23,7 +18,6 @@ import type {
   SourceControlSession,
   SourceControlStorageHandle,
 } from '../storage/domains/source-control/base.js';
-import { mergeRequestNumberFromBranch } from '../work-item-branch.js';
 import { environmentSlugs, findEnvironmentRepository, resolveSessionRepositories } from './environment-repositories.js';
 import { updateSessionEnvironmentRepository } from './environment-state-processor.js';
 
@@ -57,7 +51,7 @@ export function verdictEventMismatch(event: ReviewEvent, body: string | undefine
   const match = /^verdict: ?(approve|request changes|changes requested)\b/.exec(normalizedVerdictLine(body) ?? '');
   if (!match) return undefined;
   const verdict = match[1] === 'approve' ? 'approve' : 'request changes';
-  // GitLab has no request-changes state, so a blocking verdict is published as a comment review.
+  // A blocking verdict may also be published as a comment review.
   const allowed: ReviewEvent[] = verdict === 'approve' ? ['approve'] : ['request-changes', 'comment'];
   if (allowed.includes(event)) return undefined;
   return `Review body opens with "Verdict: ${verdict}" but event is "${event}". Nothing was posted. Use event ${allowed
@@ -270,40 +264,6 @@ export async function createSourceControlTools({
   });
 
   return {
-    source_control_refresh_change_request_checkout: createTool({
-      id: 'source_control_refresh_change_request_checkout',
-      description:
-        'Refresh the active GitLab review session checkout to its current MR head. The MR, repository, branch, and credential are resolved server-side; no provider credentials enter the agent workspace.',
-      inputSchema: z.object({}),
-      execute: async (_input, { workspace }) => {
-        const target = await withTarget();
-        const mergeRequestNumber = mergeRequestNumberFromBranch(target.session.branch);
-        if (target.provider.id !== 'gitlab' || mergeRequestNumber === undefined) {
-          throw new Error('Checkout refresh is only available in a bound GitLab merge-request review session.');
-        }
-        const ref = await reference(target);
-        const mergeRequest = await target.provider.versionControl.getPullRequest({
-          ...ref,
-          pullRequestId: String(mergeRequestNumber),
-        });
-        if (!mergeRequest || mergeRequest.state !== 'open' || mergeRequest.merged) {
-          throw new Error('The bound GitLab merge request is no longer open.');
-        }
-        const sandbox = executableSandbox(workspace?.sandbox);
-        const workdir = await resolveSessionWorkdir(target.session.id, sandbox, target.repository.slug);
-        const access = await target.provider.versionControl.getRepositoryAccess({
-          orgId: target.orgId,
-          repositoryId: target.repository.id,
-        });
-        const result = await refreshMergeRequestCheckout(sandbox, workdir, {
-          branch: target.session.branch,
-          mergeRequestNumber,
-          expectedHeadSha: mergeRequest.headSha,
-          access,
-        });
-        return result;
-      },
-    }),
     source_control_push_branch: createTool({
       id: 'source_control_push_branch',
       description: `Push the active Factory session branch to its connected source-control provider. Credentials are resolved and scrubbed server-side; this tool takes no token, remote, or branch arguments. ${repositoryArgument}`,
@@ -727,11 +687,11 @@ export async function createSourceControlTools({
 
 /** The change request a Review run reviews, as `MastraFactory.reviewedChangeRequest()` returns it to an app tool. */
 export interface ReviewedChangeRequest {
-  /** Source-control integration id, such as `github` or `gitlab`. */
+  /** Source-control integration id, such as `github`. */
   provider: string;
   /** Repository slug, such as `acme/app`. */
   repository: string;
-  /** The pull request or merge request number. */
+  /** The pull request number. */
   changeRequestId: string;
   /** The change request's head when it was read. */
   headSha: string;

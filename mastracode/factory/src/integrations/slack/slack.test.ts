@@ -1088,18 +1088,18 @@ describe('repo-backed thread sessions (resolveResourceId)', () => {
     });
   });
 
-  it('selects the GitLab partition linked to the routed Factory project', async () => {
+  it('selects the other provider partition linked to the routed Factory project', async () => {
     const github = makeSourceControl({ hasRepo: false });
-    const gitlab = makeSourceControl({ integrationId: 'gitlab' });
+    const forge = makeSourceControl({ integrationId: 'acme-forge' });
     const { sourceControl: _legacy, ...deps } = makeResolverDeps();
-    const resolve = createChannelResourceIdResolver({ ...deps, sourceControls: [github, gitlab] } as any, started);
+    const resolve = createChannelResourceIdResolver({ ...deps, sourceControls: [github, forge] } as any, started);
 
     const args = resolveArgs();
     await expect(resolve(args)).resolves.toBe('fp-1');
     expect(threadIdFor(args)).toBe('us-new');
 
     expect(github.sessions.create).not.toHaveBeenCalled();
-    expect(gitlab.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ projectRepositoryId: 'pr-1' }));
+    expect(forge.sessions.create).toHaveBeenCalledWith(expect.objectContaining({ projectRepositoryId: 'pr-1' }));
   });
 
   it('a DM thread creates a private session under the sender; channel threads stay org-visible on the Factory', async () => {
@@ -1245,7 +1245,7 @@ describe('repo-backed thread sessions (resolveResourceId)', () => {
       deps.projects.get.mockResolvedValueOnce({ id: 'fp-1' }).mockRejectedValueOnce(outage);
     const resolverDeps =
       failure === 'multiple providers'
-        ? { ...deps, sourceControls: [sourceControl, makeSourceControl({ integrationId: 'gitlab' })] }
+        ? { ...deps, sourceControls: [sourceControl, makeSourceControl({ integrationId: 'acme-forge' })] }
         : deps;
     const workItems = { upsert: vi.fn() };
     const store = { listThreads: vi.fn().mockResolvedValue({ threads: [] }), saveThread: vi.fn() };

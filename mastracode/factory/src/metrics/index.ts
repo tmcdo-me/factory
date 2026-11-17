@@ -19,7 +19,7 @@ export interface MetricsSources {
   storage: unknown;
   vector: unknown;
   pubsub: unknown;
-  /** Ids of the configured integrations; GitHub and Linear intake counts are sent as 0 when quiet. */
+  /** Ids of the configured integrations; GitHub intake counts are sent as 0 when quiet. */
   integrationIds?: readonly string[];
 }
 
@@ -80,7 +80,7 @@ export function startFactoryMetrics(
 
   if (metrics.enabled('intake')) {
     for (const id of sources.integrationIds ?? []) {
-      if (id === 'github' || id === 'linear') keepIntakeSource(id);
+      if (id === 'github') keepIntakeSource(id);
     }
     collectors.push(intakeCollector());
   }

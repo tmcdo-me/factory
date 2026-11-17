@@ -1,6 +1,6 @@
 /**
  * `FactoryIntegration` — the common contract for pluggable web integrations
- * (GitHub, Linear, third-party).
+ * (GitHub, Slack, third-party).
  *
  * Each integration is a self-contained class: the deploy entry
  * (`src/mastra/index.ts`) reads that integration's env vars ONCE, constructs
@@ -216,15 +216,10 @@ export interface FactoryChannelsConfig extends Omit<AgentControllerChannelsConfi
  * (validated at construction), their API surface, and their HTTP routes.
  */
 export interface FactoryIntegration {
-  /** Stable identifier: `'github'`, `'linear'`, custom ids for third parties. */
+  /** Stable identifier: `'github'`, `'slack'`, custom ids for third parties. */
   readonly id: string;
   /** Issue-oriented capability consumed by Intake. */
   readonly intake?: Intake;
-  /**
-   * Further intake settings this integration owns under their own ids (e.g. GitHub's `dependabot`),
-   * so the intake config API and UI accept and list sources for them.
-   */
-  readonly additionalIntakes?: ReadonlyArray<{ id: string; intake: Pick<Intake, 'listSources' | 'listItems'> }>;
   /** Repository, installation, and pull-request capability. */
   readonly versionControl?: VersionControl;
   /** Whether at least one account is connected, for the dev-server startup summary. */
@@ -253,7 +248,7 @@ export interface FactoryIntegration {
    */
   routes(ctx: IntegrationContext): ApiRoute[];
   /**
-   * Org-scoped agent tools resolved per request (e.g. Linear's issue tools).
+   * Org-scoped agent tools resolved per request.
    * Optional capability; the factory merges results into the SDK's async
    * `extraTools` provider.
    */

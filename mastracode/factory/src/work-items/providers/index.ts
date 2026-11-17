@@ -2,10 +2,6 @@ import type { ExternalWorkItemSource } from '../../storage/domains/work-items/ba
 import { externalAdapter } from './base.js';
 import { factoryWorkItemAdapter } from './factory.js';
 import { githubWorkItemAdapter } from './github.js';
-import { gitlabWorkItemAdapter } from './gitlab.js';
-import { incidentioWorkItemAdapter } from './incidentio.js';
-import { jiraWorkItemAdapter } from './jira.js';
-import { linearWorkItemAdapter } from './linear.js';
 import { stringValue } from './metadata-keys.js';
 import { slackWorkItemAdapter } from './slack.js';
 import type { WorkItemProviderAdapter } from './types.js';
@@ -22,11 +18,7 @@ const customWorkItemAdapter = externalAdapter('custom', {
 
 export const WORK_ITEM_PROVIDER_ADAPTERS: readonly WorkItemProviderAdapter[] = [
   githubWorkItemAdapter,
-  gitlabWorkItemAdapter,
-  jiraWorkItemAdapter,
-  linearWorkItemAdapter,
   slackWorkItemAdapter,
-  incidentioWorkItemAdapter,
   factoryWorkItemAdapter,
 ];
 

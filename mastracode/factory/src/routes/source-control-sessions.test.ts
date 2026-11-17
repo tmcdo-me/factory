@@ -65,25 +65,25 @@ function buildApp(
   return app;
 }
 
-async function seedGitLabRepository() {
+async function seedForgeRepository() {
   const seed = await createFactoryStorageForTests();
-  const sourceControl = seed.sourceControl.forIntegration('gitlab');
+  const sourceControl = seed.sourceControl.forIntegration('acme-forge');
   const project = await seed.projects.create({
     orgId: 'org-1',
     userId: 'user-1',
-    input: { name: 'GitLab project' },
+    input: { name: 'Forge project' },
   });
   const installation = await sourceControl.installations.upsert({
     orgId: 'org-1',
     connectedByUserId: 'user-1',
-    externalId: 'gitlab.com',
+    externalId: 'forge.com',
   });
   const repository = await sourceControl.repositories.upsert({
     orgId: 'org-1',
     input: {
       installationId: installation.id,
       externalId: '86555418',
-      slug: 'rhys-group1/factory-gitlab-primary',
+      slug: 'rhys-group1/factory-forge-primary',
       defaultBranch: 'main',
     },
   });
@@ -99,7 +99,7 @@ async function seedGitLabRepository() {
     repositoryId: repository.id,
     createdByUserId: 'user-1',
     sandboxProvider: 'local',
-    sandboxWorkdir: '/workspace/factory-gitlab-primary',
+    sandboxWorkdir: '/workspace/factory-forge-primary',
   });
   return { seed, sourceControl, projectRepository, project };
 }
@@ -143,7 +143,7 @@ const noRuns: RouteOptions['workItems'] = {
 
 describe('source-control session routes', () => {
   it('resolves binding, run audit, and title flows when the hosted thread differs from the Factory session', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const sessionId = 'factory-session-1';
     const threadId = 'conversation-1';
     const row = await sourceControl.sessions.create({
@@ -195,7 +195,7 @@ describe('source-control session routes', () => {
         input: {
           title: 'Review change',
           stages: ['reviewing'],
-          externalSource: { integrationId: 'gitlab', type: 'pull-request', externalId: 'pr-1' },
+          externalSource: { integrationId: 'acme-forge', type: 'pull-request', externalId: 'pr-1' },
         },
       },
       role: 'review',
@@ -311,7 +311,7 @@ describe('source-control session routes', () => {
   });
 
   it('stops a running turn, hands the session over, and marks the takeover in its thread', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const sessionId = 'factory-running-transfer';
     await sourceControl.sessions.create({
       sessionId,
@@ -361,7 +361,7 @@ describe('source-control session routes', () => {
   });
 
   it('hides a session its owner made private while the transfer was in flight', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const sessionId = 'factory-privatized-transfer';
     await sourceControl.sessions.create({
       sessionId,
@@ -396,7 +396,7 @@ describe('source-control session routes', () => {
   });
 
   it('takes a shared session with a compare-and-set on its owner, audits, and recycles the live host', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const sessionId = 'factory-session-transfer';
     await sourceControl.sessions.create({
       sessionId,
@@ -436,7 +436,7 @@ describe('source-control session routes', () => {
   });
 
   it('refuses to make a session private once a teammate took it, and puts its thread back on the Factory', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const sessionId = 'factory-visibility-vs-transfer';
     await sourceControl.sessions.create({
       sessionId,
@@ -500,7 +500,7 @@ describe('source-control session routes', () => {
   });
 
   it('answers a takeover by the current owner without touching the session', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const session = await sourceControl.sessions.create({
       sessionId: 'factory-same-owner-session',
       projectRepositoryId: projectRepository.id,
@@ -547,7 +547,7 @@ describe('source-control session routes', () => {
   });
 
   it('rejects takeover of an org-visible session from another organization', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const session = await sourceControl.sessions.create({
       sessionId: 'factory-cross-org-session',
       projectRepositoryId: projectRepository.id,
@@ -564,7 +564,7 @@ describe('source-control session routes', () => {
   });
 
   it('rejects takeover of a private session by another org member', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const session = await sourceControl.sessions.create({
       sessionId: 'factory-private-session',
       projectRepositoryId: projectRepository.id,
@@ -581,7 +581,7 @@ describe('source-control session routes', () => {
   });
 
   it("keeps a shared session with its owner while its conversation is still on the owner's memory", async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const sessionId = 'factory-unmoved-shared';
     await sourceControl.sessions.create({
       sessionId,
@@ -611,7 +611,7 @@ describe('source-control session routes', () => {
   });
 
   it('keeps Slack thread, Factory run and side sessions with their owner, and says so before the click', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const create = (sessionId: string, branch: string, origin?: { sessionId: string; threadId: string }) =>
       sourceControl.sessions.create({
         sessionId,
@@ -658,10 +658,10 @@ describe('source-control session routes', () => {
     }
   });
 
-  it('lists and opens a session stored in the GitLab partition', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+  it('lists and opens a session stored in the Forge partition', async () => {
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const session = await sourceControl.sessions.create({
-      sessionId: 'gitlab-session-1',
+      sessionId: 'forge-session-1',
       projectRepositoryId: projectRepository.id,
       orgId: 'org-1',
       userId: 'user-1',
@@ -687,7 +687,7 @@ describe('source-control session routes', () => {
   });
 
   it('reports the memory resource a session runs under when it is opened', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const create = (sessionId: string) =>
       sourceControl.sessions.create({
         sessionId,
@@ -738,7 +738,7 @@ describe('source-control session routes', () => {
   });
 
   it("hides a shared-looking session from teammates while its conversation is on its owner's memory", async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     for (const sessionId of ['legacy-shared', 'moved-shared']) {
       await sourceControl.sessions.create({
         sessionId,
@@ -771,9 +771,9 @@ describe('source-control session routes', () => {
   });
 
   it("names the owner when a teammate opens someone else's session", async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const session = await sourceControl.sessions.create({
-      sessionId: 'gitlab-session-teammate',
+      sessionId: 'forge-session-teammate',
       projectRepositoryId: projectRepository.id,
       orgId: 'org-1',
       userId: 'user-2',
@@ -796,14 +796,14 @@ describe('source-control session routes', () => {
   });
 
   it('creates a private session through the provider-neutral project route when asked', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const app = buildApp([sourceControl], seed);
     const sessionId = '11111111-1111-4111-8111-111111111111';
 
     const response = await app.request(`/web/source-control/projects/${projectRepository.id}/sessions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ sessionId, title: 'Build GitLab issue', visibility: 'private' }),
+      body: JSON.stringify({ sessionId, title: 'Build Forge issue', visibility: 'private' }),
     });
 
     expect(response.status).toBe(200);
@@ -813,7 +813,7 @@ describe('source-control session routes', () => {
         projectRepositoryId: projectRepository.id,
         branch: `user/session-${sessionId}`,
         baseBranch: 'main',
-        title: 'Build GitLab issue',
+        title: 'Build Forge issue',
         visibility: 'private',
       },
     });
@@ -827,7 +827,7 @@ describe('source-control session routes', () => {
   });
 
   it('creates sessions shared with the org unless asked for private, and rejects unknown visibility', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const app = buildApp([sourceControl], seed);
     const create = (body: Record<string, unknown>) =>
       app.request(`/web/source-control/projects/${projectRepository.id}/sessions`, {
@@ -848,7 +848,7 @@ describe('source-control session routes', () => {
   });
 
   it('starts a session created shared on its Factory resource, so teammates can reach its memory', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const controller = new AgentController<MastraCodeState>({
       id: 'code',
       stateSchema,
@@ -883,7 +883,7 @@ describe('source-control session routes', () => {
   });
 
   it('starts the conversation on the session thread so the first prompt can be sent right away', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const controller = new AgentController<MastraCodeState>({
       id: 'code',
       stateSchema,
@@ -930,7 +930,7 @@ describe('source-control session routes', () => {
   });
 
   it('stamps the factory of the link on the session it creates', async () => {
-    const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
     const app = buildApp([sourceControl], seed);
     const response = await app.request(`/web/source-control/projects/${projectRepository.id}/sessions`, {
       method: 'POST',
@@ -948,7 +948,7 @@ describe('source-control session routes', () => {
   it.each(['-feature', 'topic..fix', 'topic/', 'topic//fix', 'topic.lock'])(
     'rejects invalid ref %s before creating a session',
     async branch => {
-      const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+      const { seed, sourceControl, projectRepository } = await seedForgeRepository();
       const app = buildApp([sourceControl], seed);
       const sessionId = '22222222-2222-4222-8222-222222222222';
 
@@ -965,9 +965,9 @@ describe('source-control session routes', () => {
   );
 
   it('keeps the legacy GitHub project URL as a compatibility alias', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     await sourceControl.sessions.create({
-      sessionId: 'gitlab-session-legacy-alias',
+      sessionId: 'forge-session-legacy-alias',
       projectRepositoryId: projectRepository.id,
       orgId: 'org-1',
       userId: 'user-1',
@@ -981,12 +981,12 @@ describe('source-control session routes', () => {
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toMatchObject({
-      sessions: [expect.objectContaining({ sessionId: 'gitlab-session-legacy-alias' })],
+      sessions: [expect.objectContaining({ sessionId: 'forge-session-legacy-alias' })],
     });
   });
 
   it("lists a Factory's sessions across every link and provider partition", async () => {
-    const { seed, sourceControl: gitlab, projectRepository: gitlabLink, project } = await seedGitLabRepository();
+    const { seed, sourceControl: forge, projectRepository: forgeLink, project } = await seedForgeRepository();
     const github = seed.sourceControl.forIntegration('github');
     const installation = await github.installations.upsert({
       orgId: 'org-1',
@@ -1036,24 +1036,24 @@ describe('source-control session routes', () => {
         baseBranch: 'main',
         visibility,
       }) as const;
-    await gitlab.sessions.create(session('on-gitlab', gitlabLink.id, 'user-2', 'org'));
+    await forge.sessions.create(session('on-forge', forgeLink.id, 'user-2', 'org'));
     await github.sessions.create(session('on-github', githubLink.id, 'user-1', 'org'));
     await github.sessions.create(session('mine-private', githubLink.id, 'user-1', 'private'));
     await github.sessions.create(session('their-private', githubLink.id, 'user-2', 'private'));
     await github.sessions.create(session('other-factory', otherLink.id, 'user-1', 'org'));
-    const app = buildApp([github, gitlab], seed);
+    const app = buildApp([github, forge], seed);
 
     const listed = await app.request(`/web/factory/projects/${project.id}/sessions`);
 
     expect(listed.status).toBe(200);
     const { sessions } = (await listed.json()) as { sessions: Array<{ sessionId: string }> };
-    expect(sessions.map(row => row.sessionId).sort()).toEqual(['mine-private', 'on-github', 'on-gitlab']);
+    expect(sessions.map(row => row.sessionId).sort()).toEqual(['mine-private', 'on-forge', 'on-github']);
   });
 
   it("does not list sessions of a Factory outside the caller's organization", async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     await sourceControl.sessions.create({
-      sessionId: 'gitlab-session-org-1',
+      sessionId: 'forge-session-org-1',
       projectRepositoryId: projectRepository.id,
       orgId: 'org-1',
       userId: 'user-1',
@@ -1080,7 +1080,7 @@ describe('source-control session routes', () => {
       });
 
     async function seedPrivateSession(overrides: { branch?: string; visibility?: 'org' | 'private' } = {}) {
-      const seeded = await seedGitLabRepository();
+      const seeded = await seedForgeRepository();
       const session = await seeded.sourceControl.sessions.create({
         sessionId: 'visibility-session',
         projectRepositoryId: seeded.projectRepository.id,
@@ -1134,7 +1134,7 @@ describe('source-control session routes', () => {
     });
 
     it("moves the session's threads onto the Factory when shared and back to the owner when made private", async () => {
-      const { seed, sourceControl, projectRepository, project } = await seedGitLabRepository();
+      const { seed, sourceControl, projectRepository, project } = await seedForgeRepository();
       const storage = new InMemoryStore({ id: 'factory-visibility-move' });
       const controller = new AgentController<MastraCodeState>({
         id: 'code',
@@ -1371,7 +1371,7 @@ describe('session sandbox recreate', () => {
   }
 
   async function seedRecreateSession(owner = 'user-1', visibility: 'org' | 'private' = 'org') {
-    const repo = await seedGitLabRepository();
+    const repo = await seedForgeRepository();
     const session = await repo.sourceControl.sessions.create({
       sessionId: `recreate-${owner}-${visibility}`,
       projectRepositoryId: repo.projectRepository.id,
@@ -1746,7 +1746,7 @@ describe('session sandbox recreate', () => {
   );
 
   it('reports the capability on fresh and repeated session creates', async () => {
-    const { seed, sourceControl, projectRepository } = await seedGitLabRepository();
+    const { seed, sourceControl, projectRepository } = await seedForgeRepository();
     const app = buildRecreateApp(seed, sourceControl, { sessionRetirement: fakeCoordinator() });
     const sessionId = '33333333-3333-4333-8333-333333333333';
     const create = () =>

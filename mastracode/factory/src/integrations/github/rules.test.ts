@@ -6089,9 +6089,8 @@ describe('pull request cards on the Work board', () => {
     return { workId: work.item.id };
   }
 
-  // A card whose issue lives in another integration (Jira, Linear, incident.io) has no repository
-  // of its own, so it must be taken as-is: the authored pull request joins it, exactly as it already
-  // does on GitLab. Regression guard for #30358.
+  // A card whose issue lives in another integration (one the deployment adds) has no repository
+  // of its own, so it must be taken as-is: the authored pull request joins it. Regression guard for #30358.
   const cardsOutsideGithub: Array<[string, ExternalWorkItemSource]> = [
     [
       'github',
@@ -6103,30 +6102,12 @@ describe('pull request cards on the Work board', () => {
       },
     ],
     [
-      'jira',
+      'custom tracker',
       {
-        integrationId: 'jira',
+        integrationId: 'tracker',
         type: 'issue',
-        externalId: 'jira-issue:10001',
-        url: 'https://acme.atlassian.net/browse/ENG-1',
-      },
-    ],
-    [
-      'linear',
-      {
-        integrationId: 'linear',
-        type: 'issue',
-        externalId: 'linear-issue:abc',
-        url: 'https://linear.app/acme/issue/ENG-1/title',
-      },
-    ],
-    [
-      'incidentio',
-      {
-        integrationId: 'incidentio',
-        type: 'issue',
-        externalId: 'incidentio:42',
-        url: 'https://app.incident.io/incidents/42',
+        externalId: 'tracker-issue:10001',
+        url: 'https://tracker.example.com/browse/ENG-1',
       },
     ],
   ];
@@ -6159,23 +6140,6 @@ describe('pull request cards on the Work board', () => {
     const cards = await harness.cards();
     expect(cards).toHaveLength(2);
     expect(cards.find(entry => entry.id === workId)?.workItem.sources).toEqual([]);
-  });
-
-  it('keeps a GitHub pull request off a GitLab card', async () => {
-    const harness = await workBoardHarness('read');
-    const { workId } = await authoredPullRequest(harness, {
-      integrationId: 'gitlab',
-      type: 'issue',
-      externalId: 'gitlab-issue:42',
-      url: 'https://gitlab.com/acme/repo/-/issues/42',
-    });
-
-    // A GitLab card keeps only merge requests; this GitHub pull request gets its own card.
-    const cards = await harness.cards();
-    expect(cards).toHaveLength(2);
-    expect(cards.find(entry => entry.id === workId)?.workItem.sources.map(source => source.sourceType)).toEqual([
-      'issue',
-    ]);
   });
 
   // fork(claude-agent): a pull request the card's own run opened is filed on that card even when the

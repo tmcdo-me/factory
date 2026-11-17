@@ -75,7 +75,7 @@ async function createItem(
   storage: WorkItemsStorage,
   overrides: Partial<{
     orgId: string;
-    source: 'github-issue' | 'github-pr' | 'gitlab-pr' | 'slack-thread';
+    source: 'github-issue' | 'github-pr' | 'slack-thread';
     sourceKey: string;
     board: string;
     stages: string[];
@@ -92,7 +92,7 @@ async function createItem(
       input: {
         ...(overrides.board ? { board: overrides.board } : {}),
         externalSource: {
-          integrationId: source === 'slack-thread' ? 'slack' : source === 'gitlab-pr' ? 'gitlab' : 'github',
+          integrationId: source === 'slack-thread' ? 'slack' : 'github',
           type: source === 'slack-thread' ? 'slack-thread' : source.endsWith('-pr') ? 'pull-request' : 'issue',
           externalId: overrides.sourceKey ?? '1',
         },
@@ -1336,21 +1336,6 @@ describe('FactoryTransitionService', () => {
     expect(await storage.listDeferredDecisions('org-1', PROJECT_ID)).toEqual([]);
   });
 
-  it('allows a GitLab merge request to enter PR review like a GitHub pull request', async () => {
-    const storage = (await createFactoryStorageForTests()).workItems;
-    const item = await createItem(storage, { source: 'gitlab-pr', stages: ['intake'] });
-    const service = new FactoryTransitionService({ configVersion: 'rules-v1', storage });
-
-    await expect(
-      service.transition({ ...request(item, { stage: 'pr-review' }), cause: 'run_start' }),
-    ).resolves.toMatchObject({ status: 'accepted', stage: 'pr-review' });
-    const updated = await storage.get({ orgId: 'org-1', id: item.id });
-    expect(updated).not.toBeNull();
-    await expect(
-      service.transition(request(updated!, { board: 'work', stage: 'execute', identity: 'wrong-gitlab-board' })),
-    ).resolves.toMatchObject({ status: 'rejected', code: 'invalid_transition' });
-  });
-
   it("queues PR review's run onto the bound agent's own run when it walks its parked card back", async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const item = await createItem(storage, {
@@ -2432,7 +2417,7 @@ describe('onTransitionCommitted', () => {
 describe('pull request cards on the Work board', () => {
   async function prCard(
     storage: WorkItemsStorage,
-    overrides: { source?: 'github-pr' | 'gitlab-pr'; stages?: string[]; metadata?: Record<string, unknown> } = {},
+    overrides: { source?: 'github-pr'; stages?: string[]; metadata?: Record<string, unknown> } = {},
   ) {
     return createItem(storage, {
       board: 'work',
@@ -2460,17 +2445,6 @@ describe('pull request cards on the Work board', () => {
     // Neither self-review nor a builder session: only the PR reviewer.
     expect(result.status === 'accepted' && result.decisions).toHaveLength(1);
     expect((await storage.get({ orgId: 'org-1', id: item.id }))?.board).toBe('work');
-  });
-
-  it('runs the PR review runner for a merge request card; the skill picks the GitLab procedure', async () => {
-    const storage = (await createFactoryStorageForTests()).workItems;
-    const item = await prCard(storage, { source: 'gitlab-pr' });
-    const service = new FactoryTransitionService({ configVersion: 'rules-v1', storage });
-
-    await expect(service.transition(request(item, { stage: 'pr-review' }))).resolves.toMatchObject({
-      status: 'accepted',
-      decisions: [{ type: 'invokeSkill', role: 'review', skillName: 'factory-review' }],
-    });
   });
 
   it('re-reviews from Done with the PR review runner, and supersedes a live pass on re-entry', async () => {

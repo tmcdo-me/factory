@@ -309,41 +309,6 @@ describe('recordFactoryPullRequestProvenance', () => {
       expect(await sources(workItems, input.item.id)).toEqual(['issue']);
     });
 
-    it('leaves it off a GitLab card, which keeps only merge requests', async () => {
-      const { sourceControl, integrationStorage, workItems, github, input, project, pullsGet } = await setup();
-      pullsGet.mockResolvedValue(pullRequest17());
-      const gitlab = (
-        await workItems.upsert({
-          orgId: 'org-1',
-          userId: 'user-1',
-          factoryProjectId: project.id,
-          input: {
-            externalSource: {
-              integrationId: 'gitlab',
-              type: 'issue',
-              externalId: 'gitlab-issue:42',
-              url: 'https://gitlab.com/acme/repo/-/issues/42',
-            },
-            title: 'GitLab issue',
-            stages: ['execute'],
-            sessions: {},
-            metadata: {},
-          },
-        })
-      ).item;
-
-      await expect(
-        recordFactoryPullRequestProvenance(
-          github,
-          sourceControl,
-          integrationStorage,
-          workItems,
-          opened(input, { item: gitlab, binding: { ...input.binding, workItemId: gitlab.id } }),
-        ),
-      ).resolves.toBeUndefined();
-      expect(await sources(workItems, gitlab.id)).toEqual(['issue']);
-    });
-
     it('leaves it on the card an earlier "opened" already filed it on', async () => {
       const { sourceControl, integrationStorage, workItems, github, input, project, pullsGet } = await setup();
       pullsGet.mockResolvedValue(pullRequest17());

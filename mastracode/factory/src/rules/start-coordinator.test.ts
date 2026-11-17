@@ -268,24 +268,24 @@ describe('FactoryStartCoordinator', () => {
     expect((await seed.audit.list({ orgId: 'org-1', factoryProjectId: PROJECT_ID })).events).toEqual([]);
   });
 
-  it('resolves GitLab-backed runs from the GitLab source-control partition', async () => {
+  it("resolves another source-control integration's runs from that integration's partition", async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
     const { controller } = makeController();
     const githubSourceControl = makeSourceControl();
-    const gitlabSourceControl = makeSourceControl('gitlab');
+    const forgeSourceControl = makeSourceControl('forge');
     const resolveSourceControl = vi.fn(request =>
-      request.workItem.input.externalSource?.integrationId === 'gitlab'
-        ? (gitlabSourceControl as never)
+      request.workItem.input.externalSource?.integrationId === 'forge'
+        ? (forgeSourceControl as never)
         : (githubSourceControl as never),
     );
     const coordinator = new FactoryStartCoordinator(controller as never, storage, undefined, resolveSourceControl);
     const request = startRequest();
-    request.workItem.input.externalSource.integrationId = 'gitlab';
+    request.workItem.input.externalSource.integrationId = 'forge';
 
     await coordinator.prepare(request);
 
     expect(resolveSourceControl).toHaveBeenCalledWith(request);
-    expect(gitlabSourceControl.sessions.getBySessionId).toHaveBeenCalledWith('session-1');
+    expect(forgeSourceControl.sessions.getBySessionId).toHaveBeenCalledWith('session-1');
     expect(githubSourceControl.sessions.getBySessionId).not.toHaveBeenCalled();
   });
 

@@ -782,7 +782,19 @@ take. `FORK.md` documents this.
   A fork-only `agent-sessions` storage domain records each session's runtime and resume state,
   and each project's default runtime.
 - Integrations: **keep GitHub, Slack** (Slack unused today, planned). **Drop Linear, GitLab, Jira,
-  incident.io.**
+  incident.io.** ✅ Removed, with Vanta, Dependabot (GitHub alert intake) and the unwired WorkOS
+  audit-log mirror: their integrations, Platform variants, agent tools, routes and webhooks, rule
+  sources and events, board event handlers, intake/branch/people/filter branches, GitLab review
+  skills and MR checkout refresh, the Platform provider connect routes (they served only those
+  providers), web entry wiring and env vars, and tests; in the UI, their settings sections,
+  onboarding rows, the create-Factory wizard's project-management step (it only offered Linear and
+  Jira), the board's Linear-project filter, and the GitLab host choice. Kept: the
+  Platform GitHub integration and the Platform API client (GitHub via Mastra Platform; they go with
+  "Mastra platform paths"), the Mastra Connect tools route and its GitHub/GitLab tool filter, and
+  WorkOS _sign-in_ (`@mastra/auth-workos`, an auth provider, not an integration). No table or
+  migration was dropped: stored rows naming removed providers (integration connections, intake
+  config keys such as `repositoryByLinearProject`, cards with those sources) are left in place and
+  simply no longer read as provider-specific.
 - Mastra-Code-era features:
 
 | Feature                                                              | Decision                                                            |

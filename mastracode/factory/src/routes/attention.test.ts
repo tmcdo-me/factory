@@ -576,10 +576,10 @@ describe('attention links open the board the card is on', () => {
     expect(await targetBoards(item)).toEqual(everyKind('work'));
   });
 
-  it('links a GitLab merge request with no stored board to Work', async () => {
+  it('links a pull request card with no stored board to Work', async () => {
     const item = await seedCard({
       board: null,
-      externalSource: { integrationId: 'gitlab', type: 'pull-request', externalId: 'gitlab-mr:17' },
+      externalSource: { integrationId: 'github', type: 'pull-request', externalId: 'github-pr:17' },
     });
     expect(await targetBoards(item)).toEqual(everyKind('work'));
   });

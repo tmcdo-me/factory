@@ -16,18 +16,17 @@ export interface ReviewSourceOutput {
    * Browser-facing deep-link back to the Factory session that produced this
    * review — the only field a review body publishes. Everything else on this
    * shape is an input to in-run cross-checks and the session handoff, never a
-   * published field, so the GitHub/GitLab audience never sees the upstream
-   * Linear/Jira slug through the review comment.
+   * published field, so the GitHub audience never sees Factory-internal
+   * routing facts through the review comment.
    */
   sessionUrl: string;
   /**
-   * PR/MR author recorded on the review card at intake — for GitHub this is
-   * `pullRequest.user.login`, for GitLab it is the GitLab username. The skill
-   * cross-checks it against the same REST field of the reviewed PR
-   * (`gh api repos/<owner>/<repo>/pulls/<number> --jq .user.login`; `gh pr view`
-   * formats App authors as `app/<slug>` instead of `<slug>[bot]`) or the
-   * equivalent MR fetch; a mismatch means the session is bound to a different
-   * PR/MR than the one being reviewed.
+   * PR author recorded on the review card at intake — GitHub's
+   * `pullRequest.user.login`. The skill cross-checks it against the same REST
+   * field of the reviewed PR (`gh api repos/<owner>/<repo>/pulls/<number> --jq
+   * .user.login`; `gh pr view` formats App authors as `app/<slug>` instead of
+   * `<slug>[bot]`); a mismatch means the session is bound to a different PR
+   * than the one being reviewed.
    */
   triggeredBy: string | null;
   /**
@@ -51,10 +50,7 @@ export interface ReviewSourceOutput {
    * `null` when intake recorded no repository identity — in that case there
    * is no verifiable bound repository and the fallback must not publish.
    */
-  boundRepository:
-    | { provider: 'github'; repositoryId: number }
-    | { provider: 'gitlab'; host: string | null; projectId: number }
-    | null;
+  boundRepository: { provider: 'github'; repositoryId: number } | null;
 }
 
 /**
@@ -78,7 +74,7 @@ export function resolveReviewSourceUiOrigin(raw: string | undefined): string | n
  * mis-targeted review before it publishes.
  *
  * The tool exists to make cross-PR misattribution detectable both in-run and
- * after the fact: a review lands on GitHub/GitLab with the Factory session URL
+ * after the fact: a review lands on GitHub with the Factory session URL
  * that produced it, and the human who investigates a suspicious review can
  * jump straight to the run.
  *
@@ -195,18 +191,10 @@ function readReviewTarget(item: Card): ReviewSourceOutput['reviewTarget'] {
 function readBoundRepository(item: Card): ReviewSourceOutput['boundRepository'] {
   const metadata = item.workItem.metadata;
   if (!metadata) return null;
-  // Intake stamps repository identity on every PR/MR card:
-  // `github/default-rules.ts` writes `githubRepositoryId`, and
-  // `gitlab/default-rules.ts` writes `gitlabHost` + `gitlabProjectId`.
+  // Intake stamps repository identity on every PR card: `github/default-rules.ts`
+  // writes `githubRepositoryId`.
   if (typeof metadata.githubRepositoryId === 'number') {
     return { provider: 'github', repositoryId: metadata.githubRepositoryId };
-  }
-  if (typeof metadata.gitlabProjectId === 'number') {
-    return {
-      provider: 'gitlab',
-      host: typeof metadata.gitlabHost === 'string' && metadata.gitlabHost ? metadata.gitlabHost : null,
-      projectId: metadata.gitlabProjectId,
-    };
   }
   return null;
 }

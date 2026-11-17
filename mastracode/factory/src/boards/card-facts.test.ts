@@ -12,11 +12,8 @@ const SOURCES: Record<string, ExternalWorkItemSource | null> = {
   manual: null,
   'github issue': { integrationId: 'github', type: 'issue', externalId: 'acme/app#1' },
   'github pull request': { integrationId: 'github', type: 'pull-request', externalId: 'acme/app#2' },
-  'gitlab issue': { integrationId: 'gitlab', type: 'issue', externalId: 'acme/app#3' },
-  'gitlab merge request': { integrationId: 'gitlab', type: 'pull-request', externalId: 'acme/app!4' },
-  'linear issue': { integrationId: 'linear', type: 'issue', externalId: 'ENG-5' },
-  'jira issue': { integrationId: 'jira', type: 'issue', externalId: 'OPS-6' },
-  'incident.io follow-up': { integrationId: 'incidentio', type: 'follow-up', externalId: 'inc-7' },
+  // An integration this package does not ship, added by the deployment.
+  'custom tracker issue': { integrationId: 'tracker', type: 'issue', externalId: 'ENG-5' },
   'slack thread': { integrationId: 'slack', type: 'thread', workspaceId: 'T0ABC', externalId: '1700000000.0001' },
 };
 
@@ -94,47 +91,6 @@ describe('where an item lives, its key, state and assignees', () => {
         'item.assignees': ['octocat'],
       },
     },
-    {
-      name: 'GitLab merge request in a subgroup',
-      source: {
-        integrationId: 'gitlab',
-        type: 'pull-request',
-        externalId: 'gitlab:9:mr:7',
-        url: 'https://gitlab.com/acme/platform/api/-/merge_requests/7',
-      },
-      metadata: { gitlabMergeRequestIid: 7, merged: true, assignees: [] },
-      facts: {
-        'source.provider': 'gitlab',
-        'source.repository': 'acme/platform/api',
-        'item.key': 'acme/platform/api!7',
-        'item.state': 'merged',
-        'item.assignees': [],
-      },
-    },
-    {
-      name: 'Linear issue',
-      source: { integrationId: 'linear', type: 'issue', externalId: 'linear:ENG-5' },
-      metadata: { identifier: 'ENG-5', linearState: 'In Progress', linearTeam: 'ENG', assignee: 'Ada' },
-      facts: {
-        'source.provider': 'linear',
-        'source.repository': 'ENG',
-        'item.key': 'ENG-5',
-        'item.state': 'In Progress',
-        'item.assignees': ['Ada'],
-      },
-    },
-    {
-      name: 'Jira issue',
-      source: { integrationId: 'jira', type: 'issue', externalId: '10042' },
-      metadata: { identifier: 'OPS-6', state: 'To Do', project: 'OPS', assignees: ['Grace'] },
-      facts: {
-        'source.provider': 'jira',
-        'source.repository': 'OPS',
-        'item.key': 'OPS-6',
-        'item.state': 'To Do',
-        'item.assignees': ['Grace'],
-      },
-    },
   ] as const;
 
   it.each(ARRIVALS)(
@@ -155,25 +111,14 @@ describe('where an item lives, its key, state and assignees', () => {
     },
   );
 
-  it('takes the team or project from the key when the provider metadata leaves it out', () => {
-    const facts = (integrationId: string, identifier: string) =>
-      cardRuleFacts({
-        title: 'Fix',
-        externalSource: { integrationId, type: 'issue', externalId: identifier },
-        metadata: { identifier },
-      });
-    expect(facts('linear', 'ENG-5')['source.repository']).toBe('ENG');
-    expect(facts('jira', 'OPS-6')['source.repository']).toBe('OPS');
-  });
-
-  it('has no repository for an incident.io follow-up or a GitHub item without its URL, and none of these facts for a manual card', () => {
-    const incident = cardRuleFacts({
+  it("has no repository for a custom integration's item or a GitHub item without its URL, and none of these facts for a manual card", () => {
+    const custom = cardRuleFacts({
       title: 'Follow up',
-      externalSource: { integrationId: 'incidentio', type: 'follow-up', externalId: 'inc-7' },
+      externalSource: { integrationId: 'tracker', type: 'issue', externalId: 'INC-7' },
       metadata: { identifier: 'INC-7', state: 'Open' },
     });
-    expect(incident).toMatchObject({ 'source.provider': 'incidentio', 'item.key': 'INC-7', 'item.state': 'Open' });
-    expect(incident).not.toHaveProperty('source.repository');
+    expect(custom).toMatchObject({ 'source.provider': 'tracker', 'item.key': 'INC-7', 'item.state': 'Open' });
+    expect(custom).not.toHaveProperty('source.repository');
     expect(
       cardRuleFacts({ title: 'Fix', externalSource: SOURCES['github issue']!, metadata: { githubIssueNumber: 1 } }),
     ).not.toHaveProperty('source.repository');
@@ -251,7 +196,7 @@ describe("the default intake route's condition", () => {
     expect(evaluateRuleGroup(OUTSIDE_AUTHOR, cardRuleFacts(card))).toBe(externallyAuthoredWorkItem(card));
   });
 
-  it('matches only GitHub and GitLab cards without a trust stamp', () => {
+  it('matches only GitHub cards without a trust stamp', () => {
     const matched = cases
       .filter(([source, stamps]) =>
         evaluateRuleGroup(
@@ -261,7 +206,7 @@ describe("the default intake route's condition", () => {
       )
       .map(([source, stamps]) => `${source}: ${stamps}`);
     expect(matched).toEqual(
-      ['github issue', 'github pull request', 'gitlab issue', 'gitlab merge request'].flatMap(source =>
+      ['github issue', 'github pull request'].flatMap(source =>
         ['no metadata', 'no stamp', 'authorTrusted false'].map(stamps => `${source}: ${stamps}`),
       ),
     );

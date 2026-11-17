@@ -15,14 +15,12 @@ afterEach(() => {
 });
 
 describe('.env.schema', () => {
-  it('accepts an omitted Linear integration without a dependency cycle', () => {
+  it('loads without a dependency cycle when optional integrations are omitted', () => {
     const cwd = mkdtempSync(join(tmpdir(), 'mastracode-web-env-'));
     tempDirectories.push(cwd);
     copyFileSync(join(packageRoot, '.env.schema'), join(cwd, '.env.schema'));
 
     const env = { ...process.env };
-    delete env.LINEAR_CLIENT_ID;
-    delete env.LINEAR_CLIENT_SECRET;
 
     expect(() =>
       execFileSync(join(packageRoot, 'node_modules/.bin/varlock'), ['run', '--', process.execPath, '-e', ''], {

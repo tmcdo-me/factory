@@ -101,17 +101,11 @@ describe('factory_review_source', () => {
 
   it('returns reviewTarget.url null when the review card was intake-recorded without a url', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;
-    // Mirror a GitLab MR card whose intake stored no `url` — the skill's
-    // fallback rule (cross-check on externalId when url is null) depends on
-    // the tool exposing null here rather than an empty string. The shape
-    // mirrors intake exactly: `externalSourceForWorkItem('gitlab-pr', …)`
-    // maps to `['gitlab', 'pull-request']` (`rules/types.ts`), so the type
-    // is 'pull-request', never 'merge-request'.
+    // A PR card whose intake stored no `url` — the skill's fallback rule
+    // (cross-check on externalId when url is null) depends on the tool
+    // exposing null here rather than an empty string.
     await prepareReviewItem(storage, {
-      integrationId: 'gitlab',
-      type: 'pull-request',
-      externalId: 'gitlab-pr:aGVsbG8=',
-      metadata: { gitlabHost: 'gitlab.example.com', gitlabProjectId: 101 },
+      metadata: { githubRepositoryId: 101 },
     });
     const context = requestContext();
     const tools = await createReviewSourceTool({
@@ -127,12 +121,12 @@ describe('factory_review_source', () => {
       boundRepository: unknown;
     };
     expect(output.reviewTarget).toEqual({
-      integrationId: 'gitlab',
+      integrationId: 'github',
       type: 'pull-request',
-      externalId: 'gitlab-pr:aGVsbG8=',
+      externalId: 'github-pr:42',
       url: null,
     });
-    expect(output.boundRepository).toEqual({ provider: 'gitlab', host: 'gitlab.example.com', projectId: 101 });
+    expect(output.boundRepository).toEqual({ provider: 'github', repositoryId: 101 });
   });
 
   it('returns triggeredBy null when the metadata does not carry an author', async () => {

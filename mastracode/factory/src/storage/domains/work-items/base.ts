@@ -92,17 +92,7 @@ export function factoryDecisionHash(decision: Record<string, unknown>): string {
 }
 
 function isWorkItemSource(value: unknown): value is WorkItemSource {
-  return (
-    value === 'github-issue' ||
-    value === 'github-pr' ||
-    value === 'linear-issue' ||
-    value === 'jira-issue' ||
-    value === 'incidentio-follow-up' ||
-    value === 'github-dependabot-alert' ||
-    value === 'vanta-vulnerability' ||
-    value === 'detail-finding' ||
-    value === 'manual'
-  );
+  return value === 'github-issue' || value === 'github-pr' || value === 'detail-finding' || value === 'manual';
 }
 
 export interface ExternalWorkItemSource {

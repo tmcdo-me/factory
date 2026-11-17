@@ -25,7 +25,7 @@ describe('IntegrationStorage', () => {
     backend = new LibSQLFactoryStorage({ id: 'integrations-test', url: ':memory:' });
     domain = backend.registerDomain(new IntegrationStorage());
     await backend.init();
-    store = domain.forIntegration('incidentio');
+    store = domain.forIntegration('pager');
   });
 
   afterEach(async () => {
@@ -61,7 +61,7 @@ describe('IntegrationStorage', () => {
 
     it('scopes by integration and org', async () => {
       await store.connections.upsert('org-1', { data: { accessToken: 'a', refreshToken: null, expiresAtMs: null } });
-      const other = domain.forIntegration<TestConnection>('linear');
+      const other = domain.forIntegration<TestConnection>('acme-tracker');
       expect(await other.connections.get('org-1')).toBeNull();
       expect(await store.connections.get('org-2')).toBeNull();
     });
@@ -78,7 +78,7 @@ describe('IntegrationStorage', () => {
 
     it('deletes only the scoped connection', async () => {
       await store.connections.upsert('org-1', { data: { accessToken: 'a', refreshToken: null, expiresAtMs: null } });
-      const other = domain.forIntegration<TestConnection>('linear');
+      const other = domain.forIntegration<TestConnection>('acme-tracker');
       await other.connections.upsert('org-1', { data: { accessToken: 'b', refreshToken: null, expiresAtMs: null } });
       expect(await store.connections.delete('org-1')).toBe(true);
       expect(await store.connections.delete('org-1')).toBe(false);
@@ -111,7 +111,7 @@ describe('IntegrationStorage', () => {
 
     it('is scoped per integration', async () => {
       await store.subscriptions.create({ orgId: 'org-1', targetKey: 'incident:1' });
-      const other = domain.forIntegration('linear');
+      const other = domain.forIntegration('acme-tracker');
       expect(await other.subscriptions.listByTarget('incident:1')).toEqual([]);
     });
 
@@ -144,7 +144,7 @@ describe('IntegrationStorage', () => {
 
     it('is scoped per integration', async () => {
       await store.settings.save('org-1', 'user-1', { projectIds: ['p1'] });
-      expect(await domain.forIntegration('linear').settings.get('org-1', 'user-1')).toBeNull();
+      expect(await domain.forIntegration('acme-tracker').settings.get('org-1', 'user-1')).toBeNull();
     });
   });
 });

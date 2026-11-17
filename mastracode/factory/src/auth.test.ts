@@ -257,27 +257,24 @@ describe('mountFactoryAuth gate (enabled)', () => {
     expect(mockAuthenticate).not.toHaveBeenCalled();
   });
 
-  it('lets unauthenticated GitLab webhook deliveries reach the token-verifying route handler', async () => {
+  it('does not bypass auth for a GET to the GitHub webhook', async () => {
+    mockAuthenticate.mockResolvedValue(null);
+    const { app } = buildApp();
+
+    const res = await app.request('/web/github/webhook', { method: 'GET', headers: { Accept: 'application/json' } });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
+  });
+
+  // The GitLab integration was removed, so its old webhook path no longer skips sign-in.
+  it('requires sign-in for a POST to the removed GitLab webhook path', async () => {
     mockAuthenticate.mockResolvedValue(null);
     const { app } = buildApp();
 
     const res = await app.request('/web/gitlab/webhook', { method: 'POST', headers: { Accept: 'application/json' } });
-    expect(res.status).toBe(200);
-    expect(await res.text()).toBe('ok');
-    expect(mockAuthenticate).not.toHaveBeenCalled();
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'unauthorized' });
   });
-
-  it.each(['/web/github/webhook', '/web/gitlab/webhook'])(
-    'does not bypass auth for non-POST webhook request %s',
-    async path => {
-      mockAuthenticate.mockResolvedValue(null);
-      const { app } = buildApp();
-
-      const res = await app.request(path, { method: 'GET', headers: { Accept: 'application/json' } });
-      expect(res.status).toBe(401);
-      expect(await res.json()).toEqual({ error: 'unauthorized' });
-    },
-  );
 
   it('lets unauthenticated channel webhook deliveries reach the route handler', async () => {
     mockAuthenticate.mockResolvedValue(null);

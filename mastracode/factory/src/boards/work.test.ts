@@ -139,10 +139,10 @@ describe('Work phase runs', () => {
     });
   });
 
-  it("starts the triage runner for an incident.io follow-up, in a project's Work that kept Triage", () => {
+  it("starts the triage runner for a card made on the board, in a project's Work that kept Triage", () => {
     expect(
       phaseRunDecision(triageWorkBoard, 'triage', {
-        ...entering('incidentio-follow-up', 'intake', 'triage'),
+        ...entering('manual', 'intake', 'triage'),
       }),
     ).toMatchObject({ role: 'triage', skillName: 'factory-triage', idempotencyKey: 'ingress-1:triage:factory-triage' });
   });

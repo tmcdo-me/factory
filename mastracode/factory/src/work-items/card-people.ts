@@ -22,7 +22,7 @@ const PERSON_FIELD_ROLES: Record<BoardPersonFieldId, readonly BoardPersonRole[]>
 export type BoardRelations = Record<BoardPersonRole, ReadonlySet<string>>;
 export type BoardPeopleFilters = Record<BoardPersonFieldId, ReadonlySet<string>>;
 
-export type ProviderPersonSource = 'github' | 'gitlab' | 'linear' | 'jira' | 'incidentio';
+export type ProviderPersonSource = 'github';
 
 /** A person as a source names them. The id is `<provider>:<lowercased name>`. */
 export interface ProviderPerson {
@@ -42,15 +42,6 @@ function personSource(source: WorkItemBranchSource): ProviderPersonSource | unde
     case 'github-issue':
     case 'github-pr':
       return 'github';
-    case 'gitlab-issue':
-    case 'gitlab-pr':
-      return 'gitlab';
-    case 'linear-issue':
-      return 'linear';
-    case 'jira-issue':
-      return 'jira';
-    case 'incidentio-follow-up':
-      return 'incidentio';
     default:
       return undefined;
   }
@@ -67,27 +58,18 @@ function metadataStrings(metadata: Record<string, unknown>, key: string): string
   return value.flatMap(entry => (typeof entry === 'string' && entry.trim() ? [entry.trim()] : []));
 }
 
-function creator(provider: ProviderPersonSource, metadata: Record<string, unknown>): string | undefined {
-  if (provider === 'github' || provider === 'gitlab') return metadataString(metadata, 'author');
-  return (
-    metadataString(metadata, 'creator') ??
-    metadataString(metadata, 'linearCreator') ??
-    metadataString(metadata, 'author')
-  );
+function creator(metadata: Record<string, unknown>): string | undefined {
+  return metadataString(metadata, 'author');
 }
 
-function assignees(provider: ProviderPersonSource, metadata: Record<string, unknown>): string[] {
-  if (provider === 'github' || provider === 'gitlab') {
-    const assignee = metadataString(metadata, 'assignee');
-    return [...new Set([...metadataStrings(metadata, 'assignees'), ...(assignee ? [assignee] : [])])];
-  }
-  const assignee = metadataString(metadata, 'assignee') ?? metadataString(metadata, 'linearAssignee');
-  return assignee ? [assignee] : [];
+function assignees(metadata: Record<string, unknown>): string[] {
+  const assignee = metadataString(metadata, 'assignee');
+  return [...new Set([...metadataStrings(metadata, 'assignees'), ...(assignee ? [assignee] : [])])];
 }
 
 /** Only a pull request has reviewers asked of it. */
 function requestedReviewers(item: SourceFacts): string[] {
-  if (item.source !== 'github-pr' && item.source !== 'gitlab-pr') return [];
+  if (item.source !== 'github-pr') return [];
   return metadataStrings(item.metadata, 'requestedReviewers');
 }
 
@@ -96,10 +78,10 @@ export function providerPeople(item: SourceFacts): Record<ProviderPersonRole, Pr
   const source = personSource(item.source);
   if (!source) return { authored: [], assigned: [], 'review-requested': [] };
   const person = (name: string): ProviderPerson => ({ id: `${source}:${name.toLowerCase()}`, name, source });
-  const author = creator(source, item.metadata);
+  const author = creator(item.metadata);
   return {
     authored: author ? [person(author)] : [],
-    assigned: assignees(source, item.metadata).map(person),
+    assigned: assignees(item.metadata).map(person),
     'review-requested': requestedReviewers(item).map(person),
   };
 }

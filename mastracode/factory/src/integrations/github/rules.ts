@@ -1528,9 +1528,8 @@ export class GithubRules {
   /**
    * The existing card a pull request opened for the first time belongs with, or undefined when it
    * gets a card of its own. The card must be open and own an issue: a pull request's own card never
-   * takes another, and a card from an integration whose merge requests are its own (GitLab) keeps to
-   * those. A GitHub card must also belong to this repository; a card from another integration (Jira,
-   * Linear, incident.io) carries no repository of its own to match against, so it is taken as it is.
+   * takes another. A GitHub card must also belong to this repository; a card from another
+   * integration carries no repository of its own to match against, so it is taken as it is.
    * In order: the card that authored it (on a board that reviews pull requests), by provenance or session branch,
    * when the pull request is Factory-authored or its author is trusted; it is filed there. Then,
    * for a trusted author only, the card of the first issue its description says it closes; an
@@ -1568,18 +1567,16 @@ export class GithubRules {
     const eligible = (card: Card) =>
       card.externalSource != null &&
       card.externalSource.type !== 'pull-request' &&
-      card.externalSource.integrationId !== 'gitlab' &&
       !isTerminalWorkItem(this.#boards(input), card) &&
       (card.externalSource.integrationId !== 'github' ||
         cardBelongsToRepository(card, input.repositoryId, input.repositoryName));
     // fork(claude-agent): a pull request the card's own run opened is filed on that card even when
     // the card has no source of its own (made on the board) or its board does not review pull
     // requests: the card's handoff to review needs it there, and nobody else's work is at stake.
-    // A GitLab card still keeps only merge requests, and a GitHub card only its repository's.
+    // A GitHub card still keeps only its repository's.
     if (
       input.matchedItem &&
       input.matchedItem.externalSource?.type !== 'pull-request' &&
-      input.matchedItem.externalSource?.integrationId !== 'gitlab' &&
       !isTerminalWorkItem(this.#boards(input), input.matchedItem) &&
       (input.matchedItem.externalSource?.integrationId !== 'github' ||
         cardBelongsToRepository(input.matchedItem, input.repositoryId, input.repositoryName)) &&
@@ -1595,7 +1592,7 @@ export class GithubRules {
       return { card: input.matchedItem, reason: 'authored' };
     }
     if (!input.authorTrusted) return undefined;
-    for (const issueNumber of closingIssueNumbers(input.body, { provider: 'github', repository: input.repositoryName })) {
+    for (const issueNumber of closingIssueNumbers(input.body, { repository: input.repositoryName })) {
       const card = items.find(
         item =>
           (item.externalSource?.externalId === canonicalSourceKey('issue', issueNumber) ||

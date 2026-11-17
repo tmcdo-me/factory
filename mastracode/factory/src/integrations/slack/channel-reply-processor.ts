@@ -14,8 +14,8 @@ export const SESSION_LINK_LABEL = 'Open session ↗';
  * gets this, whether it speaks in reply text or through the reply tool.
  */
 const LINK_REFERENCES = [
-  'Write every pull request, issue, commit, Linear ticket or other reference you mention in the thread as a markdown link to its page, with the ID as plain link text: [#28467](https://github.com/<owner>/<repo>/pull/28467), [52db47cd](https://github.com/<owner>/<repo>/commit/52db47cd), [FACT-526](<the ticket URL>). Never leave one as a bare ID or wrap it in code formatting.',
-  "Build GitHub and GitLab links from the repository the reference belongs to, from the repositories listed in your environment or a tool result; with more than one repository, don't assume which one a bare number belongs to. Build Linear links from the workspace URL pattern in the `linear_get_issue` tool description, or from a URL a tool returned. Don't guess a URL; leave a reference unlinked only when you can't work out its URL.",
+  'Write every pull request, issue, commit, ticket or other reference you mention in the thread as a markdown link to its page, with the ID as plain link text: [#28467](https://github.com/<owner>/<repo>/pull/28467), [52db47cd](https://github.com/<owner>/<repo>/commit/52db47cd), [FACT-526](<the ticket URL>). Never leave one as a bare ID or wrap it in code formatting.',
+  "Build GitHub links from the repository the reference belongs to, from the repositories listed in your environment or a tool result; with more than one repository, don't assume which one a bare number belongs to. Build other links from a URL a tool returned. Don't guess a URL; leave a reference unlinked only when you can't work out its URL.",
   'Link Factory work items and sessions the same way, with the `url` the Factory tools return: [#123](<item url>). When something needs a person, ask them for it here and link the item; only send them to the web UI when the channel cannot do it, and then link the exact page.',
 ].join('\n');
 

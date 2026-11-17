@@ -13,7 +13,6 @@ The `factory-work-item` signal has a **PR review** block naming the change reque
 
 - `factory-review` — a first pass on a GitHub pull request: continue with this skill.
 - `factory-rereview` — a GitHub pull request that already has a verdict recorded on it: load it with `skill_read` (`factory-rereview`, `SKILL.md`) and follow it instead.
-- `factory-gitlab-review` / `factory-gitlab-rereview` — a GitLab merge request: load that skill with `skill_read` and follow it instead.
 
 Check the change out exactly as the `Checkout:` line says before reading any code, and review the head the signal names; if the signal says the head moved since the last pass, review the changes since the previous verdict and record the verdict for the new head. If the card has no PR review block, there is nothing to review: report that and stop.
 

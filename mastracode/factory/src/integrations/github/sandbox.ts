@@ -469,8 +469,6 @@ export interface SessionBranchOptions {
   authUsername?: string;
   /** A pull-request card's session starts on the PR head instead of the base tip. */
   pullRequestNumber?: number;
-  /** A GitLab merge-request card's session starts on the MR head instead of the base tip. */
-  mergeRequestNumber?: number;
 }
 
 /**
@@ -497,17 +495,11 @@ async function fetchStartPoint(
   {
     baseBranch,
     pullRequestNumber,
-    mergeRequestNumber,
-  }: Pick<SessionBranchOptions, 'baseBranch' | 'pullRequestNumber' | 'mergeRequestNumber'>,
+  }: Pick<SessionBranchOptions, 'baseBranch' | 'pullRequestNumber'>,
   shallowClone: boolean,
   env: Record<string, string>,
 ): Promise<SandboxCommandResult> {
-  const changeRequestRef =
-    pullRequestNumber !== undefined
-      ? `refs/pull/${pullRequestNumber}/head`
-      : mergeRequestNumber !== undefined
-        ? `refs/merge-requests/${mergeRequestNumber}/head`
-        : undefined;
+  const changeRequestRef = pullRequestNumber !== undefined ? `refs/pull/${pullRequestNumber}/head` : undefined;
   const baseArgs = [
     '-C',
     workdir,
@@ -706,78 +698,17 @@ export async function syncEnvironmentRepository(
   throw classifyGitFailure(created, 'pull-failed');
 }
 
-/** Refresh an existing GitLab review checkout without exposing its credential to the agent. */
-export async function refreshMergeRequestCheckout(
-  sandbox: ExecutableSandbox,
-  workdir: string,
-  input: { branch: string; mergeRequestNumber: number; expectedHeadSha: string; access: RepositoryAccess },
-): Promise<{ headSha: string; changed: boolean }> {
-  const { branch, mergeRequestNumber, expectedHeadSha, access } = input;
-  if (
-    !isValidGitRef(branch) ||
-    !Number.isSafeInteger(mergeRequestNumber) ||
-    mergeRequestNumber <= 0 ||
-    !/^[0-9a-f]{40}$/i.test(expectedHeadSha)
-  ) {
-    throw new Error('Refusing to refresh a GitLab review with invalid session or head metadata.');
-  }
-  const token = access.authorization?.token;
-  if (!token) throw new Error('GitLab repository access did not include a bearer token.');
-  const env = gitAuthenticationEnvironment(
-    access.cloneUrl,
-    token,
-    access.authorization?.username ?? 'oauth2',
-    'pull-failed',
-  );
-  const current = await execute(sandbox, 'git', ['-C', workdir, 'branch', '--show-current']);
-  if (current.exitCode !== 0 || current.stdout.trim() !== branch) {
-    throw new Error('The active checkout is not on its bound review branch.');
-  }
-  const status = await execute(sandbox, 'git', ['-C', workdir, 'status', '--porcelain', '--untracked-files=all']);
-  if (status.exitCode !== 0 || status.stdout.trim()) {
-    throw new Error('The review checkout has local changes; refusing to replace them.');
-  }
-  const before = await execute(sandbox, 'git', ['-C', workdir, 'rev-parse', 'HEAD']);
-  if (before.exitCode !== 0) throw new Error('Could not read the current review checkout head.');
-  const fetch = await gitTransfer(
-    sandbox,
-    ['-C', workdir, 'fetch', 'origin', `refs/merge-requests/${mergeRequestNumber}/head`],
-    {
-      env,
-      timeoutMs: CHECKOUT_COMMAND_TIMEOUT_MS,
-      phase: 'GitLab review head refresh',
-    },
-  );
-  if (fetch.exitCode !== 0) throw classifyGitFailure(fetch, 'pull-failed');
-  const fetched = await execute(sandbox, 'git', ['-C', workdir, 'rev-parse', 'FETCH_HEAD']);
-  if (fetched.exitCode !== 0 || fetched.stdout.trim().toLowerCase() !== expectedHeadSha.toLowerCase()) {
-    throw new Error('The fetched GitLab review head differs from the provider-reported head; retry after it settles.');
-  }
-  if (before.stdout.trim().toLowerCase() === expectedHeadSha.toLowerCase()) {
-    return { headSha: expectedHeadSha, changed: false };
-  }
-  const updated = await execute(sandbox, 'git', ['-C', workdir, 'checkout', '-B', branch, 'FETCH_HEAD'], { env });
-  if (updated.exitCode !== 0) throw classifyGitFailure(updated, 'pull-failed');
-  return { headSha: expectedHeadSha, changed: true };
-}
-
 async function checkoutSessionBranchImpl(
   sandbox: ExecutableSandbox,
   workdir: string,
   options: SessionBranchOptions,
 ): Promise<void> {
-  const { branch, baseBranch, token, repoFullName, pullRequestNumber, mergeRequestNumber, cloneUrl, authUsername } =
-    options;
-  if (
-    !isValidGitRef(branch) ||
-    !isValidGitRef(baseBranch) ||
-    (pullRequestNumber !== undefined && mergeRequestNumber !== undefined) ||
-    (mergeRequestNumber !== undefined && (!Number.isSafeInteger(mergeRequestNumber) || mergeRequestNumber <= 0))
-  ) {
+  const { branch, baseBranch, token, repoFullName, pullRequestNumber, cloneUrl, authUsername } = options;
+  if (!isValidGitRef(branch) || !isValidGitRef(baseBranch)) {
     throw new MaterializeError('Refusing to create a session from an invalid branch name.', 'clone-failed');
   }
 
-  const changeRequestSession = pullRequestNumber !== undefined || mergeRequestNumber !== undefined;
+  const changeRequestSession = pullRequestNumber !== undefined;
   // GitHub delegates later authenticated operations to `gh`. Other providers
   // deliberately receive no persistent credential helper. Remove the legacy
   // helper when reopening an older checkout so a stale sandbox cannot retain

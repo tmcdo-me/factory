@@ -73,7 +73,7 @@ import type { SkillOverridesStorage } from './storage/domains/skill-overrides/ba
 import type { SourceControlSession, SourceControlStorageHandle } from './storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from './storage/domains/work-items/base.js';
 import { instrumentMethods, timed, timedPhase } from './timing.js';
-import { mergeRequestNumberFromBranch, pullRequestNumberFromBranch } from './work-item-branch.js';
+import { pullRequestNumberFromBranch } from './work-item-branch.js';
 
 const WORKSPACE_ID_PREFIX = 'mfw';
 // GitHub installation tokens live 60 minutes and minted access is cached for
@@ -126,8 +126,6 @@ export const FACTORY_SKILLS_MOUNT = path.resolve(path.parse(process.cwd()).root,
 export const FACTORY_SKILL_NAMES = new Set([
   'configure-factory-rules',
   'factory-build',
-  'factory-gitlab-rereview',
-  'factory-gitlab-review',
   'factory-plan',
   'factory-rereview',
   'factory-review',
@@ -139,13 +137,7 @@ export const FACTORY_SKILL_NAMES = new Set([
  * Review skills only sessions with an active review run binding, or unbound
  * side sessions a user session started, may discover or load.
  */
-export const REVIEW_ONLY_FACTORY_SKILLS = new Set([
-  'factory-gitlab-rereview',
-  'factory-gitlab-review',
-  'factory-rereview',
-  'factory-review',
-  'factory-self-review',
-]);
+export const REVIEW_ONLY_FACTORY_SKILLS = new Set(['factory-rereview', 'factory-review', 'factory-self-review']);
 
 /**
  * Skill caches rescanned outside the workspace resolver. The resolver records
@@ -1609,7 +1601,6 @@ export function createWorkspaceFactory(options: CreateWorkspaceFactoryOptions = 
         cloneUrl: access.cloneUrl,
         authUsername: access.authorization?.username,
         pullRequestNumber: pullRequestNumberFromBranch(session.branch),
-        mergeRequestNumber: sourceControl.id === 'gitlab' ? mergeRequestNumberFromBranch(session.branch) : undefined,
       });
       if (projectRepository.setupCommand && !gate.setupDone) {
         // A setup command that already failed this session is skipped rather

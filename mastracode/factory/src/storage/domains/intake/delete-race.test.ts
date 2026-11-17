@@ -43,7 +43,7 @@ describe.skipIf(!postgresUrl)(
         outcome = binder!.intake
           .setSharedBinding({
             orgId,
-            integrationId: 'jira',
+            integrationId: 'labelled-tracker',
             sourceId: 'OPS',
             factoryProjectId: project.id,
             labels: null,

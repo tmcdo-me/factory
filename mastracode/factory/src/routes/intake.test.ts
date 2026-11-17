@@ -2,7 +2,6 @@ import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { Intake } from '../capabilities/intake.js';
-import { PlatformGithubIntegration } from '../integrations/platform/github/integration.js';
 import type { AuditEmitter } from '../storage/domains/audit/domain.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import type { FactoryStorageTestSeed } from '../storage/test-utils.js';
@@ -35,12 +34,12 @@ const github: Pick<Intake, 'listSources' | 'listItems'> = {
   })),
 };
 
-const linear: Pick<Intake, 'listSources' | 'listItems'> = {
+const tracker: Pick<Intake, 'listSources' | 'listItems'> = {
   listSources: vi.fn(async () => [{ id: 'team-1', name: 'Platform', type: 'project' }]),
   listItems: vi.fn(async () => ({
     items: [
       {
-        source: { type: 'issue', externalId: 'ENG-9', url: 'https://linear.app/acme/issue/ENG-9' },
+        source: { type: 'issue', externalId: 'ENG-9', url: 'https://tracker.example.com/acme/issue/ENG-9' },
         sourceId: 'team-1',
         title: 'Ship project model',
       },
@@ -51,7 +50,7 @@ const linear: Pick<Intake, 'listSources' | 'listItems'> = {
 
 const integrations = [
   { id: 'github', intake: github },
-  { id: 'linear', intake: linear },
+  { id: 'tracker', intake: tracker },
 ];
 
 function buildApp(user: { workosId: string; organizationId?: string } | null, intakeIntegrations = integrations) {
@@ -94,7 +93,7 @@ describe('intake configuration', () => {
     expect(await response.json()).toEqual({
       config: {
         github: { enabled: false, sourceIds: null },
-        linear: { enabled: false, sourceIds: null },
+        tracker: { enabled: false, sourceIds: null },
       },
     });
   });
@@ -102,7 +101,7 @@ describe('intake configuration', () => {
   it('persists dynamic integration selections and audits a bounded summary', async () => {
     const config = {
       github: { enabled: true, sourceIds: ['repo-1'] },
-      linear: { enabled: false, sourceIds: null },
+      tracker: { enabled: false, sourceIds: null },
     };
     const response = await buildApp(orgUser).request('/web/intake/config', {
       method: 'PUT',
@@ -118,32 +117,10 @@ describe('intake configuration', () => {
         action: 'factory.intake.config_updated',
         metadata: {
           github: { enabled: true, sources: 1 },
-          linear: { enabled: false, sources: null },
+          tracker: { enabled: false, sources: null },
         },
       },
     ]);
-  });
-
-  it("accepts GitHub's Dependabot opt-in under its own id and rejects it when GitHub is absent", async () => {
-    vi.stubEnv('MASTRA_INTEGRATIONS_API_URL', 'https://platform.test');
-    vi.stubEnv('MASTRA_PLATFORM_SECRET_KEY', 'test-key');
-    const platformGithub = new PlatformGithubIntegration();
-    vi.unstubAllEnvs();
-    const withGithub = [{ id: 'github', intake: github }, ...platformGithub.additionalIntakes];
-    const config = { dependabot: { enabled: true, sourceIds: ['acme/app'] } };
-    const put = (app: Hono) =>
-      app.request('/web/intake/config', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(config),
-      });
-
-    expect((await put(buildApp(orgUser, integrations))).status).toBe(400);
-
-    const response = await put(buildApp(orgUser, withGithub));
-    expect(response.status).toBe(200);
-    expect((await response.json()).config.dependabot).toEqual(config.dependabot);
-    expect(await seed.intake.getConfig({ orgId: 'org1', integrationIds: ['dependabot'] })).toEqual(config);
   });
 
   describe('source bindings', () => {
@@ -161,11 +138,11 @@ describe('intake configuration', () => {
 
     it('binds a source to a Factory project and reads it back', async () => {
       const project = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'app' } });
-      const response = await put({ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: project.id });
+      const response = await put({ integrationId: 'tracker', sourceId: 'team-1', factoryProjectId: project.id });
 
       const bindings = [
         {
-          integrationId: 'linear',
+          integrationId: 'tracker',
           sourceId: 'team-1',
           factoryProjectId: project.id,
           labels: null,
@@ -195,16 +172,16 @@ describe('intake configuration', () => {
           title: 'ENG-1',
           stages: ['intake'],
           externalSource: {
-            integrationId: 'linear',
+            integrationId: 'tracker',
             type: 'issue',
-            externalId: 'linear:ENG-1',
-            url: 'https://linear.app/acme/issue/ENG-1',
+            externalId: 'tracker:ENG-1',
+            url: 'https://tracker.example.com/acme/issue/ENG-1',
           },
         },
       });
 
       const response = await put({
-        integrationId: 'linear',
+        integrationId: 'tracker',
         sourceId: 'team-1',
         factoryProjectId: project.id,
         board: 'release',
@@ -214,7 +191,7 @@ describe('intake configuration', () => {
       const body = await response.json();
       expect(body).not.toHaveProperty('relocated');
       expect(body.bindings[0]).not.toHaveProperty('board');
-      expect(linear.listItems).not.toHaveBeenCalled();
+      expect(tracker.listItems).not.toHaveBeenCalled();
       expect(await seed.workItems.get({ orgId: 'org1', id: item.id })).toMatchObject({
         board: 'work',
         stages: ['intake'],
@@ -223,10 +200,10 @@ describe('intake configuration', () => {
 
     it('clears a binding when the project is null', async () => {
       const project = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'app' } });
-      await put({ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: project.id });
+      await put({ integrationId: 'tracker', sourceId: 'team-1', factoryProjectId: project.id });
       auditEvents.length = 0;
 
-      const response = await put({ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: null });
+      const response = await put({ integrationId: 'tracker', sourceId: 'team-1', factoryProjectId: null });
 
       expect(response.status).toBe(200);
       expect(await response.json()).toEqual({ bindings: [] });
@@ -241,28 +218,28 @@ describe('intake configuration', () => {
 
     it('rejects unknown integrations and malformed bodies for bindings', async () => {
       const project = await seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name: 'app' } });
-      expect((await put({ integrationId: 'jira', sourceId: 's', factoryProjectId: project.id })).status).toBe(400);
-      expect((await put({ integrationId: 'linear', factoryProjectId: project.id })).status).toBe(400);
-      expect((await put({ integrationId: 'linear', sourceId: 'team-1' })).status).toBe(400);
+      expect((await put({ integrationId: 'labelled', sourceId: 's', factoryProjectId: project.id })).status).toBe(400);
+      expect((await put({ integrationId: 'tracker', factoryProjectId: project.id })).status).toBe(400);
+      expect((await put({ integrationId: 'tracker', sourceId: 'team-1' })).status).toBe(400);
     });
 
     it('refuses to bind a source to another org project', async () => {
       const foreign = await seed.projects.create({ orgId: 'org2', userId: 'u9', input: { name: 'other' } });
-      const response = await put({ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: foreign.id });
+      const response = await put({ integrationId: 'tracker', sourceId: 'team-1', factoryProjectId: foreign.id });
 
       expect(response.status).toBe(404);
       expect(await seed.intake.listBindings({ orgId: 'org1' })).toEqual([]);
     });
   });
 
-  describe('Jira bindings shared by label', () => {
-    const jira: Pick<Intake, 'listSources' | 'listItems' | 'bindingLabelFilters'> = {
+  describe('bindings shared by label', () => {
+    const labelled: Pick<Intake, 'listSources' | 'listItems' | 'bindingLabelFilters'> = {
       bindingLabelFilters: true,
       listSources: vi.fn(async () => [{ id: '10000', name: 'OPS', type: 'project' }]),
       listItems: vi.fn(async () => ({ items: [], nextCursor: null })),
     };
-    const withJira = [...integrations, { id: 'jira', intake: jira }];
-    const app = () => buildApp(orgUser, withJira);
+    const withLabelled = [...integrations, { id: 'labelled', intake: labelled }];
+    const app = () => buildApp(orgUser, withLabelled);
     const put = (body: unknown) =>
       app().request('/web/intake/bindings', {
         method: 'PUT',
@@ -275,11 +252,11 @@ describe('intake configuration', () => {
       const create = (name: string) => seed.projects.create({ orgId: 'org1', userId: 'u1', input: { name } });
       return { platform: await create('platform'), payments: await create('payments'), mobile: await create('mobile') };
     };
-    const ops = { integrationId: 'jira', sourceId: '10000' };
+    const ops = { integrationId: 'labelled', sourceId: '10000' };
     const summary = (bindings: Array<{ factoryProjectId: string; labels: string[] | null }>) =>
       bindings.map(({ factoryProjectId, labels }) => ({ factoryProjectId, labels }));
 
-    it('lets several factories take their own labelled slice of one Jira project', async () => {
+    it('lets several factories take their own labelled slice of one source', async () => {
       const { platform, payments, mobile } = await factories();
       expect((await put({ ...ops, factoryProjectId: platform.id })).status).toBe(200);
       expect((await put({ ...ops, factoryProjectId: payments.id, labels: ['payments'] })).status).toBe(200);
@@ -318,7 +295,7 @@ describe('intake configuration', () => {
       const allIssues = await put({ ...ops, factoryProjectId: mobile.id, labels: null });
       expect(allIssues.status).toBe(409);
       expect(await allIssues.json()).toMatchObject({ conflicts: [{ factoryProjectId: platform.id, labels: null }] });
-      expect(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'jira' })).toHaveLength(2);
+      expect(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'labelled' })).toHaveLength(2);
     });
 
     it('refuses a binding whose factory is deleted while the request is in flight, so its successor can bind', async () => {
@@ -355,7 +332,7 @@ describe('intake configuration', () => {
 
       expect((await inFlight).status).toBe(404);
       expect((await put({ ...ops, factoryProjectId: payments.id })).status).toBe(200);
-      expect(summary(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'jira' }))).toEqual([
+      expect(summary(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'labelled' }))).toEqual([
         { factoryProjectId: payments.id, labels: null },
       ]);
     });
@@ -375,7 +352,7 @@ describe('intake configuration', () => {
       ).toBeNull();
     });
 
-    it('rejects an empty label list, a label with a space, and unbinding a Jira project through PUT', async () => {
+    it('rejects an empty label list, a label with a space, and unbinding a labelled source through PUT', async () => {
       const { payments } = await factories();
       expect((await put({ ...ops, factoryProjectId: payments.id, labels: [] })).status).toBe(400);
       expect((await put({ ...ops, factoryProjectId: payments.id, labels: ['  '] })).status).toBe(400);
@@ -420,39 +397,39 @@ describe('intake configuration', () => {
     it('rejects DELETE without every identifier, or for another org', async () => {
       const { payments } = await factories();
       const foreign = await seed.projects.create({ orgId: 'org2', userId: 'u2', input: { name: 'other' } });
-      expect((await remove({ integrationId: 'jira', sourceId: '10000' })).status).toBe(400);
-      expect((await remove({ integrationId: 'jira', factoryProjectId: payments.id })).status).toBe(400);
+      expect((await remove({ integrationId: 'labelled', sourceId: '10000' })).status).toBe(400);
+      expect((await remove({ integrationId: 'labelled', factoryProjectId: payments.id })).status).toBe(400);
       expect((await remove({ ...ops, integrationId: 'unknown', factoryProjectId: payments.id })).status).toBe(400);
       expect((await remove({ ...ops, factoryProjectId: foreign.id })).status).toBe(404);
       expect(
         (
-          await buildApp(null, withJira).request(`/web/intake/bindings?${new URLSearchParams(ops)}`, {
+          await buildApp(null, withLabelled).request(`/web/intake/bindings?${new URLSearchParams(ops)}`, {
             method: 'DELETE',
           })
         ).status,
       ).toBe(401);
     });
 
-    it('keeps moving a Linear source between factories and rejects label filters for it', async () => {
+    it('keeps moving an unlabelled source between factories and rejects label filters for it', async () => {
       const { platform, payments } = await factories();
-      const linearSource = { integrationId: 'linear', sourceId: 'team-1' };
-      await put({ ...linearSource, factoryProjectId: platform.id });
-      await put({ ...linearSource, factoryProjectId: payments.id });
-      expect(summary(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'linear' }))).toEqual([
+      const trackerSource = { integrationId: 'tracker', sourceId: 'team-1' };
+      await put({ ...trackerSource, factoryProjectId: platform.id });
+      await put({ ...trackerSource, factoryProjectId: payments.id });
+      expect(summary(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'tracker' }))).toEqual([
         { factoryProjectId: payments.id, labels: null },
       ]);
 
-      const labelled = await put({ ...linearSource, factoryProjectId: payments.id, labels: ['bug'] });
+      const labelled = await put({ ...trackerSource, factoryProjectId: payments.id, labels: ['bug'] });
       expect(labelled.status).toBe(400);
-      expect((await put({ ...linearSource, factoryProjectId: null })).status).toBe(200);
-      expect(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'linear' })).toEqual([]);
+      expect((await put({ ...trackerSource, factoryProjectId: null })).status).toBe(200);
+      expect(await seed.intake.listBindings({ orgId: 'org1', integrationId: 'tracker' })).toEqual([]);
     });
 
     it('never writes the frozen pre-upgrade bindings collection', async () => {
       const { platform, payments } = await factories();
       await put({ ...ops, factoryProjectId: platform.id });
       await put({ ...ops, factoryProjectId: payments.id, labels: ['payments'] });
-      await put({ integrationId: 'linear', sourceId: 'team-1', factoryProjectId: platform.id });
+      await put({ integrationId: 'tracker', sourceId: 'team-1', factoryProjectId: platform.id });
       await remove({ ...ops, factoryProjectId: payments.id });
 
       expect(await seed.storage.ops.findMany('intake_source_bindings', {})).toEqual([]);
@@ -488,7 +465,7 @@ describe('intake configuration', () => {
     const unknown = await buildApp(orgUser).request('/web/intake/config', {
       method: 'PUT',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ jira: { enabled: true, sourceIds: null } }),
+      body: JSON.stringify({ labelled: { enabled: true, sourceIds: null } }),
     });
     expect(unknown.status).toBe(400);
 
@@ -501,7 +478,7 @@ describe('intake configuration', () => {
   });
 
   it('keeps a stored custom integration selection when a save omits it', async () => {
-    const app = buildApp(orgUser, [...integrations, { id: 'custom-tracker', intake: linear }]);
+    const app = buildApp(orgUser, [...integrations, { id: 'custom-tracker', intake: tracker }]);
     const put = (body: unknown) =>
       app.request('/web/intake/config', {
         method: 'PUT',
@@ -513,12 +490,12 @@ describe('intake configuration', () => {
     expect((await put({ 'custom-tracker': custom })).status).toBe(200);
     const response = await put({
       github: { enabled: true, sourceIds: ['repo-1'] },
-      linear: { enabled: false, sourceIds: null },
+      tracker: { enabled: false, sourceIds: null },
     });
 
     const expected = {
       github: { enabled: true, sourceIds: ['repo-1'] },
-      linear: { enabled: false, sourceIds: null },
+      tracker: { enabled: false, sourceIds: null },
       'custom-tracker': custom,
     };
     expect(response.status).toBe(200);
@@ -537,7 +514,7 @@ describe('intake configuration', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         github: { enabled: true, sourceIds: ['repo-1'] },
-        linear: { enabled: false, sourceIds: null },
+        tracker: { enabled: false, sourceIds: null },
       }),
     });
 
@@ -561,7 +538,7 @@ describe('intake configuration', () => {
       const response = await buildApp(orgUser, [{ id: 'github', intake: github }]).request('/web/intake/config', {
         method: 'PUT',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ github: { enabled: true, sourceIds: null }, linear: selection }),
+        body: JSON.stringify({ github: { enabled: true, sourceIds: null }, tracker: selection }),
       });
       expect(response.status).toBe(400);
     }
@@ -585,7 +562,7 @@ describe('aggregated intake', () => {
     expect(await response.json()).toEqual({
       sources: [
         { integrationId: 'github', id: 'repo-1', name: 'acme/app', type: 'repository' },
-        { integrationId: 'linear', id: 'team-1', name: 'Platform', type: 'project' },
+        { integrationId: 'tracker', id: 'team-1', name: 'Platform', type: 'project' },
       ],
       failures: [],
     });
@@ -597,7 +574,7 @@ describe('aggregated intake', () => {
       sources: [{ integrationId: 'github', id: 'repo-1', name: 'acme/app', type: 'repository' }],
       failures: [],
     });
-    expect(vi.mocked(linear.listSources)).not.toHaveBeenCalled();
+    expect(vi.mocked(tracker.listSources)).not.toHaveBeenCalled();
   });
 
   it('lists selected items with generic external-source references and per-integration cursors', async () => {
@@ -605,7 +582,7 @@ describe('aggregated intake', () => {
       orgId: 'org1',
       config: {
         github: { enabled: true, sourceIds: ['repo-1'] },
-        linear: { enabled: true, sourceIds: ['team-1'] },
+        tracker: { enabled: true, sourceIds: ['team-1'] },
       },
     });
 
@@ -623,13 +600,13 @@ describe('aggregated intake', () => {
         },
       }),
       expect.objectContaining({
-        integrationId: 'linear',
+        integrationId: 'tracker',
         title: 'Ship project model',
         externalSource: {
-          integrationId: 'linear',
+          integrationId: 'tracker',
           type: 'issue',
           externalId: 'ENG-9',
-          url: 'https://linear.app/acme/issue/ENG-9',
+          url: 'https://tracker.example.com/acme/issue/ENG-9',
         },
       }),
     ]);
@@ -637,20 +614,20 @@ describe('aggregated intake', () => {
   });
 
   it('keeps listing sources from the capabilities that answer when one is unavailable', async () => {
-    vi.mocked(linear.listSources).mockRejectedValueOnce(new Error('Linear token expired'));
+    vi.mocked(tracker.listSources).mockRejectedValueOnce(new Error('Tracker token expired'));
 
     const response = await buildApp(orgUser).request('/web/intake/sources');
 
     expect(response.status).toBe(200);
     expect(await response.json()).toEqual({
       sources: [{ integrationId: 'github', id: 'repo-1', name: 'acme/app', type: 'repository' }],
-      failures: [{ integrationId: 'linear', message: 'Linear token expired' }],
+      failures: [{ integrationId: 'tracker', message: 'Tracker token expired' }],
     });
   });
 
   it('gives up on a capability that never answers instead of hanging the listing', async () => {
     vi.useFakeTimers();
-    vi.mocked(linear.listSources).mockReturnValueOnce(new Promise(() => {}));
+    vi.mocked(tracker.listSources).mockReturnValueOnce(new Promise(() => {}));
 
     const pending = buildApp(orgUser).request('/web/intake/sources');
     await vi.advanceTimersByTimeAsync(15_000);
@@ -659,7 +636,7 @@ describe('aggregated intake', () => {
 
     expect(await response.json()).toEqual({
       sources: [{ integrationId: 'github', id: 'repo-1', name: 'acme/app', type: 'repository' }],
-      failures: [{ integrationId: 'linear', message: 'linear did not answer within 15s' }],
+      failures: [{ integrationId: 'tracker', message: 'tracker did not answer within 15s' }],
     });
   });
 
@@ -668,21 +645,21 @@ describe('aggregated intake', () => {
       orgId: 'org1',
       config: {
         github: { enabled: true, sourceIds: ['repo-1'] },
-        linear: { enabled: true, sourceIds: ['team-1'] },
+        tracker: { enabled: true, sourceIds: ['team-1'] },
       },
     });
-    vi.mocked(linear.listItems).mockRejectedValueOnce(new Error('Bad gateway'));
-    const cursor = Buffer.from(JSON.stringify({ linear: 'linear-page-2' })).toString('base64url');
+    vi.mocked(tracker.listItems).mockRejectedValueOnce(new Error('Bad gateway'));
+    const cursor = Buffer.from(JSON.stringify({ tracker: 'tracker-page-2' })).toString('base64url');
 
     const response = await buildApp(orgUser).request(`/web/intake/items?cursor=${cursor}`);
 
     expect(response.status).toBe(200);
     const body = await response.json();
     expect(body.items).toEqual([expect.objectContaining({ integrationId: 'github', title: 'Fix login' })]);
-    expect(body.failures).toEqual([{ integrationId: 'linear', message: 'Bad gateway' }]);
+    expect(body.failures).toEqual([{ integrationId: 'tracker', message: 'Bad gateway' }]);
     expect(JSON.parse(Buffer.from(body.nextCursor, 'base64url').toString('utf8'))).toEqual({
       github: 'github-next',
-      linear: 'linear-page-2',
+      tracker: 'tracker-page-2',
     });
   });
 
@@ -691,33 +668,35 @@ describe('aggregated intake', () => {
       orgId: 'org1',
       config: {
         github: { enabled: false, sourceIds: ['repo-1'] },
-        linear: { enabled: true, sourceIds: null },
+        tracker: { enabled: true, sourceIds: null },
       },
     });
     const response = await buildApp(orgUser).request('/web/intake/items');
     expect(await response.json()).toEqual({ items: [], nextCursor: null, failures: [] });
     expect(github.listItems).not.toHaveBeenCalled();
-    expect(linear.listItems).not.toHaveBeenCalled();
+    expect(tracker.listItems).not.toHaveBeenCalled();
   });
 });
 
 describe('parseIntakeConfig', () => {
   it('accepts arbitrary integration ids and defaults omitted source lists to null', () => {
-    expect(parseIntakeConfig({ gitlab: { enabled: true }, jira: { enabled: false, sourceIds: ['board-1'] } })).toEqual({
-      gitlab: { enabled: true, sourceIds: null },
-      jira: { enabled: false, sourceIds: ['board-1'] },
+    expect(
+      parseIntakeConfig({ forge: { enabled: true }, labelled: { enabled: false, sourceIds: ['board-1'] } }),
+    ).toEqual({
+      forge: { enabled: true, sourceIds: null },
+      labelled: { enabled: false, sourceIds: ['board-1'] },
     });
   });
 
   it('accepts encoded source ids up to the shared selection and binding limit', () => {
-    const sourceId = 'gitlab-project:' + 'a'.repeat(900);
-    expect(parseIntakeConfig({ gitlab: { enabled: true, sourceIds: [sourceId] } })?.gitlab?.sourceIds).toEqual([
+    const sourceId = 'forge-project:' + 'a'.repeat(900);
+    expect(parseIntakeConfig({ forge: { enabled: true, sourceIds: [sourceId] } })?.forge?.sourceIds).toEqual([
       sourceId,
     ]);
-    expect(parseIntakeBinding({ integrationId: 'gitlab', sourceId, factoryProjectId: 'factory-1' })).toMatchObject({
+    expect(parseIntakeBinding({ integrationId: 'forge', sourceId, factoryProjectId: 'factory-1' })).toMatchObject({
       sourceId,
     });
-    expect(parseIntakeConfig({ gitlab: { enabled: true, sourceIds: ['a'.repeat(1025)] } })).toBeNull();
+    expect(parseIntakeConfig({ forge: { enabled: true, sourceIds: ['a'.repeat(1025)] } })).toBeNull();
   });
 
   it('rejects malformed or duplicate source ids', () => {

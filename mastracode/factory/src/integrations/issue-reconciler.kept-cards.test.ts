@@ -45,13 +45,13 @@ function createProject(replica: Replica, name: string): Promise<FactoryProject> 
   return replica.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name } });
 }
 
-async function createJiraCard(replica: Replica, project: FactoryProject, key: string) {
+async function createTrackerCard(replica: Replica, project: FactoryProject, key: string) {
   const { item } = await replica.workItems.upsert({
     orgId: project.orgId,
     userId: 'user-1',
     factoryProjectId: project.id,
     input: {
-      externalSource: { integrationId: 'jira', type: 'issue', externalId: key },
+      externalSource: { integrationId: 'tracker', type: 'issue', externalId: key },
       title: key,
       stages: ['intake'],
       sessions: {},
@@ -76,9 +76,9 @@ describe('issue sweeps over kept cards', () => {
   let pubsub: EventEmitterPubSub;
   let sweeping: Replica;
   let other: Replica;
-  /** What Jira reports for every issue. */
-  let jiraState: string;
-  /** Issue keys the sweep asked Jira for, in order. */
+  /** What the tracker reports for every issue. */
+  let trackerState: string;
+  /** Issue keys the sweep asked the tracker for, in order. */
   let asked: string[];
 
   beforeEach(async () => {
@@ -87,7 +87,7 @@ describe('issue sweeps over kept cards', () => {
     pubsub = new EventEmitterPubSub();
     sweeping = await createReplica(url, pubsub);
     other = await createReplica(url, pubsub);
-    jiraState = 'To Do';
+    trackerState = 'To Do';
     asked = [];
   });
 
@@ -100,18 +100,18 @@ describe('issue sweeps over kept cards', () => {
     await rm(directory, { recursive: true, force: true });
   });
 
-  function jiraSweep(replica: Replica, cards: KeptCards | null = replica.cards) {
+  function trackerSweep(replica: Replica, cards: KeptCards | null = replica.cards) {
     const intake = {
       resolveIntakeDispatch: async ({ externalSource }: { externalSource: { externalId: string } }) => ({
         issueId: externalSource.externalId,
       }),
       getIssue: async ({ issueId }: { issueId: string }) => {
         asked.push(issueId);
-        return { id: issueId, state: jiraState, stateType: 'unstarted' };
+        return { id: issueId, state: trackerState, stateType: 'unstarted' };
       },
     } as unknown as Intake;
     return createIssueReconciler({
-      integrationId: 'jira',
+      integrationId: 'tracker',
       intake,
       projects: replica.projects,
       storage: replica.workItems,
@@ -124,8 +124,8 @@ describe('issue sweeps over kept cards', () => {
 
   it('asks the provider about every card without reading the database while nothing changes', async () => {
     const project = await createProject(sweeping, 'Factory');
-    await createJiraCard(sweeping, project, 'ENG-1');
-    const sweep = jiraSweep(sweeping);
+    await createTrackerCard(sweeping, project, 'ENG-1');
+    const sweep = trackerSweep(sweeping);
     await expect(sweep()).resolves.toMatchObject({ checked: 1, updated: 1 });
     // The sweep's own write changed the board, so the next one reads it once more.
     await expect(sweep()).resolves.toMatchObject({ checked: 1, updated: 0 });
@@ -141,8 +141,8 @@ describe('issue sweeps over kept cards', () => {
 
   it('reads the database on every sweep when no kept cards are passed', async () => {
     const project = await createProject(sweeping, 'Factory');
-    await createJiraCard(sweeping, project, 'ENG-1');
-    const sweep = jiraSweep(sweeping, null);
+    await createTrackerCard(sweeping, project, 'ENG-1');
+    const sweep = trackerSweep(sweeping, null);
     await sweep();
     await sweep();
 
@@ -154,14 +154,14 @@ describe('issue sweeps over kept cards', () => {
 
   it('sweeps a card another replica imported, in a project another replica created', async () => {
     const project = await createProject(sweeping, 'Factory');
-    await createJiraCard(sweeping, project, 'ENG-1');
-    const sweep = jiraSweep(sweeping);
+    await createTrackerCard(sweeping, project, 'ENG-1');
+    const sweep = trackerSweep(sweeping);
     await sweep();
     await sweep();
 
-    await createJiraCard(other, project, 'ENG-2');
+    await createTrackerCard(other, project, 'ENG-2');
     const added = await createProject(other, 'Second');
-    await createJiraCard(other, added, 'OPS-1');
+    await createTrackerCard(other, added, 'OPS-1');
 
     await vi.waitFor(async () => {
       asked = [];
@@ -172,10 +172,10 @@ describe('issue sweeps over kept cards', () => {
 
   it('stops sweeping the cards of a project another replica deleted', async () => {
     const kept = await createProject(sweeping, 'Factory');
-    await createJiraCard(sweeping, kept, 'ENG-1');
+    await createTrackerCard(sweeping, kept, 'ENG-1');
     const deleted = await createProject(sweeping, 'Old');
-    await createJiraCard(sweeping, deleted, 'OLD-1');
-    const sweep = jiraSweep(sweeping);
+    await createTrackerCard(sweeping, deleted, 'OLD-1');
+    const sweep = trackerSweep(sweeping);
     await sweep();
     await sweep();
 
@@ -190,8 +190,8 @@ describe('issue sweeps over kept cards', () => {
 
   it('stores a provider change without undoing a card change it never heard about', async () => {
     const project = await createProject(sweeping, 'Factory');
-    const card = await createJiraCard(sweeping, project, 'ENG-1');
-    const sweep = jiraSweep(sweeping);
+    const card = await createTrackerCard(sweeping, project, 'ENG-1');
+    const sweep = trackerSweep(sweeping);
     await sweep();
     await sweep();
     await sweeping.workItems.syncCard({
@@ -212,7 +212,7 @@ describe('issue sweeps over kept cards', () => {
     });
     await silent.backend.close();
 
-    jiraState = 'In Progress';
+    trackerState = 'In Progress';
     await expect(sweep()).resolves.toMatchObject({ checked: 1, updated: 1 });
 
     const stored = await sweeping.workItems.get({ orgId: project.orgId, id: card.id });
@@ -224,9 +224,9 @@ describe('issue sweeps over kept cards', () => {
 
   it('keeps nothing until announcements from other replicas are trusted', async () => {
     const project = await createProject(sweeping, 'Factory');
-    await createJiraCard(sweeping, project, 'ENG-1');
+    await createTrackerCard(sweeping, project, 'ENG-1');
     const untrusted = new KeptCards({ projects: sweeping.projects, workItems: sweeping.workItems });
-    const sweep = jiraSweep(sweeping, untrusted);
+    const sweep = trackerSweep(sweeping, untrusted);
     await sweep();
     await sweep();
 

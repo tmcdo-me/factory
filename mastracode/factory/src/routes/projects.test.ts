@@ -78,7 +78,7 @@ describe('ProjectRoutes', () => {
     expect((await app.request(`/web/factory/projects/${created.project.id}`)).status).toBe(404);
   });
 
-  it("hands a deleted factory's Jira projects back so another factory can take all their issues", async () => {
+  it("hands a deleted factory's labelled sources back so another factory can take all their issues", async () => {
     const seed = await createFactoryStorageForTests();
     const create = (name: string) => seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name } });
     const platform = await create('Platform');
@@ -87,7 +87,7 @@ describe('ProjectRoutes', () => {
     const bind = (factoryProjectId: string, labels: string[] | null) =>
       seed.intake.setSharedBinding({
         orgId: 'org-1',
-        integrationId: 'jira',
+        integrationId: 'labelled-tracker',
         sourceId: '10000',
         factoryProjectId,
         labels,
@@ -693,14 +693,14 @@ describe('ProjectRoutes', () => {
     const seed = await createFactoryStorageForTests();
     const project = await seed.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Platform' } });
     const github = seed.sourceControl.forIntegration('github');
-    const gitlab = seed.sourceControl.forIntegration('gitlab');
+    const forge = seed.sourceControl.forIntegration('acme-forge');
     const githubInstallation = await github.installations.upsert({
       orgId: 'org-1',
       connectedByUserId: 'user-1',
       externalId: 'gh-1',
       accountName: 'acme',
     });
-    const gitlabInstallation = await gitlab.installations.upsert({
+    const forgeInstallation = await forge.installations.upsert({
       orgId: 'org-1',
       connectedByUserId: 'user-1',
       externalId: 'gl-1',
@@ -718,10 +718,10 @@ describe('ProjectRoutes', () => {
           input: { installationId, externalId, slug, defaultBranch: 'main' },
         }),
     );
-    const gitlabRepository = await gitlab.repositories.upsert({
+    const forgeRepository = await forge.repositories.upsert({
       orgId: 'org-1',
       input: {
-        installationId: gitlabInstallation.id,
+        installationId: forgeInstallation.id,
         externalId: 'repo-2',
         slug: 'acme/web',
         defaultBranch: 'trunk',
@@ -732,7 +732,7 @@ describe('ProjectRoutes', () => {
       context.set('factoryAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
       await next();
     });
-    mountApiRoutes(app as never, projectRoutes(seed, ['github', 'gitlab'], undefined, resolveRepository));
+    mountApiRoutes(app as never, projectRoutes(seed, ['github', 'acme-forge'], undefined, resolveRepository));
 
     const connect = async (integrationId: string, installationId: string) => {
       const response = await app.request(`/web/factory/projects/${project.id}/source-control-connections`, {
@@ -744,7 +744,7 @@ describe('ProjectRoutes', () => {
       return ((await response.json()) as { connection: { id: string } }).connection;
     };
     const githubConnection = await connect('github', githubInstallation.id);
-    const gitlabConnection = await connect('gitlab', gitlabInstallation.id);
+    const forgeConnection = await connect('acme-forge', forgeInstallation.id);
 
     const link = async (connectionId: string, repositoryId: string, branch: string) => {
       const response = await app.request(
@@ -790,14 +790,14 @@ describe('ProjectRoutes', () => {
       externalId: 'repo-1',
       slug: 'acme/api',
     });
-    await link(gitlabConnection.id, gitlabRepository.id, 'trunk');
+    await link(forgeConnection.id, forgeRepository.id, 'trunk');
 
     const listResponse = await app.request(`/web/factory/projects/${project.id}/source-control-connections`);
     expect(listResponse.status).toBe(200);
     const listed = (await listResponse.json()) as {
       connections: Array<{ integrationId: string; repositories: Array<{ repository: { slug: string } }> }>;
     };
-    expect(listed.connections.map(connection => connection.integrationId).sort()).toEqual(['github', 'gitlab']);
+    expect(listed.connections.map(connection => connection.integrationId).sort()).toEqual(['acme-forge', 'github']);
     expect(
       listed.connections.flatMap(connection => connection.repositories.map(link => link.repository.slug)).sort(),
     ).toEqual(['acme/api', 'acme/web']);
@@ -1042,13 +1042,13 @@ describe('ProjectRoutes', () => {
     async function factoriesWithRepositories(factoryCount: number) {
       const seed = await createFactoryStorageForTests();
       const github = seed.sourceControl.forIntegration('github');
-      const gitlab = seed.sourceControl.forIntegration('gitlab');
+      const forge = seed.sourceControl.forIntegration('acme-forge');
       const githubInstallation = await github.installations.upsert({
         orgId: 'org-1',
         connectedByUserId: 'user-1',
         externalId: 'gh-1',
       });
-      const gitlabInstallation = await gitlab.installations.upsert({
+      const forgeInstallation = await forge.installations.upsert({
         orgId: 'org-1',
         connectedByUserId: 'user-1',
         externalId: 'gl-1',
@@ -1063,7 +1063,7 @@ describe('ProjectRoutes', () => {
         const links = [];
         for (const [handle, installationId, slug, branch] of [
           [github, githubInstallation.id, `acme/api-${index}`, 'release'],
-          [gitlab, gitlabInstallation.id, `acme/web-${index}`, null],
+          [forge, forgeInstallation.id, `acme/web-${index}`, null],
         ] as const) {
           const connection = await handle.connections.create({
             orgId: 'org-1',
@@ -1093,7 +1093,7 @@ describe('ProjectRoutes', () => {
         context.set('factoryAuthUser' as never, { workosId: 'user-1', organizationId: 'org-1' } as never);
         await next();
       });
-      mountApiRoutes(app as never, projectRoutes(seed, ['github', 'gitlab']));
+      mountApiRoutes(app as never, projectRoutes(seed, ['github', 'acme-forge']));
       return { seed, app, factories };
     }
 
@@ -1141,7 +1141,7 @@ describe('ProjectRoutes', () => {
       const body = (await response.json()) as { projects: Array<{ id: string; repositories: unknown[] }> };
       expect(FACTORY_ROUTE_CONTRACTS.projectList.responseSchema.safeParse(body).success).toBe(true);
       expect(body.projects.map(({ id }) => id).sort()).toEqual([project.id, empty.id].sort());
-      const [githubLink, gitlabLink] = links;
+      const [githubLink, forgeLink] = links;
       expect(body.projects.find(({ id }) => id === project.id)?.repositories).toEqual([
         {
           projectRepositoryId: githubLink!.link.id,
@@ -1155,10 +1155,10 @@ describe('ProjectRoutes', () => {
           sandboxWorkdir: '/workspace/acme/api-0',
         },
         {
-          projectRepositoryId: gitlabLink!.link.id,
-          connectionId: gitlabLink!.connection.id,
-          integrationId: 'gitlab',
-          repositoryId: gitlabLink!.repository.id,
+          projectRepositoryId: forgeLink!.link.id,
+          connectionId: forgeLink!.connection.id,
+          integrationId: 'acme-forge',
+          repositoryId: forgeLink!.repository.id,
           externalId: 'acme/web-0-id',
           slug: 'acme/web-0',
           defaultBranch: 'main',
@@ -1186,7 +1186,7 @@ describe('ProjectRoutes', () => {
         })),
       ).toEqual([
         { integrationId: 'github', installation: 'gh-1', links: [[githubLink!.link.id, 'acme/api-0']] },
-        { integrationId: 'gitlab', installation: 'gl-1', links: [[gitlabLink!.link.id, 'acme/web-0']] },
+        { integrationId: 'acme-forge', installation: 'gl-1', links: [[forgeLink!.link.id, 'acme/web-0']] },
       ]);
     });
 

@@ -224,7 +224,6 @@ export class FactoryStartCoordinator {
     const storedItem = request.workItem.id
       ? await storage.get({ orgId: request.orgId, id: request.workItem.id })
       : null;
-    const intakeConfig = await this.#intake?.getConfig({ orgId: request.orgId, integrationIds: ['linear'] });
     let repository = await resolveWorkItemRepository({
       sourceControl,
       orgId: request.orgId,
@@ -233,7 +232,6 @@ export class FactoryStartCoordinator {
         metadata: request.workItem.input.metadata ?? null,
         workItem: { metadata: request.workItem.input.metadata ?? null },
       },
-      linearRepositoryMap: intakeConfig?.linear?.repositoryByLinearProject,
     });
     if (repository.status === 'ambiguous') {
       // A retry of this role's existing session keeps its already-chosen

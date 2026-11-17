@@ -67,34 +67,34 @@ function createSessionDouble() {
 }
 
 describe('provider-aware source-control resolution', () => {
-  it("chooses the Factory's linked GitLab repository even when GitHub is also registered", async () => {
-    const { seeded, sourceControl: gitlab, project } = await seedLinkedRepository({ integrationId: 'gitlab' });
+  it("chooses the Factory's linked Forge repository even when GitHub is also registered", async () => {
+    const { seeded, sourceControl: forge, project } = await seedLinkedRepository({ integrationId: 'acme-forge' });
     const github = seeded.sourceControl.forIntegration('github');
 
     await expect(
       resolveFactorySourceControl({
-        sourceControls: [github, gitlab],
+        sourceControls: [github, forge],
         orgId: 'org-1',
         factoryProjectId: project.id,
       }),
-    ).resolves.toBe(gitlab);
+    ).resolves.toBe(forge);
   });
 
-  it('finds a GitLab session through the cross-provider lookup', async () => {
+  it('finds a Forge session through the cross-provider lookup', async () => {
     const {
       seeded,
-      sourceControl: gitlab,
+      sourceControl: forge,
       project,
       repository,
-    } = await seedLinkedRepository({ integrationId: 'gitlab' });
+    } = await seedLinkedRepository({ integrationId: 'acme-forge' });
     const github = seeded.sourceControl.forIntegration('github');
     const session = await ensureFactorySourceSession({
-      sourceControl: gitlab,
+      sourceControl: forge,
       orgId: 'org-1',
       factoryProjectId: project.id,
-      branch: 'factory/gitlab-issue',
+      branch: 'factory/forge-issue',
     });
-    const sessions = createSourceControlSessionLookup([github, gitlab]);
+    const sessions = createSourceControlSessionLookup([github, forge]);
 
     await expect(sessions.getBySessionId(session.sessionId)).resolves.toMatchObject({
       sessionId: session.sessionId,
@@ -103,13 +103,13 @@ describe('provider-aware source-control resolution', () => {
   });
 
   it('propagates connection-list storage failures instead of selecting another provider', async () => {
-    const { seeded, sourceControl: gitlab, project } = await seedLinkedRepository({ integrationId: 'gitlab' });
+    const { seeded, sourceControl: forge, project } = await seedLinkedRepository({ integrationId: 'acme-forge' });
     const github = seeded.sourceControl.forIntegration('github');
     vi.spyOn(github.connections, 'list').mockRejectedValueOnce(new Error('connection storage unavailable'));
 
     await expect(
       resolveFactorySourceControl({
-        sourceControls: [github, gitlab],
+        sourceControls: [github, forge],
         orgId: 'org-1',
         factoryProjectId: project.id,
       }),
@@ -117,7 +117,7 @@ describe('provider-aware source-control resolution', () => {
   });
 
   it('propagates repository-list storage failures', async () => {
-    const { sourceControl, project } = await seedLinkedRepository({ integrationId: 'gitlab' });
+    const { sourceControl, project } = await seedLinkedRepository({ integrationId: 'acme-forge' });
     vi.spyOn(sourceControl.projectRepositories, 'list').mockRejectedValueOnce(
       new Error('repository storage unavailable'),
     );
@@ -298,7 +298,7 @@ describe('ensureFactorySourceSession', () => {
 
   it('rejects a factory project with no connection for this integration', async () => {
     const { seeded, project, repository } = await seedLinkedRepository();
-    const otherIntegration = seeded.sourceControl.forIntegration('gitlab');
+    const otherIntegration = seeded.sourceControl.forIntegration('acme-forge');
 
     await expect(
       ensureFactorySourceSession({
@@ -757,7 +757,7 @@ describe('resolvePrimaryEnvironmentRepository', () => {
     const { seeded, project } = await seedLinkedRepository();
 
     const result = await resolvePrimaryEnvironmentRepository({
-      sourceControl: seeded.sourceControl.forIntegration('linear'),
+      sourceControl: seeded.sourceControl.forIntegration('acme-tracker'),
       orgId: 'org-1',
       factoryProjectId: project.id,
     });

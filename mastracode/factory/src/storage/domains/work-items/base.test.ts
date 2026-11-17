@@ -276,7 +276,7 @@ describe('WorkItemsStorage', () => {
       storage.commitRuleEvaluation({
         ...scope,
         workItemId: null,
-        ingress: { identity: 'linear:issue:ENG-1:1', triggerType: 'issue.observed' },
+        ingress: { identity: 'tracker:issue:ENG-1:1', triggerType: 'issue.observed' },
         configVersion: 'v1',
         expectedRevision: null,
         actor: { type: 'system', id: 'rules' },
@@ -1232,7 +1232,11 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
   'one card per external record per project on %s',
   backend => {
     const record = {
-      externalSource: { integrationId: 'jira', type: 'issue', externalId: 'jira-issue:conn-1:ENG-42:10001' },
+      externalSource: {
+        integrationId: 'labelled-tracker',
+        type: 'issue',
+        externalId: 'labelled-issue:conn-1:ENG-42:10001',
+      },
       title: 'Fix intake sync',
       stages: ['intake'],
       sessions: {},
@@ -1371,7 +1375,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       delete legacy.work_item;
       delete legacy.work_item_sources;
       delete legacy.changed_at;
-      await storage.ops.insertOne('work_items', { ...legacy, claim_key: 'jira:issue:X' });
+      await storage.ops.insertOne('work_items', { ...legacy, claim_key: 'labelled:issue:X' });
 
       const b = await upsert('project-b');
       expect(b.created).toBe(true);
@@ -1382,7 +1386,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
 
       const rowA = await storage.ops.findOne<{ claim_key: string | null }>('work_items', { id: a.item.id });
       const rowB = await storage.ops.findOne('factory_board_items', { id: b.item.id });
-      expect(rowA?.claim_key).toBe('jira:issue:X');
+      expect(rowA?.claim_key).toBe('labelled:issue:X');
       expect(rowB).not.toHaveProperty('claim_key');
     });
   },

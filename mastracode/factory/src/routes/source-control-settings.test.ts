@@ -31,7 +31,7 @@ function buildApp(
   return app;
 }
 
-async function seedRepository(integrationId: 'github' | 'gitlab') {
+async function seedRepository(integrationId: 'github' | 'acme-forge') {
   const storage = await createFactoryStorageForTests();
   const sourceControl = storage.sourceControl.forIntegration(integrationId);
   const project = await storage.projects.create({ orgId: 'org-1', userId: 'user-1', input: { name: 'Test Factory' } });
@@ -67,7 +67,7 @@ async function seedRepository(integrationId: 'github' | 'gitlab') {
 }
 
 describe('provider-neutral repository settings', () => {
-  it.each(['github', 'gitlab'] as const)('reads and writes %s sandbox commands', async integrationId => {
+  it.each(['github', 'acme-forge'] as const)('reads and writes %s sandbox commands', async integrationId => {
     const { sourceControl, linked, project } = await seedRepository(integrationId);
     const onEnvironmentSaved = vi.fn();
     const app = buildApp([sourceControl], { workosId: 'user-1', organizationId: 'org-1' }, onEnvironmentSaved);
@@ -119,7 +119,7 @@ describe('provider-neutral repository settings', () => {
   });
 
   it('keeps another organization and unauthenticated callers out', async () => {
-    const { sourceControl, linked } = await seedRepository('gitlab');
+    const { sourceControl, linked } = await seedRepository('acme-forge');
     const otherOrg = buildApp([sourceControl], { workosId: 'user-2', organizationId: 'org-2' });
     expect((await otherOrg.request(route(linked.id))).status).toBe(404);
     expect(
@@ -143,7 +143,7 @@ describe('provider-neutral repository settings', () => {
     { name: 'too long', body: { setupCommand: 'x'.repeat(2001) } },
     { name: 'control character', body: { setupCommand: 'echo \u001b[31m' } },
   ])('rejects a $name command without persisting it', async ({ body }) => {
-    const { sourceControl, linked } = await seedRepository('gitlab');
+    const { sourceControl, linked } = await seedRepository('acme-forge');
     const app = buildApp([sourceControl], { workosId: 'user-1', organizationId: 'org-1' });
     const response = await app.request(route(linked.id), {
       method: 'POST',
@@ -157,7 +157,7 @@ describe('provider-neutral repository settings', () => {
   });
 
   it('fails closed when multiple provider handles resolve the same repository', async () => {
-    const { sourceControl, linked } = await seedRepository('gitlab');
+    const { sourceControl, linked } = await seedRepository('acme-forge');
     const app = buildApp([sourceControl, sourceControl], { workosId: 'user-1', organizationId: 'org-1' });
     expect((await app.request(route(linked.id))).status).toBe(409);
   });

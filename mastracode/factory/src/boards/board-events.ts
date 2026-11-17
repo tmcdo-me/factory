@@ -19,7 +19,7 @@ export const STATUS_EVENTS = [
 export type StatusEvent = (typeof STATUS_EVENTS)[number];
 
 /**
- * What happened to a card's pull request (GitHub) or merge request (GitLab): opened by the card's
+ * What happened to a card's pull request: opened by the card's
  * session, pushed to, re-review requested, merged, or closed unmerged. A provider's default rule
  * decides whether the event moves the card at all; a route on the card's board naming the event
  * decides where it goes.
