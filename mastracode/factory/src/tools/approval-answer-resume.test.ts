@@ -31,7 +31,7 @@ import {
 import { fakeRouteAuth, mountApiRoutes } from '../routes/test-utils.js';
 import { WorkItemRoutes } from '../routes/work-items.js';
 import { FactoryTransitionService } from '../rules/transition-service.js';
-import { observeSessionAgentEvents } from '../session/agent-event-mirror.js'; // fork(claude-agent)
+import { attributingHeldAnswers, observeSessionAgentEvents } from '../session/agent-event-mirror.js'; // fork(claude-agent)
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
 import { LiveSessions } from '../session/live-sessions.js';
 import { PendingInteractions } from '../session/pending-interactions.js'; // fork(claude-agent)
@@ -375,7 +375,11 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
           ),
       });
       observeSessionAgentEvents(session, new SessionEventHub(agentEvents), {
-        interactions: { broker, waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId) },
+        interactions: {
+          broker,
+          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+          hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
+        },
       });
       // What the Factory server tells the sessions following the card about this session's runs.
       const signals: Array<{ sessionId: string; kind: string; priority?: string; summary: string }> = [];
@@ -543,6 +547,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         broker, // fork(claude-agent)
         ownerContext, // fork(claude-agent)
         interactionStore, // fork(claude-agent)
+        pendingInteractions, // fork(claude-agent)
+        controller: code.controller, // fork(claude-agent)
       };
     }
 
@@ -566,14 +572,57 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       },
     );
 
-    it('settles the broker record once the call is answered the way the session answers it today', async () => {
+    it('settles the broker record with its answer once the call is answered the way the session answers it today', async () => {
       const { answer, broker, phase, interactionStore } = await parkedPhaseSession();
       await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
 
       await answer('approve');
 
       await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toEqual([]));
-      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({ status: 'cancelled' });
+      // Its outcome, read from the tool's result: not dropped when the snapshot let it go first.
+      expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({
+        status: 'resolved',
+        response: { kind: 'plan_approval', action: 'approved' },
+      });
+    });
+
+    it('records who answered a call in the session itself, through its own prompt card', async () => {
+      const { broker, phase, interactionStore, ownerContext, controller, session, pendingInteractions } =
+        await parkedPhaseSession();
+      await vi.waitFor(async () => expect(await broker.listPending({ sessionId: phase.sessionId })).toHaveLength(1));
+      const requestsBefore = mock.getRequests().length;
+
+      // As the server routes the session API's answer: Mastra's agent-controller handlers, attributed.
+      const inSession = attributingHeldAnswers(
+        createMastraCodeSessionCommands({
+          mastra: () => ({ getAgentController: () => controller }) as never,
+          controllerId: 'code',
+        }),
+        {
+          broker,
+          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+          answeredBy: () => OWNER,
+        },
+      );
+      expect(
+        await inSession.answer(
+          phase.sessionId,
+          { interactionId: 'plan_approval:call_plan' },
+          { kind: 'plan_approval', action: 'approved' },
+          { context: ownerContext() },
+        ),
+      ).toEqual({ ok: true });
+
+      await vi.waitFor(async () =>
+        expect(await interactionStore.get('plan_approval:call_plan')).toMatchObject({
+          status: 'resolved',
+          resolvedBy: OWNER,
+          response: { kind: 'plan_approval', action: 'approved' },
+        }),
+      );
+      // Mastra's handler carries the run on in the background: let it finish, so it can't reach the next test's model.
+      await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+      await vi.waitFor(() => expect(session.run.isRunning()).toBe(false), { timeout: 30_000 });
     });
 
     it("hands an answer through the broker to the controller, which resumes the run as the session's owner, once", async () => {

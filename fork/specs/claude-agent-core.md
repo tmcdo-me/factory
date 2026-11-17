@@ -461,6 +461,18 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `held_by` column, added to an existing table). Readers are unchanged in 5a: parked runs and
      follower notices still come from the controller, so held records are indexed but not reported
      as parked or announced.
+     After review: a call that leaves the controller's snapshot is let go of (hidden from lists) and
+     settled by its outcome (its `tool_end` result, a cancellation, the run aborting or failing, a
+     thread switch, or after a 15 s grace window: approved for a gate whose call is running), so an
+     answer in the session records what was answered, and a session API answer records who
+     (`broker.attribute`). A call that comes back (a resume that failed) is reported waiting again and
+     the broker forgets what was said of it meanwhile; a runtime that refuses an answer and still waits
+     keeps it pending. A call whose kind changes is settled and asked anew; a stored record the index
+     missed is adopted. After a restart, held records whose session no longer waits on their call (asked
+     of its controller and storage, without claiming) are settled, at most 100, one at a time. A
+     Claude Agent record never writes `held_by`. Rollback: `UPDATE factory_agent_interactions SET status =
+'cancelled' WHERE held_by IS NOT NULL AND status = 'pending'`. 5a–5c ship together (5a's gate
+     records carry `gate: true` only from 5b).
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's

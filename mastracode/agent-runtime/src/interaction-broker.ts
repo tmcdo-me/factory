@@ -96,6 +96,11 @@ export class InteractionBroker {
    * meanwhile (its events can say so before its answer returns).
    */
   readonly #answering = new Map<string, HeldSettlement | undefined>();
+  /**
+   * Who answered a held interaction in its own session, as the host saw the answer go to the runtime
+   * (`attribute`), until the runtime reports it settled.
+   */
+  readonly #attributions = new Map<string, { resolvedBy?: string }>();
   readonly #newId: () => string;
   readonly #now: () => Date;
   readonly #waiters = new Map<string, Waiter>();
@@ -196,13 +201,13 @@ export class InteractionBroker {
       const kept = (await this.#store.listPending({ sessionId: interaction.sessionId })).find(
         record => record.heldBy === interaction.heldBy && record.callId === interaction.callId,
       );
-      if (kept) return kept;
+      if (kept) return this.#reported(kept);
     }
     let id = interaction.id;
     for (let n = 2; ; n++) {
       const existing = await this.#store.get(id);
       if (!existing) break;
-      if (existing.status === 'pending') return existing;
+      if (existing.status === 'pending') return this.#reported(existing);
       id = `${interaction.id}#${n}`;
     }
     const record: InteractionRecord = { ...interaction, id, status: 'pending' };
@@ -211,16 +216,45 @@ export class InteractionBroker {
   }
 
   /**
+   * A held interaction its runtime reported waiting again: it waits, whatever the runtime said of it
+   * while an answer was with it (a resume that dropped the call, then failed and put it back). The
+   * store indexes it if it didn't (one created before an index was built, say).
+   */
+  #reported(record: InteractionRecord): InteractionRecord {
+    if (this.#answering.has(record.id)) this.#answering.set(record.id, undefined);
+    this.#store.adopt?.(record);
+    return record;
+  }
+
+  /**
+   * fork(claude-agent): say who answered a held interaction in its own session, as the answer goes to
+   * the runtime outside the broker (its own in-session routes). The runtime's report that it settled
+   * then names them. Returns a function that drops the attribution (the runtime refused the answer).
+   */
+  attribute(id: string, attribution: { resolvedBy?: string }): () => void {
+    this.#attributions.set(id, attribution);
+    return () => {
+      if (this.#attributions.get(id) === attribution) this.#attributions.delete(id);
+    };
+  }
+
+  /**
    * Settle a held interaction as its runtime reports it settled (answered in the session, or
    * abandoned). Publishes nothing: the runtime's own stream reports it. An interaction whose answer
    * is with the runtime right now is settled when that answer returns. Returns whether it settled.
    */
   async settleHeld(id: string, settlement: HeldSettlement): Promise<boolean> {
+    const attribution = this.#attributions.get(id);
+    const attributed =
+      attribution?.resolvedBy && settlement.status === 'resolved' && !settlement.resolvedBy
+        ? { ...settlement, resolvedBy: attribution.resolvedBy }
+        : settlement;
     if (this.#answering.has(id)) {
-      this.#answering.set(id, settlement);
+      this.#answering.set(id, attributed);
       return false;
     }
-    return (await this.#store.settle(id, this.#settlementOf(settlement))) !== undefined;
+    this.#attributions.delete(id);
+    return (await this.#store.settle(id, this.#settlementOf(attributed))) !== undefined;
   }
 
   #settlementOf(settlement: HeldSettlement): Parameters<InteractionStore['settle']>[1] {
@@ -250,10 +284,18 @@ export class InteractionBroker {
     if (this.#answering.has(id)) return { status: 'not_pending' };
     this.#answering.set(id, undefined);
     try {
-      const result = await this.#answerHeld(existing, response, {
-        ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
-        ...(options.context !== undefined ? { context: options.context } : {}),
-      });
+      let result: CommandResult;
+      try {
+        result = await this.#answerHeld(existing, response, {
+          ...(options.resolvedBy ? { resolvedBy: options.resolvedBy } : {}),
+          ...(options.context !== undefined ? { context: options.context } : {}),
+        });
+      } catch (error) {
+        // The runtime's own report of the interaction still stands, as for a refusal.
+        const reported = this.#answering.get(id);
+        if (reported) await this.#store.settle(id, this.#settlementOf(reported));
+        throw error;
+      }
       const reported = this.#answering.get(id);
       if (result.ok) {
         const record =
@@ -274,7 +316,8 @@ export class InteractionBroker {
         );
         return { status: 'not_pending' };
       }
-      if (reported) await this.#store.settle(id, this.#settlementOf(reported));
+      // A runtime that still waits on it keeps it pending, whatever it reported meanwhile.
+      if (reported && !result.waiting) await this.#store.settle(id, this.#settlementOf(reported));
       throw new InteractionAnswerRefusedError(id, result.reason, result.message);
     } finally {
       this.#answering.delete(id);

@@ -69,6 +69,8 @@ interface Waiting {
   record: InteractionRecord;
   /** When the session started waiting (its stored `requestedAt`): it doubles as the inbox receipt key. */
   stamp: number;
+  /** Its runtime let go of it and its outcome is on its way: indexed, not listed. */
+  hidden?: boolean;
 }
 
 /**
@@ -137,6 +139,41 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     return this.#options.store.listPending(filter);
   }
 
+  /**
+   * A pending record the broker found stored when a runtime reported it waiting again: indexed if it
+   * wasn't, and listed again if it was hidden.
+   */
+  adopt(record: InteractionRecord): void {
+    if (record.status !== 'pending') return;
+    const waiting = this.#waiting.get(record.sessionId)?.get(record.id);
+    if (!waiting) {
+      this.#add(record, false);
+      return;
+    }
+    if (!waiting.hidden) return;
+    waiting.hidden = false;
+    this.#changed(record.sessionId);
+  }
+
+  /**
+   * Stop listing what a session holds for one tool call while its outcome is on its way (its runtime
+   * let go of it, an answer reached the tool): it stays indexed until it settles, or comes back.
+   */
+  hide(sessionId: string, callId: string): void {
+    let hid = false;
+    for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
+      if (waiting.record.callId !== callId || waiting.hidden) continue;
+      waiting.hidden = true;
+      hid = true;
+    }
+    if (hid) this.#changed(sessionId);
+  }
+
+  #changed(sessionId: string): void {
+    const project = this.#projects.get(sessionId);
+    if (project) this.#notify(() => this.#options.onChanged?.(sessionId, project));
+  }
+
   /** The pending interactions a session holds for one tool call, from memory. */
   waitingOn(sessionId: string, callId: string): InteractionRecord[] {
     return [...(this.#waiting.get(sessionId)?.values() ?? [])]
@@ -148,6 +185,7 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
   parked(sessionId: string): ParkedRun | undefined {
     let oldest: Waiting | undefined;
     for (const waiting of this.#waiting.get(sessionId)?.values() ?? []) {
+      if (waiting.hidden) continue;
       if (heldByRuntime(waiting.record)) continue; // read from the runtime until slice 5b
       if (!oldest || waiting.stamp < oldest.stamp) oldest = waiting;
     }

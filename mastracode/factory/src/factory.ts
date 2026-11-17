@@ -157,7 +157,12 @@ import { peekSessionSandbox } from './sandbox/session-sandbox.js';
 import { createPlaintextFactorySecretEncryption } from './secret-encryption.js';
 import type { FactorySecretEncryption } from './secret-encryption.js';
 import { handleServerError } from './server-error.js';
-import { observeSessionAgentEvents, sessionModelContextWindow } from './session/agent-event-mirror.js';
+import {
+  attributingHeldAnswers,
+  observeSessionAgentEvents,
+  settleHeldCallsGone,
+  sessionModelContextWindow,
+} from './session/agent-event-mirror.js';
 import type { SessionInteractionRecords } from './session/agent-event-mirror.js'; // fork(claude-agent)
 import { ClaudeAgentConcurrency } from './session/claude-agent-concurrency.js';
 import { stateSignalContext } from './session/claude-agent-context.js';
@@ -638,6 +643,9 @@ export class MastraFactory {
   #claudeAgentHost: ClaudeAgentHost | undefined;
   /** fork(claude-agent): where Mastra Code sessions' waiting calls are recorded (the interaction broker). */
   #interactionRecords: SessionInteractionRecords | undefined;
+  /** fork(claude-agent): the broker's index, and whether it read what was pending at start. */
+  #pendingInteractions: PendingInteractions | undefined;
+  #interactionsLoaded: Promise<boolean> | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -1841,11 +1849,19 @@ export class MastraFactory {
     this.#interactionRecords = {
       broker: interactionBroker,
       waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+      hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
     };
-    void agentInteractionsStorage
+    this.#interactionsLoaded = agentInteractionsStorage
       .ensureReady()
       .then(() => pendingInteractions.load())
-      .catch(error => console.warn('[factory] Unable to read the questions Claude Agent sessions wait on.', error));
+      .then(
+        () => true,
+        error => {
+          console.warn('[factory] Unable to read the questions sessions wait on.', error);
+          return false;
+        },
+      );
+    this.#pendingInteractions = pendingInteractions;
     // fork(claude-agent): this process, by host, Claude Agent home, pid and boot.
     const claudeAgentHost = claudeAgentHostLease({
       store: async () =>
@@ -2547,7 +2563,13 @@ export class MastraFactory {
             commands: routeSessionCommands({
               sessions: agentSessionsStorage,
               runtimes: { [CLAUDE_AGENT_RUNTIME_ID]: claudeAgentSessions.commands() },
-              fallback: mastraCodeCommands,
+              // fork(claude-agent): an in-session answer to a Mastra Code call is recorded as theirs.
+              fallback: attributingHeldAnswers(mastraCodeCommands, {
+                broker: interactionBroker,
+                waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+                answeredBy: context =>
+                  ((context as RequestContext | undefined)?.get('user') as { workosId?: string } | undefined)?.workosId,
+              }),
             }),
           }),
           ...auditDomain.routes(),
@@ -2640,6 +2662,41 @@ export class MastraFactory {
     );
 
     const notifyApprovalRequested = createSessionApprovalNotifier(sessionReports);
+    // fork(claude-agent): once the controller is up, settle what Mastra Code sessions stopped waiting on
+    // while no process watched them (checked after the session observers below are attached).
+    void this.#interactionsLoaded?.then(async loaded => {
+      const index = this.#pendingInteractions;
+      const broker = this.#interactionRecords?.broker;
+      if (!loaded || !index || !broker) return;
+      const controller = prepared.base.controller;
+      try {
+        const settled = await settleHeldCallsGone({
+          records: await index.listPending(),
+          broker,
+          session: async sessionId => {
+            await controller.init();
+            const live = await controller.getSession(sessionId);
+            if (live) return live as never;
+            const thread = await controller.queryThreadById({ threadId: sessionId });
+            try {
+              return (await controller.createSession({
+                id: sessionId,
+                resourceId: thread?.resourceId ?? sessionId,
+                ownerId: controller.id,
+                ...(thread ? { threadId: sessionId } : {}),
+                resumeOnly: true,
+              })) as never;
+            } catch (error) {
+              if ((error as { code?: unknown }).code === 'SESSION_NOT_STARTED') return null;
+              throw error;
+            }
+          },
+        });
+        if (settled > 0) console.info(`[factory] Settled ${settled} calls Mastra Code sessions no longer wait on.`);
+      } catch (error) {
+        console.warn('[factory] Unable to check what Mastra Code sessions still wait on.', error);
+      }
+    });
     prepared.base.controller.onSessionCreated(session => {
       observeSessionFilesystem(session, {
         filesystem: filesystemStorage,

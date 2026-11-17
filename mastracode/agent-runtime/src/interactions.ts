@@ -86,4 +86,9 @@ export interface InteractionStore {
       | { status: 'cancelled'; cancelReason: string; settledAt: string },
   ): Promise<InteractionRecord | undefined>;
   listPending(filter?: { sessionId?: string }): Promise<InteractionRecord[]>;
+  /**
+   * fork(claude-agent): a pending record the broker found already stored when a runtime reported it
+   * again (`track`), for a store that keeps an index of what is pending to take it in.
+   */
+  adopt?(record: InteractionRecord): void;
 }

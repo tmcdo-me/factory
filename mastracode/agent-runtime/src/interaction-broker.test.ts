@@ -212,6 +212,62 @@ describe('InteractionBroker with interactions a runtime holds', () => {
     expect(await store.get(answered.id)).toMatchObject({ status: 'resolved', resolvedBy: 'u1' });
   });
 
+  // A resume that drops the call from the session's state, then fails and puts it back: the call
+  // still waits, though the runtime's events said it was gone while the answer was with it.
+  it('keeps a call pending when the runtime refuses its answer and still waits on it', async () => {
+    let accept!: (result: CommandResult) => void;
+    const { broker, store, ask } = heldSetup(() => new Promise<CommandResult>(resolve => (accept = resolve)));
+    const held = await ask('call-1');
+
+    const outcome = broker.resolve(held.id, { kind: 'question', answer: 'main' }, { resolvedBy: 'u1' });
+    await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
+    await broker.settleHeld(held.id, { status: 'cancelled', reason: 'gone' });
+    accept({ ok: false, reason: 'invalid', message: 'the session still waits on it', waiting: true });
+
+    await expect(outcome).rejects.toBeInstanceOf(InteractionAnswerRefusedError);
+    expect(await store.get(held.id)).toMatchObject({ status: 'pending' });
+  });
+
+  it('forgets what the runtime said of a call while its answer was out once it reports the call waiting again', async () => {
+    let accept!: (result: CommandResult) => void;
+    const { broker, store, ask } = heldSetup(() => new Promise<CommandResult>(resolve => (accept = resolve)));
+    const held = await ask('call-1');
+
+    const outcome = broker.resolve(held.id, { kind: 'question', answer: 'main' });
+    await vi.waitFor(() => expect(accept).toBeTypeOf('function'));
+    await broker.settleHeld(held.id, { status: 'cancelled', reason: 'gone' });
+    expect((await ask('call-1')).id).toBe(held.id);
+    accept({ ok: false, reason: 'invalid' });
+
+    await expect(outcome).rejects.toBeInstanceOf(InteractionAnswerRefusedError);
+    expect(await store.get(held.id)).toMatchObject({ status: 'pending' });
+  });
+
+  it('settles as the runtime reported when handing it the answer fails', async () => {
+    const { broker, store, ask } = heldSetup(async () => {
+      await broker.settleHeld('question:call-1', { status: 'cancelled', reason: 'aborted' });
+      throw new Error('connection lost');
+    });
+    const held = await ask('call-1');
+
+    await expect(broker.resolve(held.id, { kind: 'question', answer: 'main' })).rejects.toThrow('connection lost');
+    expect(await store.get(held.id)).toMatchObject({ status: 'cancelled', cancelReason: 'aborted' });
+  });
+
+  it('names who answered a call in its own session once the runtime reports it answered', async () => {
+    const { broker, store, ask } = heldSetup(async () => ({ ok: true }));
+    const held = await ask('call-1');
+    const dropped = await ask('call-2');
+
+    broker.attribute(held.id, { resolvedBy: 'u1' });
+    broker.attribute(dropped.id, { resolvedBy: 'u2' })();
+    await broker.settleHeld(held.id, { status: 'resolved', response: { kind: 'question', answer: 'main' } });
+    await broker.settleHeld(dropped.id, { status: 'resolved', response: { kind: 'question', answer: 'x' } });
+
+    expect(await store.get(held.id)).toMatchObject({ status: 'resolved', resolvedBy: 'u1' });
+    expect((await store.get(dropped.id))?.resolvedBy).toBeUndefined();
+  });
+
   it('keeps one record per waiting call, and a fresh one when the call id comes back after it settled', async () => {
     const { broker, ask } = heldSetup(async () => ({ ok: true }));
     const first = await ask();

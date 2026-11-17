@@ -87,7 +87,8 @@ export class AgentInteractionsStorage extends FactoryStorageDomain implements In
       cancel_reason: record.cancelReason ?? null,
       requested_at: new Date(record.requestedAt),
       settled_at: record.settledAt ? new Date(record.settledAt) : null,
-      held_by: record.heldBy ?? null,
+      // Only a held record writes the column, so a table it couldn't be added to still takes Claude Agent's.
+      ...(record.heldBy ? { held_by: record.heldBy } : {}),
     });
   }
 

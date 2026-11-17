@@ -4,14 +4,13 @@
  * each way such a call stops waiting (answered in the session, or dropped by an abort).
  */
 import type { HeldSettlement, InteractionRequest, PendingInteraction } from '@factory/agent-runtime';
-import { HELD_INTERACTION_GONE } from '@factory/agent-runtime';
 import { MockLanguageModelV2, convertArrayToReadableStream } from '@internal/ai-sdk-v5/test';
 import { Agent } from '@mastra/core/agent';
 import { AgentController } from '@mastra/core/agent-controller';
 import { InMemoryStore } from '@mastra/core/storage';
 import { askUserTool, createTool } from '@mastra/core/tools';
 import { Workspace } from '@mastra/core/workspace';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { observeMastraCodeInteractions } from './interactions';
@@ -90,10 +89,12 @@ async function sessionCalling(
   const requested: Array<PendingInteraction & { heldBy: string }> = [];
   const settled: Array<{ callId: string; settlement: HeldSettlement }> = [];
   const errors: unknown[] = [];
+  const left: string[] = [];
   observeMastraCodeInteractions(
     session,
     {
       requested: interaction => requested.push(interaction),
+      left: callId => left.push(callId),
       // The broker applies a settlement to what it recorded: here, the request reported for the call.
       settled: (callId, settlement) => {
         const request: InteractionRequest | undefined = requested.find(r => r.callId === callId)?.request;
@@ -102,7 +103,7 @@ async function sessionCalling(
     },
     { onError: error => errors.push(error) },
   );
-  return { session, requested, settled, errors };
+  return { session, requested, settled, errors, left };
 }
 
 describe('observeMastraCodeInteractions on a real AgentController session', () => {
@@ -114,7 +115,7 @@ describe('observeMastraCodeInteractions on a real AgentController session', () =
       requireApproval: true,
       execute: async ({ version }) => ({ shipped: version }),
     });
-    const { session, requested, settled, errors } = await sessionCalling(
+    const { session, requested, settled, errors, left } = await sessionCalling(
       'ship_release',
       { version: '1.2.0' },
       { ship_release: ship },
@@ -134,15 +135,11 @@ describe('observeMastraCodeInteractions on a real AgentController session', () =
 
     session.respondToToolApproval({ decision: 'approve', toolCallId: 'call-1' });
     expect(await until(() => settled.some(s => s.settlement.status === 'resolved'))).toBe(true);
-    // It stopped waiting as soon as the gate opened, and its result says it was allowed.
-    expect(settled[0]).toEqual({
-      callId: 'call-1',
-      settlement: { status: 'cancelled', reason: HELD_INTERACTION_GONE },
-    });
-    expect(settled.at(-1)).toEqual({
-      callId: 'call-1',
-      settlement: { status: 'resolved', response: { kind: 'tool_approval', approved: true } },
-    });
+    // Its gate opened (the snapshot let it go) and it is settled once, by its result: allowed.
+    expect(settled).toEqual([
+      { callId: 'call-1', settlement: { status: 'resolved', response: { kind: 'tool_approval', approved: true } } },
+    ]);
+    expect(left).toEqual(['call-1']);
     expect(requested).toHaveLength(1);
     expect(errors).toEqual([]);
   });
@@ -199,9 +196,91 @@ describe('observeMastraCodeInteractions on a real AgentController session', () =
     session.releaseToolResponse(claim.claimKey);
 
     expect(await until(() => settled.some(s => s.settlement.status === 'resolved'))).toBe(true);
-    expect(settled.at(-1)).toEqual({
-      callId: 'call-1',
-      settlement: { status: 'resolved', response: { kind: 'question', answer: expect.stringContaining('main') } },
-    });
+    // Settled once, with its answer: not first as dropped when the snapshot let it go.
+    expect(settled).toEqual([
+      {
+        callId: 'call-1',
+        settlement: { status: 'resolved', response: { kind: 'question', answer: expect.stringContaining('main') } },
+      },
+    ]);
+  });
+});
+
+/** A session that publishes the snapshots and events given to it, as a controller would. */
+function scriptedSession() {
+  const listeners = new Set<(event: never) => void>();
+  return {
+    identity: { getId: () => 's1' },
+    subscribe: (listener: (event: never) => void) => {
+      listeners.add(listener);
+      return () => void listeners.delete(listener);
+    },
+    emit: (event: Record<string, unknown>) => listeners.forEach(listener => listener(event as never)),
+  };
+}
+
+const question = { toolName: 'ask_user', suspendPayload: { question: 'Which branch?' } };
+const snapshot = (suspensions: Record<string, unknown>, approvals: Record<string, unknown> = {}) => ({
+  type: 'display_state_changed',
+  displayState: { pendingSuspensions: suspensions, pendingApprovals: approvals },
+});
+
+describe('observeMastraCodeInteractions, as calls leave and come back', () => {
+  function watch() {
+    const session = scriptedSession();
+    const events: string[] = [];
+    observeMastraCodeInteractions(
+      session,
+      {
+        requested: interaction => events.push(`requested ${interaction.id}`),
+        left: callId => events.push(`left ${callId}`),
+        settled: (callId, settlement) => {
+          const settled = settlement({ kind: 'tool_approval', toolName: 'x', input: {} });
+          events.push(`settled ${callId} ${settled.status}`);
+        },
+      },
+      { graceMs: 20 },
+    );
+    return { session, events };
+  }
+
+  it('reports a call waiting again when a failed resume puts it back, without settling it', () => {
+    const { session, events } = watch();
+    session.emit(snapshot({ 'call-1': question }));
+    session.emit(snapshot({}));
+    session.emit(snapshot({ 'call-1': question }));
+
+    expect(events).toEqual(['requested question:call-1', 'left call-1', 'requested question:call-1']);
+  });
+
+  it('settles a call whose kind changed, and asks again', () => {
+    const { session, events } = watch();
+    session.emit(snapshot({}, { 'call-1': { toolName: 'ask_user', args: {} } }));
+    session.emit(snapshot({ 'call-1': question }));
+
+    expect(events).toEqual(['requested tool_approval:call-1', 'settled call-1 cancelled', 'requested question:call-1']);
+  });
+
+  it('settles a gate that let its call through as approved, and a paused call as gone, after the grace window', async () => {
+    const { session, events } = watch();
+    session.emit(snapshot({ 'call-2': question }, { 'call-1': { toolName: 'ship', args: {} } }));
+    session.emit(snapshot({}));
+
+    await vi.waitFor(() => expect(events).toHaveLength(6));
+    expect(events.slice(2).sort()).toEqual([
+      'left call-1',
+      'left call-2',
+      'settled call-1 resolved',
+      'settled call-2 cancelled',
+    ]);
+  });
+
+  it('settles a call it let go of when the session switches threads', () => {
+    const { session, events } = watch();
+    session.emit(snapshot({ 'call-1': question }));
+    session.emit(snapshot({}));
+    session.emit({ type: 'thread_changed', threadId: 't2', previousThreadId: 't1' });
+
+    expect(events).toEqual(['requested question:call-1', 'left call-1', 'settled call-1 cancelled']);
   });
 });

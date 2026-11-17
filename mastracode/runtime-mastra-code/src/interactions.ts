@@ -104,14 +104,26 @@ export interface InteractionWatchSession {
 
 /** Where a Mastra Code session's waiting calls are reported: Factory's interaction broker. */
 export interface MastraCodeInteractionSink {
-  /** The session holds a new call for a person. */
+  /** The session holds a new call for a person, or holds again one it had let go of. */
   requested(interaction: PendingInteraction & { heldBy: string }): void;
+  /**
+   * The session no longer shows the call as waiting, and its outcome isn't known yet (an answer is
+   * on its way to the tool): stop listing it while it settles.
+   */
+  left?(toolCallId: string): void;
   /**
    * The session no longer holds the call, or the call it held finished. `settlement` says how,
    * given what the call asked.
    */
   settled(toolCallId: string, settlement: (request: InteractionRequest) => HeldSettlement): void;
 }
+
+/**
+ * How long a call that left the session's display state waits for its outcome (the answered tool's
+ * end) before it is settled anyway: approved for a gate (its tool may run for long), else as no
+ * longer waited on.
+ */
+export const LEAVING_GRACE_MS = 15_000;
 
 type DisplaySnapshot = {
   pendingApprovals?: unknown;
@@ -181,20 +193,26 @@ export function answeredResponse(
 /**
  * Report every call a Mastra Code session holds for a person to `sink`, and when it stops holding
  * it. The session's controller stays the authority: what it waits on is read from each display-state
- * snapshot it publishes (the state its own UI renders), so a call it drops without saying so (an
- * abort, a run that ends, a thread reset) is reported settled as well. A call that finishes is
- * reported settled with the answer read from its result, which also settles one the session took up
- * again after a restart without holding it in its display state. Returns the unsubscribe function.
+ * snapshot it publishes (the state its own UI renders). A call that leaves the snapshot is let go of
+ * (`left`) but settled only by its outcome: its `tool_end` (with the answer read from its result,
+ * which also settles one the session took up again after a restart without holding it in its
+ * display state), a cancellation, the run aborting or failing, a thread switch, or after a grace
+ * window (a gate's tool is then running: it was approved). A call that comes back into the snapshot
+ * (a resume that failed) is reported waiting again, and one whose kind changed is settled and asked
+ * anew. Returns the unsubscribe function.
  */
 export function observeMastraCodeInteractions(
   session: InteractionWatchSession,
   sink: MastraCodeInteractionSink,
-  options: { now?: () => Date; onError?(error: unknown): void } = {},
+  options: { now?: () => Date; onError?(error: unknown): void; graceMs?: number } = {},
 ): () => void {
   const sessionId = session.identity.getId();
   const now = options.now ?? (() => new Date());
-  /** The calls reported waiting, by tool call id. */
-  const open = new Set<string>();
+  const graceMs = options.graceMs ?? LEAVING_GRACE_MS;
+  /** The calls reported waiting, by tool call id: the kind each was reported as, and whether it is a gate. */
+  const open = new Map<string, { kind: InteractionRequest['kind']; gate: boolean }>();
+  /** Calls that left the snapshot, awaiting their outcome. */
+  const leaving = new Map<string, { timer: ReturnType<typeof setTimeout> }>();
   const report = (work: () => void) => {
     try {
       work();
@@ -202,46 +220,123 @@ export function observeMastraCodeInteractions(
       options.onError?.(error);
     }
   };
-  return session.subscribe(event => {
+  const forget = (toolCallId: string) => {
+    const left = leaving.get(toolCallId);
+    if (left) clearTimeout(left.timer);
+    leaving.delete(toolCallId);
+    open.delete(toolCallId);
+  };
+  const settle = (toolCallId: string, settlement: (request: InteractionRequest) => HeldSettlement) => {
+    forget(toolCallId);
+    report(() => sink.settled(toolCallId, settlement));
+  };
+  const cancelLeaving = (reason: string) => {
+    for (const toolCallId of [...leaving.keys()]) settle(toolCallId, () => ({ status: 'cancelled', reason }));
+  };
+  const request = (toolCallId: string, call: MastraCodeWaitingCall) => {
+    const asked = mastraCodeInteractionRequest(call);
+    open.set(toolCallId, { kind: asked.kind, gate: call.gate === true });
+    report(() =>
+      sink.requested({
+        id: mastraCodeInteractionId(asked, toolCallId),
+        sessionId,
+        callId: toolCallId,
+        request: asked,
+        requestedAt: now().toISOString(),
+        heldBy: MASTRA_CODE_RUNTIME_ID,
+      }),
+    );
+  };
+  const unsubscribe = session.subscribe(event => {
     if (event.type === 'display_state_changed') {
       const calls = waitingCalls((event.displayState ?? {}) as DisplaySnapshot);
       for (const [toolCallId, call] of calls) {
-        if (open.has(toolCallId)) continue;
-        open.add(toolCallId);
-        const request = mastraCodeInteractionRequest(call);
-        report(() =>
-          sink.requested({
-            id: mastraCodeInteractionId(request, toolCallId),
-            sessionId,
-            callId: toolCallId,
-            request,
-            requestedAt: now().toISOString(),
-            heldBy: MASTRA_CODE_RUNTIME_ID,
-          }),
-        );
+        const kind = mastraCodeInteractionRequest(call).kind;
+        const reported = open.get(toolCallId)?.kind;
+        if (reported === kind && !leaving.has(toolCallId)) continue;
+        if (reported !== undefined && reported !== kind) {
+          // The same call now asks something else (a gate, then the tool's own question).
+          settle(toolCallId, () => ({ status: 'cancelled', reason: HELD_INTERACTION_GONE }));
+        } else {
+          const left = leaving.get(toolCallId);
+          if (left) clearTimeout(left.timer);
+          leaving.delete(toolCallId);
+        }
+        request(toolCallId, call);
       }
-      for (const toolCallId of [...open]) {
-        if (calls.has(toolCallId)) continue;
-        open.delete(toolCallId);
-        report(() => sink.settled(toolCallId, () => ({ status: 'cancelled', reason: HELD_INTERACTION_GONE })));
+      for (const [toolCallId, { gate }] of open) {
+        if (calls.has(toolCallId) || leaving.has(toolCallId)) continue;
+        // A gate that let its call through (a decline or an abort ends the call at once, denied).
+        const timer = setTimeout(
+          () =>
+            settle(toolCallId, asked =>
+              gate && asked.kind === 'tool_approval'
+                ? { status: 'resolved', response: { kind: 'tool_approval', approved: true } }
+                : { status: 'cancelled', reason: HELD_INTERACTION_GONE },
+            ),
+          graceMs,
+        );
+        (timer as { unref?: () => void }).unref?.();
+        leaving.set(toolCallId, { timer });
+        report(() => sink.left?.(toolCallId));
       }
       return;
     }
     if (event.type === 'tool_end') {
-      open.delete(event.toolCallId);
       const { result } = event;
       const denied = event.denied === true;
-      report(() =>
-        sink.settled(event.toolCallId, request => {
-          // A call that failed, or a paused one its run dropped (an abort ends it denied), was never
-          // answered; a gated call that was denied was declined.
-          const answered = !event.isError && (!denied || request.kind === 'tool_approval');
-          const response = answered ? answeredResponse(request, result, denied) : undefined;
-          return response
-            ? { status: 'resolved', response }
-            : { status: 'cancelled', reason: errorText(result) || HELD_INTERACTION_GONE };
-        }),
-      );
+      settle(event.toolCallId, request => {
+        // A call that failed, or a paused one its run dropped (an abort ends it denied), was never
+        // answered; a gated call that was denied was declined.
+        const answered = !event.isError && (!denied || request.kind === 'tool_approval');
+        const response = answered ? answeredResponse(request, result, denied) : undefined;
+        return response
+          ? { status: 'resolved', response }
+          : { status: 'cancelled', reason: errorText(result) || HELD_INTERACTION_GONE };
+      });
+      return;
     }
+    if (event.type === 'tool_suspension_cancelled') {
+      const reason = event.reason || HELD_INTERACTION_GONE;
+      settle(event.toolCallId, () => ({ status: 'cancelled', reason }));
+      return;
+    }
+    if (event.type === 'agent_end' && (event.reason === 'aborted' || event.reason === 'error')) {
+      cancelLeaving(HELD_INTERACTION_GONE);
+      return;
+    }
+    if (event.type === 'thread_changed') cancelLeaving(HELD_INTERACTION_GONE);
   });
+  return () => {
+    for (const { timer } of leaving.values()) clearTimeout(timer);
+    leaving.clear();
+    unsubscribe();
+  };
+}
+
+/** The slice of a Mastra `Session` that tells whether it still waits on a call, without claiming it. */
+export interface MastraCodeWaitCheckSession {
+  approval: { list(): Array<{ toolCallId: string }> };
+  suspensions: { resolveAddress(input: { toolCallId: string }): unknown };
+  /** A call paused by a process that has since gone away is only in storage until this finds it. */
+  restoreStoredToolSuspension?(toolCallId?: string): Promise<void>;
+  /** A gated call whose run was parked by a process that has since gone away. */
+  hasPersistedToolApproval?(toolCallId: string): Promise<boolean>;
+}
+
+/**
+ * Whether a Mastra Code session still waits on a call it held, as its controller (and its storage,
+ * for a call parked before a restart) says: a gate it holds or persisted, or a paused call it holds
+ * or can find stored. Nothing is claimed or answered. `undefined` when this session can't tell.
+ */
+export async function mastraCodeStillWaits(
+  session: MastraCodeWaitCheckSession,
+  toolCallId: string,
+): Promise<boolean | undefined> {
+  if (session.approval.list().some(gate => gate.toolCallId === toolCallId)) return true;
+  if (session.suspensions.resolveAddress({ toolCallId })) return true;
+  if (!session.restoreStoredToolSuspension || !session.hasPersistedToolApproval) return undefined;
+  if (await session.hasPersistedToolApproval(toolCallId)) return true;
+  await session.restoreStoredToolSuspension(toolCallId);
+  return Boolean(session.suspensions.resolveAddress({ toolCallId }));
 }
