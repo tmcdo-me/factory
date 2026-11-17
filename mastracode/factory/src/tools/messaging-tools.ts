@@ -21,6 +21,7 @@ import type { AuditRecorder } from '../storage/domains/audit/domain.js';
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import { workItemNumber } from '../work-items/card-number.js';
+import type { FactoryInteractions } from './approval-tools.js'; // fork(claude-agent)
 import {
   FACTORY_SESSION_NOTIFICATION_SOURCE,
   deliverFactorySessionNotification,
@@ -89,6 +90,8 @@ export interface FactoryMessaging {
   /** fork(claude-agent): sessions on another agent runtime, which take their messages through it. */
   runtime?: FactoryRuntimeDelivery & Pick<FactoryRuntimeSessions, 'deliveries'>;
   notifications: Pick<NotificationsStorage, 'listNotifications' | 'getNotification'>;
+  /** fork(claude-agent): the interaction broker, where a Mastra Code session's waiting calls are answered. */
+  interactions?: FactoryInteractions;
 }
 
 export interface FactoryMessagingToolDependencies {

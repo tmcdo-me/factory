@@ -22,7 +22,13 @@ import { existsSync } from 'node:fs';
 
 import { InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
 import { CLAUDE_AGENT_DEFAULT_MODEL, CLAUDE_AGENT_RUNTIME_ID } from '@factory/runtime-claude-agent';
-import { createMastraCodeSessionCommands, historyPredatesEventLog } from '@factory/runtime-mastra-code';
+import {
+  answerMastraCodeCall,
+  createMastraCodeSessionCommands,
+  historyPredatesEventLog,
+  mastraCodeSessionToAnswer,
+} from '@factory/runtime-mastra-code';
+import type { MastraCodeAnswerSession } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import { MastraAuthStudio } from '@mastra/auth-studio';
 import { prepareAgentControllerMount } from '@mastra/code-sdk';
 import type { MastraCodeConfig } from '@mastra/code-sdk';
@@ -651,6 +657,8 @@ export class MastraFactory {
   /** fork(claude-agent): the broker's index, and whether it read what was pending at start. */
   #pendingInteractions: PendingInteractions | undefined;
   #interactionsLoaded: Promise<boolean> | undefined;
+  /** fork(claude-agent): the interaction broker both runtimes' waiting calls are answered through. */
+  #interactionBroker: InteractionBroker | undefined;
   #dispatcher: FactoryDecisionDispatcher | undefined;
   /** Names this replica on the dispatch-wake topic so it can skip its own echoes. */
   readonly #dispatchWakeOrigin = globalThis.crypto.randomUUID();
@@ -1344,7 +1352,11 @@ export class MastraFactory {
       const notifications = await controller?.getMastra()?.getStorage()?.getStore('notifications');
       // fork(claude-agent): Claude Agent sessions take their messages through their runtime.
       const runtime = this.#claudeAgentSessions?.runtimeSessions();
-      return controller && notifications ? { controller, notifications, ...(runtime ? { runtime } : {}) } : null;
+      // fork(claude-agent): Mastra Code sessions' waiting calls are answered through the interaction broker.
+      const interactions = this.#interactionBroker;
+      return controller && notifications
+        ? { controller, notifications, ...(runtime ? { runtime } : {}), ...(interactions ? { interactions } : {}) }
+        : null;
     };
     const factoryReporting = async (): Promise<FactoryReporting | null> => {
       const messaging = await factoryMessaging();
@@ -1846,14 +1858,17 @@ export class MastraFactory {
     const interactionBroker = new InteractionBroker({
       store: pendingInteractions,
       hub: agentEventHub,
-      answerHeld: (record, response, { context }) =>
-        mastraCodeCommands.answer(
-          record.sessionId,
-          { interactionId: record.id, ...(record.callId ? { callId: record.callId } : {}) },
-          response,
-          { context },
-        ),
+      // The controller takes the answer as the person gave it (a decline's reason too), and the
+      // answer waits for the session to carry on, so one that couldn't is reported to whoever answered.
+      answerHeld: async (record, response, { context }) => {
+        const controller = this.#prepared?.base.controller;
+        if (!controller) return { ok: false, reason: 'unavailable', message: 'Factory has not started yet' };
+        const session = await mastraCodeSessionToAnswer(controller, record.sessionId, context as RequestContext);
+        if (!session) return { ok: false, reason: 'session_not_found' };
+        return answerMastraCodeCall(session as unknown as MastraCodeAnswerSession, record, response, context);
+      },
     });
+    this.#interactionBroker = interactionBroker;
     this.#interactionRecords = {
       broker: interactionBroker,
       waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
@@ -2389,6 +2404,7 @@ export class MastraFactory {
             controllerId: CONTROLLER_ID,
             controller,
             runtimeSessions: claudeAgentSessions.runtimeSessions(), // fork(claude-agent)
+            interactions: interactionBroker, // fork(claude-agent): where Mastra Code's waiting calls are answered
             // fork(claude-agent): Claude Agent sessions parked on a person count as parked runs.
             liveSessions: (liveSessions = alsoParked(
               liveSessionsTouchingTheFeed(controller, eventBus, sourceControlSessions),

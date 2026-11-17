@@ -34,7 +34,7 @@ import type {
   SourceControlStorageHandle,
 } from '../storage/domains/source-control/base.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
-import type { AnsweredQuestion } from '../tools/approval-tools.js'; // fork(claude-agent)
+import type { AnsweredQuestion, FactoryInteractions } from '../tools/approval-tools.js'; // fork(claude-agent)
 import {
   answerParkedCall,
   answerParkedQuestion,
@@ -90,6 +90,8 @@ export interface SourceControlSessionRoutesOptions {
   moveThread?: (input: { threadId: string; resourceId: string }) => Promise<unknown>;
   /** fork(claude-agent): sessions on another agent runtime, whose approvals are answered through it. */
   runtimeSessions?: FactoryRuntimeDelivery;
+  /** fork(claude-agent): the interaction broker, where a Mastra Code session's waiting calls are answered. */
+  interactions?: FactoryInteractions;
 }
 
 const ABORT_SETTLE_TIMEOUT_MS = 5_000;
@@ -718,7 +720,14 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
         let answered: { toolCallId: string; toolName: string };
         try {
           answered = await answerParkedCall(
-            { messaging: async () => ({ controller, ...(runtime ? { runtime } : {}) }) as never },
+            {
+              messaging: async () =>
+                ({
+                  controller,
+                  ...(runtime ? { runtime } : {}),
+                  ...(options.interactions ? { interactions: options.interactions } : {}),
+                }) as never,
+            },
             {
               session,
               ...(body.data.toolCallId ? { toolCallId: body.data.toolCallId } : {}),
@@ -777,7 +786,14 @@ export function buildSourceControlSessionRoutes(options: SourceControlSessionRou
         let answered: AnsweredQuestion;
         try {
           answered = await answerParkedQuestion(
-            { messaging: async () => ({ controller, ...(runtime ? { runtime } : {}) }) as never },
+            {
+              messaging: async () =>
+                ({
+                  controller,
+                  ...(runtime ? { runtime } : {}),
+                  ...(options.interactions ? { interactions: options.interactions } : {}),
+                }) as never,
+            },
             {
               session,
               ...(body.data.toolCallId ? { toolCallId: body.data.toolCallId } : {}),

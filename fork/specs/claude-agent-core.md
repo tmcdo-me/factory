@@ -489,6 +489,26 @@ Each slice: implement → focused tests → manual check where noted → commit.
      be answered) counts as parked. If the `agent-interactions` domain can't start, the broker keeps
      its records in memory (`FallbackInteractionStore`, said once at start), and a Mastra Code call
      whose write fails is still listed from memory and stops being listed when it settles.
+   - **5c** ✅ Answers on the broker. `factory_answer_approval` and `factory_answer_question`
+     (`answerParkedCall`/`answerParkedQuestion`), and the card's and inbox's `parked-approval` and
+     `parked-question` routes, answer a Mastra Code session's call by its broker record
+     (`broker.resolve`), as a Claude Agent one's already was (through its runtime, which resolves it in
+     the broker). The broker hands the answer to the controller (`answerMastraCodeCall`,
+     `@factory/runtime-mastra-code`), on the session it holds or the one it recovers from storage after a
+     restart (`mastraCodeSessionToAnswer`, as Mastra's own agent-controller routes do): a gate opens
+     with a decline's reason, a paused call is claimed before anything is awaited and resumed, a gate
+     whose run outlived its process resumes from storage. The answer is awaited, so one the session
+     couldn't carry on from is still refused with what to do, and the call stays waiting. Not through
+     `createMastraCodeSessionCommands.answer` as first planned: Mastra's routes ack the resume in the
+     background (a person's in-session card would otherwise time out) and take no decline reason, so
+     the session API's in-session answers keep using them, and the broker settles such an answer from
+     the controller's report. The owner's rule (#55), the follower and self-answer checks, private
+     sessions and the "Answered by …" text are unchanged. `approval-tools.ts` no longer imports
+     `@mastra/core/agent-controller`; `pausedToolInteraction`/`pausedCalls` are gone (the adapter's
+     `mastraCodeInteractionRequest` reads a paused call), and `resumesOnDecision` lives in the adapter.
+     Checked on aimock Mastra Code sessions: two answers at once resume once (the other is told it
+     was answered), and a session parked on its plan or question before a restart is answered from
+     outside it after one, the run carrying on as its owner.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's

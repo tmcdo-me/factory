@@ -25,3 +25,5 @@ export type {
   MastraCodeWaitCheckSession,
   MastraCodeWaitingCall,
 } from './interactions';
+export { answerMastraCodeCall, mastraCodeResumeData, mastraCodeSessionToAnswer } from './answers';
+export type { MastraCodeAnswerSession, MastraCodeSessionSource, MastraCodeSuspensionAddress } from './answers';

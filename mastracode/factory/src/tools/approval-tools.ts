@@ -1,15 +1,20 @@
-import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
-import type { FactoryToolDef, InteractionRequest } from '@factory/agent-runtime'; // fork(claude-agent)
-import type { SuspensionAddress } from '@mastra/core/agent-controller';
+import { InteractionAnswerRefusedError, defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type {
+  FactoryToolDef,
+  InteractionBroker,
+  InteractionRecord,
+  InteractionRequest,
+  InteractionResponse,
+} from '@factory/agent-runtime'; // fork(claude-agent)
 import { RequestContext } from '@mastra/core/request-context';
 import { z } from 'zod';
 
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
-import { checkedAnswer, pausedCalls, pausedToolInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
+import { checkedAnswer } from '../session/parked-interaction.js'; // fork(claude-agent)
+import { answersWithDecision, interactionToolName } from '../session/pending-interactions.js'; // fork(claude-agent)
 import type { AuditRecorder } from '../storage/domains/audit/domain.js';
 import type { WorkItemsStorage } from '../storage/domains/work-items/base.js';
 import type { FactoryMessaging } from './messaging-tools.js';
-import { resumesOnDecision } from './run-watch.js';
 import { requirePerson } from './scope.js';
 import type { FactoryToolScope } from './scope.js';
 
@@ -22,56 +27,13 @@ export interface FactoryApprovalToolDependencies {
   messaging: () => Promise<FactoryMessaging | null>;
 }
 
-/** The parts of a live session an answer needs: the calls it waits on, and how each is answered. */
-interface ApprovalGateSession {
-  approval: { list(): Array<{ toolCallId: string; toolName: string }> };
-  displayState: {
-    get(): {
-      pendingSuspensions: Map<
-        string,
-        { toolCallId: string; toolName: string; resumeSchema?: string; suspendPayload?: unknown }
-      >;
-    };
-  };
-  respondToToolApproval(input: {
-    decision: 'approve' | 'decline';
-    toolCallId: string;
-    requestContext?: RequestContext;
-    declineContext?: { reason?: string };
-  }): { accepted: true } | { accepted: false; reason: string };
-  suspensions: { has(address: SuspensionAddress): boolean };
-  /** Takes the right to answer a paused call, so two answers cannot both resume it. */
-  claimToolSuspension(
-    toolCallId: string,
-  ): { accepted: true; address: SuspensionAddress; claimKey: string } | { accepted: false; reason: string };
-  releaseToolResponse(claimKey: string): void;
-  respondToToolSuspension(input: {
-    // fork(claude-agent): a question resumes on its answer.
-    resumeData: { action: 'approved' | 'rejected'; feedback?: string } | string | string[];
-    address: SuspensionAddress;
-    requestContext?: RequestContext;
-  }): Promise<void>;
-}
+/**
+ * fork(claude-agent): where a Mastra Code session's waiting calls are answered: Factory's
+ * interaction broker, which hands each answer to the session's controller (slice 5c).
+ */
+export type FactoryInteractions = Pick<InteractionBroker, 'listPending' | 'resolve'>;
 
 const ALREADY_ANSWERED = 'That call was already answered: someone else got there first.';
-
-/** A tool call waiting for a yes or no, and which of the session's two channels answers it. */
-interface WaitingApproval {
-  toolCallId: string;
-  toolName: string;
-  /** `gate`: the call has not run yet. `resume`: the tool paused itself to ask. */
-  channel: 'gate' | 'resume';
-}
-
-function waitingApprovals(live: ApprovalGateSession): WaitingApproval[] {
-  return [
-    ...live.approval.list().map(({ toolCallId, toolName }) => ({ toolCallId, toolName, channel: 'gate' as const })),
-    // Keyed by run address, not tool call id: read the id off each entry.
-    ...[...live.displayState.get().pendingSuspensions.values()]
-      .filter(suspension => resumesOnDecision(suspension.resumeSchema))
-      .map(({ toolCallId, toolName }) => ({ toolCallId, toolName, channel: 'resume' as const })),
-  ];
-}
 
 // fork(claude-agent): shared by Mastra Code's live sessions and Claude Agent's broker.
 const NOTHING_WAITING_ON_CALL =
@@ -135,54 +97,63 @@ export async function answerParkedCall(
     if (answered === 'not_pending') throw new Error(ALREADY_ANSWERED);
     return { toolCallId, toolName };
   }
-  const live = (await messaging.controller.getSession(session.sessionId)) as ApprovalGateSession | null;
-  const call = theWaitingCall(live ? waitingApprovals(live) : [], input.toolCallId);
-  if (!live) throw new Error(NOTHING_WAITING);
-  const { toolCallId, toolName } = call;
-  if (call.channel === 'resume') {
-    await resumePausedCall(
-      live,
-      call,
-      decision === 'approve' ? { action: 'approved' } : { action: 'rejected', feedback: declineReason },
-      requestContext,
-    );
-    return { toolCallId, toolName };
-  }
-  const result = live.respondToToolApproval({
-    decision,
-    toolCallId,
-    requestContext,
-    ...(decision === 'decline' ? { declineContext: { reason: declineReason } } : {}),
-  });
-  if (!result.accepted) {
-    throw new Error(
-      result.reason === 'not_pending' ? ALREADY_ANSWERED : `The answer was not accepted (${result.reason}).`,
-    );
-  }
+  // fork(claude-agent): a Mastra Code session's calls are the broker's records, held by its controller.
+  const waiting = await heldCalls(messaging, session.sessionId, record => answersWithDecision(record.request));
+  const { record, toolCallId, toolName } = theWaitingCall(waiting, input.toolCallId);
+  const approved = decision === 'approve';
+  const response: InteractionResponse =
+    record.request.kind === 'plan_approval'
+      ? approved
+        ? { kind: 'plan_approval', action: 'approved' }
+        : { kind: 'plan_approval', action: 'rejected', feedback: declineReason }
+      : { kind: 'tool_approval', approved, ...(!approved ? { reason: declineReason } : {}) };
+  await answerHeld(messaging, record, response, requestContext, input.answeredBy);
   return { toolCallId, toolName };
 }
 
-/** Resume a paused Mastra Code call with `resumeData`, as the session's owner (`requestContext`). */
-async function resumePausedCall(
-  live: ApprovalGateSession,
-  { toolCallId, toolName }: { toolCallId: string; toolName: string },
-  resumeData: Parameters<ApprovalGateSession['respondToToolSuspension']>[0]['resumeData'],
+/**
+ * fork(claude-agent): the calls a Mastra Code session waits on that `which` picks, as the broker
+ * records them (its controller holds them), oldest first.
+ */
+async function heldCalls(
+  messaging: FactoryMessaging,
+  sessionId: string,
+  which: (record: InteractionRecord) => boolean,
+): Promise<Array<{ record: InteractionRecord; toolCallId: string; toolName: string }>> {
+  const pending = (await messaging.interactions?.listPending({ sessionId })) ?? [];
+  return pending.flatMap(record =>
+    record.heldBy && record.callId && which(record)
+      ? [{ record, toolCallId: record.callId, toolName: interactionToolName(record.request) }]
+      : [],
+  );
+}
+
+/**
+ * fork(claude-agent): hand an answer to the controller holding the call, through the broker, as the
+ * session's owner (`requestContext`). The controller decides between answers; one that could not
+ * carry the session on is refused with what the person should do.
+ */
+async function answerHeld(
+  messaging: FactoryMessaging,
+  record: InteractionRecord,
+  response: InteractionResponse,
   requestContext: RequestContext,
+  answeredBy: string | undefined,
 ): Promise<void> {
-  // Claimed before anything is awaited: of two answers arriving together, one resumes the call.
-  const claim = live.claimToolSuspension(toolCallId);
-  if (!claim.accepted) throw new Error(ALREADY_ANSWERED);
+  const interactions = messaging.interactions;
+  if (!interactions) throw new Error(NOTHING_WAITING_ON_CALL);
+  let outcome: Awaited<ReturnType<FactoryInteractions['resolve']>>;
   try {
-    await live.respondToToolSuspension({ resumeData, address: claim.address, requestContext });
-  } finally {
-    live.releaseToolResponse(claim.claimKey);
+    outcome = await interactions.resolve(record.id, response, {
+      ...(answeredBy ? { resolvedBy: answeredBy } : {}),
+      context: requestContext,
+    });
+  } catch (error) {
+    if (!(error instanceof InteractionAnswerRefusedError)) throw error;
+    if (error.reason === 'session_not_found') throw new Error(NOTHING_WAITING_ON_CALL);
+    throw new Error(error.detail ?? `The answer was not accepted (${error.reason}).`);
   }
-  // A resume that fails to start reports its error to the session and leaves the call waiting.
-  if (live.suspensions.has(claim.address)) {
-    throw new Error(
-      `The answer did not reach ${toolName}: the session could not carry on and still waits on it. Open the session to see why.`,
-    );
-  }
+  if (outcome.status === 'not_pending') throw new Error(ALREADY_ANSWERED);
 }
 
 /** The run's identity when an answer resumes it: always the session's owner. */
@@ -195,16 +166,6 @@ function ownerContext(session: { userId: string; orgId: string }): RequestContex
 // fork(claude-agent)
 const NOTHING_ASKED = 'This session is not waiting on a question. Open it to see what it needs.';
 
-/** fork(claude-agent): the questions (`ask_user`) a live Mastra Code session waits on. */
-function waitingQuestions(live: ApprovalGateSession): AnsweredQuestion[] {
-  return pausedCalls(live.displayState.get().pendingSuspensions).flatMap(call => {
-    const interaction = pausedToolInteraction(call);
-    return interaction?.request.kind === 'question'
-      ? [{ toolCallId: call.toolCallId, toolName: call.toolName, request: interaction.request }]
-      : [];
-  });
-}
-
 /** fork(claude-agent): a question a session waits on, named by its tool call and/or interaction id. */
 export interface AnsweredQuestion {
   toolCallId?: string;
@@ -215,10 +176,10 @@ export interface AnsweredQuestion {
 }
 
 /** fork(claude-agent): the one question an answer is for: the one named, else the session's only one. */
-function theWaitingQuestion(
-  waiting: AnsweredQuestion[],
+function theWaitingQuestion<Question extends AnsweredQuestion>(
+  waiting: Question[],
   target: { toolCallId?: string; interactionId?: string },
-): AnsweredQuestion {
+): Question {
   const named = target.toolCallId !== undefined || target.interactionId !== undefined;
   const matches = waiting.filter(
     question =>
@@ -278,17 +239,20 @@ export async function answerParkedQuestion(
     if (answered === 'not_pending') throw new Error(ALREADY_ANSWERED);
     return idsOf(question);
   }
-  const live = (await messaging.controller.getSession(session.sessionId)) as ApprovalGateSession | null;
-  const question = theWaitingQuestion(live ? waitingQuestions(live) : [], target);
+  // A Mastra Code session's questions are the broker's records, held by its controller.
+  const held = await heldCalls(messaging, session.sessionId, record => record.request.kind === 'question');
+  const question = theWaitingQuestion(
+    held.map(({ record, toolCallId, toolName }) => ({ toolCallId, toolName, request: record.request, record })),
+    target,
+  );
   const checked = question.request ? checkedAnswer(question.request, answer) : answer;
-  const call = { toolCallId: question.toolCallId!, toolName: question.toolName };
   // Mastra Code keeps no record of who answered: someone other than the owner says so in the answer.
-  const resumeData =
+  const reply =
     input.answeredBy && input.answeredBy !== session.userId
       ? `Answered by ${input.answeredByName ?? input.answeredBy}: ${Array.isArray(checked) ? checked.join(', ') : checked}`
       : checked;
-  await resumePausedCall(live!, call, resumeData, requestContext);
-  return call;
+  await answerHeld(messaging, question.record, { kind: 'question', answer: reply }, requestContext, input.answeredBy);
+  return idsOf(question);
 }
 
 /** A question's ids and tool, without what it asks. */

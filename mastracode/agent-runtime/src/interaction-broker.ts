@@ -30,11 +30,14 @@ export class InteractionCancelledError extends Error {
 export class InteractionAnswerRefusedError extends Error {
   readonly interactionId: string;
   readonly reason: Exclude<CommandFailure, 'not_pending'>;
-  constructor(interactionId: string, reason: Exclude<CommandFailure, 'not_pending'>, message?: string) {
-    super(`The answer to interaction ${interactionId} was refused (${reason})${message ? `: ${message}` : ''}`);
+  /** What the runtime said, for the person who answered. */
+  readonly detail: string | undefined;
+  constructor(interactionId: string, reason: Exclude<CommandFailure, 'not_pending'>, detail?: string) {
+    super(`The answer to interaction ${interactionId} was refused (${reason})${detail ? `: ${detail}` : ''}`);
     this.name = 'InteractionAnswerRefusedError';
     this.interactionId = interactionId;
     this.reason = reason;
+    this.detail = detail;
   }
 }
 
