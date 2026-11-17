@@ -31,8 +31,9 @@ export class SessionReportWindows {
   at(sessionId: string, moment: Date): { threadId: string | null; since: Date } | undefined {
     const entry = this.#sessions.get(sessionId);
     if (!entry) return undefined;
-    const since = entry.opened.findLast(opened => opened.getTime() <= moment.getTime()) ?? entry.opened[0];
-    return since ? { threadId: entry.threadId(), since } : undefined;
+    // Never a window opened after the moment: one older than any kept is judged from the moment itself.
+    const since = entry.opened.findLast(opened => opened.getTime() <= moment.getTime()) ?? moment;
+    return { threadId: entry.threadId(), since };
   }
 }
 

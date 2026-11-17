@@ -41,7 +41,7 @@ import type { FactoryRunEndReporter } from '../tools/reports.js';
 import { observeSessionRunReports } from '../tools/run-watch.js';
 import { retryFactoryDecision } from '../work-items/decision-actions.js';
 import { FACTORY_DISPATCH_CONSTANTS, FactoryDecisionDispatcher } from './dispatcher.js';
-import type { FactoryBindingPreparationInput, FactoryReviewStatusEvent } from './dispatcher.js';
+import type { DispatcherInteractions, FactoryBindingPreparationInput, FactoryReviewStatusEvent } from './dispatcher.js';
 import { createPhaseGoalEnder, PHASE_GOAL_METADATA_KEY } from './phase-goal.js';
 import type { FactoryStartCoordinator } from './start-coordinator.js';
 import { FactoryTransitionService } from './transition-service.js';
@@ -71,10 +71,18 @@ async function createItem(storage: WorkItemsStorage, sourceKey = 'github-issue:1
  * it reports them as the server's mirror keeps them, and answered through the session as its
  * controller is (slice 5d). Also what its followers are told as each starts waiting.
  */
-function heldInteractions(session: {
-  subscribe(listener: (event: { type: string; toolName?: string; toolCallId?: string }) => void): () => void;
-  respondToToolSuspension(input: { resumeData: unknown; toolCallId?: string; requestContext?: unknown }): Promise<void>;
-}) {
+function heldInteractions(
+  session: {
+    subscribe(listener: (event: { type: string; toolName?: string; toolCallId?: string }) => void): () => void;
+    respondToToolSuspension(input: {
+      resumeData: unknown;
+      toolCallId?: string;
+      requestContext?: unknown;
+    }): Promise<void>;
+  },
+  /** Review fix: a controller that refuses the board's answer, keeping the call waiting. */
+  { refuses = false }: { refuses?: boolean } = {},
+) {
   const listeners: Array<(record: InteractionRecord) => void> = [];
   const pending = new PendingInteractions({
     store: new InMemoryInteractionStore(),
@@ -85,6 +93,9 @@ function heldInteractions(session: {
     store: pending,
     hub: new SessionEventHub(new InMemoryEventLog()),
     answerHeld: async (record, response, { context }) => {
+      if (refuses) {
+        return { ok: false, reason: 'resume_failed', message: 'The run could not carry on.', waiting: true };
+      }
       await session.respondToToolSuspension({
         resumeData: mastraCodeResumeData(response),
         toolCallId: record.callId,
@@ -117,6 +128,7 @@ function heldInteractions(session: {
     onRequested: (listener: (record: InteractionRecord) => void) => listeners.push(listener),
     whenWaitingOn: (sessionId: string, callId: string, timeoutMs: number) =>
       pending.whenWaitingOn(sessionId, callId, timeoutMs),
+    announce: undefined as DispatcherInteractions['announce'],
   };
 }
 
@@ -8461,6 +8473,13 @@ describe('board phase automation', () => {
       answersItself: toolCallId => dispatcher.autoApproves(toolCallId),
     });
     interactions.onRequested(record => void announce(record));
+    // As the server re-announces a call the board meant to answer and didn't.
+    interactions.announce = ({ sessionId, toolCallId, toolName, record }) => {
+      if (!record) told.push(toolName);
+      else if (interactions.pending.waitingOn(sessionId, toolCallId).some(waiting => waiting.id === record.id)) {
+        void announce(record);
+      }
+    };
     observeSessionRunReports(
       session as never,
       async outcome => {
@@ -8520,6 +8539,58 @@ describe('board phase automation', () => {
       }
     },
   );
+
+  // Review fixes (5d): a call the board meant to answer, and didn't, is announced to the card's followers.
+  it('fails the run and tells the followers when the session refuses the plan the board approved', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { transitionService } = await queueBuild(storage, ['effort:low'], 'notice-refused');
+    const { controller, session } = createSession(undefined, { suspendsOnPlan: true });
+    const interactions = heldInteractions(session, { refuses: true });
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      interactions,
+      transitionService,
+      storage,
+      boards: autoStartingBoards(boardsWithBuilding({ exitTool: { id: 'submit_plan', autoApprove: true } })),
+      ownerId: 'worker-1',
+    });
+    const told = pausesFollowersHearOf(session, dispatcher, interactions);
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    const [decision] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(decision?.status).not.toBe('succeeded');
+    expect(JSON.stringify(decision)).toContain('run_failed');
+    await vi.waitFor(() => expect(told).toEqual(['submit_plan']));
+    expect(dispatcher.autoApproves('call-plan')).toBe(false);
+  });
+
+  it('leaves a pause the broker never recorded for a person, and tells the followers', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { transitionService } = await queueBuild(storage, ['effort:low'], 'notice-unrecorded');
+    const { controller, session } = createSession(undefined, { suspendsOnPlan: true });
+    const held = heldInteractions(session);
+    // The broker kept nothing for the call within the wait (`whenWaitingOn` timed out).
+    const interactions = { ...held, whenWaitingOn: async () => undefined };
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      interactions,
+      transitionService,
+      storage,
+      boards: autoStartingBoards(boardsWithBuilding({ exitTool: { id: 'submit_plan', autoApprove: true } })),
+      ownerId: 'worker-1',
+    });
+    const told: Array<string | undefined> = [];
+    interactions.announce = ({ toolName, record }) => void told.push(record ? `record ${toolName}` : toolName);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    expect(session.respondToToolSuspension).not.toHaveBeenCalled();
+    expect(told).toEqual(['submit_plan']);
+    expect(dispatcher.autoApproves('call-plan')).toBe(false);
+    warn.mockRestore();
+  });
 
   it('asks a person once the phase has approved as many plans as it will, and the run plans again', async () => {
     const storage = (await createFactoryStorageForTests()).workItems;

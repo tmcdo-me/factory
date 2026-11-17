@@ -2507,6 +2507,29 @@ export class MastraFactory {
                   broker: interactionBroker,
                   whenWaitingOn: (sessionId, callId, timeoutMs) =>
                     pendingInteractions.whenWaitingOn(sessionId, callId, timeoutMs),
+                  // A call the board meant to answer and didn't: announced as it would have been.
+                  announce: ({ sessionId, toolCallId, toolName, record }) => {
+                    const announced = (async () => {
+                      if (record) {
+                        const still = pendingInteractions
+                          .waitingOn(sessionId, toolCallId)
+                          .find(waiting => waiting.id === record.id && !pendingInteractions.isHidden(waiting.id));
+                        if (still) await announceWaiting(still);
+                        return;
+                      }
+                      // Never recorded: the report its run's end would have made.
+                      const run = reportWindows.at(sessionId, new Date());
+                      await reportSessionRunEnd({
+                        sessionId,
+                        threadId: run?.threadId ?? sessionId,
+                        since: run?.since ?? new Date(),
+                        outcome: { status: 'blocked', toolName, toolCallId, decision: true },
+                      });
+                    })();
+                    void announced.catch(error =>
+                      console.warn(`[factory] Unable to report that session ${sessionId} waits.`, error),
+                    );
+                  },
                 },
                 // fork(claude-agent): their phase goals and run ledgers, in the store Mastra Code's goals use
                 // (generic per type; `resolveGoalStore` types it for goals only).

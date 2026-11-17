@@ -242,13 +242,19 @@ function isPermanentProviderRejection(error: string): boolean {
  * yes doesn't answer), so the call waits for a person; else the approval, which resolves once the
  * session has it.
  */
-type ApprovePausedCall = (toolCallId: string) => Promise<(() => Promise<void>) | undefined>;
+type ApprovePausedCall = (call: { toolCallId: string; toolName: string }) => Promise<(() => Promise<void>) | undefined>;
 
 /** fork(claude-agent): the interaction broker's records of what Mastra Code sessions wait on, and how they're answered. */
 export interface DispatcherInteractions {
   broker: Pick<InteractionBroker, 'resolve'>;
   /** The pending record a session holds for a call, once it is kept; `undefined` after `timeoutMs`. */
   whenWaitingOn(sessionId: string, callId: string, timeoutMs: number): Promise<InteractionRecord | undefined>;
+  /**
+   * Tell the session's followers it waits on a call the board meant to answer and didn't (it gave up,
+   * or the session refused its answer): its notice was held back for the board. `record` is the
+   * broker's, when it kept one.
+   */
+  announce?(call: { sessionId: string; toolCallId: string; toolName: string; record?: InteractionRecord }): void;
 }
 
 /** fork(claude-agent): the yes that answers a paused call, when a bare yes answers it. */
@@ -368,11 +374,11 @@ function watchRun(
       let observed = await wait();
       // Past the cap the plan stays parked: the person it waits for sees it in the inbox.
       while (approve && autoApprovedTool && parked?.toolName === autoApprovedTool && approvals < MAX_PLAN_APPROVALS) {
-        const { toolCallId } = parked;
+        const { toolCallId, toolName } = parked;
         // fork(claude-agent): answered through its broker record (slice 5d); one it can't answer waits for a person.
         let approval: (() => Promise<void>) | undefined;
         try {
-          approval = await approve(toolCallId);
+          approval = await approve({ toolCallId, toolName });
         } finally {
           if (!approval) autoApproving?.delete(toolCallId);
         }
@@ -2811,7 +2817,12 @@ export class FactoryDecisionDispatcher {
   #approver(sessionId: string, requestContext: RequestContext, label: string): ApprovePausedCall | undefined {
     const interactions = this.#interactions;
     if (!interactions) return undefined;
-    return async toolCallId => {
+    return async ({ toolCallId, toolName }) => {
+      // The board no longer answers it: its followers hear of it as they would have (review fix).
+      const leaveForPerson = (record?: InteractionRecord) => {
+        this.#autoApproving.delete(toolCallId);
+        interactions.announce?.({ sessionId, toolCallId, toolName, ...(record ? { record } : {}) });
+      };
       const record = await interactions.whenWaitingOn(sessionId, toolCallId, HELD_RECORD_WAIT_MS);
       const response = record ? approvalOf(record.request) : undefined;
       if (!record || !response) {
@@ -2820,16 +2831,23 @@ export class FactoryDecisionDispatcher {
             `[factory] ${label}: the paused call ${toolCallId} of session ${sessionId} was never recorded; it waits for a person.`,
           );
         }
+        leaveForPerson(record);
         return undefined;
       }
       return async () => {
         try {
           await interactions.broker.resolve(record.id, response, { resolvedBy: 'factory', context: requestContext });
         } catch (error) {
-          if (!(error instanceof InteractionAnswerRefusedError)) throw error;
+          leaveForPerson(record);
+          const why =
+            error instanceof InteractionAnswerRefusedError
+              ? (error.detail ?? error.reason)
+              : error instanceof Error
+                ? error.message
+                : String(error);
           throw new FactoryDispatchError(
             'run_failed',
-            `${label} could not carry on from the ${record.request.kind === 'plan_approval' ? 'plan' : 'call'} it approved: ${error.detail ?? error.reason}`,
+            `${label} could not carry on from the ${record.request.kind === 'plan_approval' ? 'plan' : 'call'} it approved: ${why}`,
             { cause: error },
           );
         }

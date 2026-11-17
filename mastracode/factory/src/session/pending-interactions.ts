@@ -278,7 +278,8 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
    * from the session's own events waits for it here. `undefined` after `timeoutMs` without one.
    */
   whenWaitingOn(sessionId: string, callId: string, timeoutMs: number): Promise<InteractionRecord | undefined> {
-    const [found] = this.waitingOn(sessionId, callId);
+    // A hidden one (its runtime let go of the call) is no longer waiting on anyone.
+    const found = this.waitingOn(sessionId, callId).find(record => !this.isHidden(record.id));
     if (found) return Promise.resolve(found);
     return new Promise(resolve => {
       const done = (record: InteractionRecord | undefined) => {
