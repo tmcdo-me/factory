@@ -115,7 +115,8 @@ describe('factory_sandbox_port_url', () => {
   });
 
   // fork(claude-agent): the browser belongs to the session's thread, which the tool's scope names
-  // (slice 4); a call that names no thread (a Claude Agent call) signs in the same browser.
+  // (slice 4). In a session every call names that thread (Mastra Code's and Claude Agent's alike); a
+  // call outside a model's turn, which names none, now signs in the same browser instead of none.
   it("signs in the session's own thread's browser, whatever thread the call names", async () => {
     const setCookies = vi.fn(async () => {});
     const { run } = portUrlTool(platformSandbox(), true, { setCookies });
