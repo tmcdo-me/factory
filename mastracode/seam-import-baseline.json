@@ -31,8 +31,6 @@
     "src/session/controller-event-hub.ts",
     "src/session/credential-policy.ts",
     "src/session/factory-session.ts",
-    "src/session/filesystem-capture.ts",
-    "src/session/first-message-capture.ts",
     "src/session/live-sessions.ts",
     "src/session/memory-settings-hydration.ts",
     "src/session/reply-credential-processor.ts",
