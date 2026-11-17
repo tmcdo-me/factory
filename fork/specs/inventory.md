@@ -68,7 +68,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `storage/domains/model-defaults/base.ts`               |  126 | 7     |                                                                                                                  |
 | [ ]  | `storage/domains/projects/base.ts`                     |  592 | 7     |                                                                                                                  |
 | [ ]  | `tools/approval-tools.ts`                              |  220 | 5     | interactions                                                                                                     |
-| [ ]  | `tools/deliver.ts`                                     |  204 | 4     | tools → FactoryToolDef                                                                                           |
+| [ ]  | `tools/deliver.ts`                                     |  204 | 5     | delivery to Mastra Code sessions (follower notifications), not a tool; moved from 4                              |
 | [x]  | `tools/permissions.ts`                                 |   66 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `tools/run-watch.ts`                                   |  183 | 5     | interactions                                                                                                     |
 | [x]  | `tools/scope.ts`                                       |  134 | 4     | tools → FactoryToolDef                                                                                           |
