@@ -963,6 +963,17 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      `@factory/runtime-mastra-code/sdk` (a new group in `src/sdk.ts`; re-export only). The other Slack files
      (`run-error-card`, `channel-session-link-processor`) have no controller or SDK import in source, so nothing else
      moved. Behaviour-preserving. The factory allow-list is 24; baseline shrunk.
+   - **7h** Factory-owned session types (type-only): `@factory/agent-runtime` exports `RuntimeThread`,
+     `RuntimeThreadLookup` / `RuntimeThreadQueries`, `RuntimeSessionEvent` (the events Factory reads, plus a
+     `{ type: string }` member for the rest, narrowed with `isSessionEvent`), `RuntimeSessionEvents`,
+     `RuntimeSessionState(Access)` and `RuntimeRequestContext` (`src/session-surface.ts`).
+     `runtime-mastra-code/src/session-surface.test.ts` checks at compile time that the controller's own types are
+     assignable to them. Nine files left the factory allow-list (`rules/binding-context`, `rules/watch-run`,
+     `sandbox/context-sandboxes`, `session/claude-agent-workspace`, `live-sessions`, `memory-settings-hydration`,
+     `session-threads`, `thread-session-stamp`, `thread-title-mirror`): now 15, baseline shrunk. No runtime change
+     beyond `event.type ===` becoming the equivalent `isSessionEvent(event, ...)` guard. Left: `controller-event-hub`
+     (feeds the adapter's event mapper), `dispatcher`, `start-coordinator`, `factory-session`, `mastra-code-sessions`
+     (adapter internals, 7l), and the runtime imports (7i to 7m).
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

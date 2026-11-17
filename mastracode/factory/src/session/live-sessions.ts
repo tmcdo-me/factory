@@ -1,4 +1,5 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import { isSessionEvent } from '@factory/agent-runtime';
+import type { RuntimeSessionEvents } from '@factory/agent-runtime';
 import type { PubSub } from '@mastra/core/events';
 
 import { touchFeed } from '../feed-events.js';
@@ -6,11 +7,10 @@ import type { SourceControlSession } from '../storage/domains/source-control/bas
 import type { ParkedInteraction } from './parked-interaction.js'; // fork(claude-agent)
 
 /** The slice of a live session this registry needs: its id, its run, and who it works for. */
-export interface LiveSession {
+export interface LiveSession extends RuntimeSessionEvents {
   readonly identity: { getId(): string };
   readonly run: { isRunning(): boolean };
   readonly state: { get(): Readonly<{ factoryOrgId?: string; factoryProjectId?: string }> };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 export interface SessionNotifier {
@@ -49,12 +49,7 @@ interface TrackedSession {
  * Events after which the controller may list different runs for a session, beyond the parking ones.
  * Leaving a thread drops the run the session started on it, and no `agent_end` reaches a session that has left.
  */
-const RUN_MAY_HAVE_CHANGED = new Set<AgentControllerEvent['type']>([
-  'agent_start',
-  'thread_changed',
-  'thread_created',
-  'thread_deleted',
-]);
+const RUN_MAY_HAVE_CHANGED = new Set<string>(['agent_start', 'thread_changed', 'thread_created', 'thread_deleted']);
 
 /**
  * The sessions this process has materialized, by session id.
@@ -93,9 +88,9 @@ export class LiveSessions {
   #track(session: LiveSession): void {
     const unsubscribe = session.subscribe(event => {
       const parkMayHaveChanged =
-        event.type === 'tool_suspended' ||
-        event.type === 'tool_suspension_cancelled' ||
-        (event.type === 'agent_end' && event.reason !== 'suspended');
+        isSessionEvent(event, 'tool_suspended') ||
+        isSessionEvent(event, 'tool_suspension_cancelled') ||
+        (isSessionEvent(event, 'agent_end') && event.reason !== 'suspended');
       if (!parkMayHaveChanged && !RUN_MAY_HAVE_CHANGED.has(event.type)) return;
       for (const listener of this.#runListeners) listener(session);
     });

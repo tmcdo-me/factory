@@ -1,4 +1,4 @@
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
+import type { RuntimeSessionState, RuntimeSessionStateAccess } from '@factory/agent-runtime';
 
 import type { SourceControlStorageHandle } from '../storage/domains/source-control/base.js';
 import { hasResolvedOrg, seedSessionOrg } from './org-seed.js';
@@ -9,10 +9,7 @@ export const DEFAULT_REFLECTION_THRESHOLD = 40_000;
 
 export interface MemorySettingsHydrationSession {
   readonly identity: { getId(): string };
-  state: {
-    get: () => MastraCodeState | undefined;
-    set: (updates: Partial<MastraCodeState>) => Promise<void> | void;
-  };
+  state: RuntimeSessionStateAccess;
 }
 
 export interface MemorySettingsHydrationDependencies {
@@ -32,7 +29,7 @@ export async function hydrateSessionMemorySettings(
   session: MemorySettingsHydrationSession,
   { sourceControl }: MemorySettingsHydrationDependencies,
 ): Promise<void> {
-  const state: Partial<MastraCodeState> = session.state.get() ?? {};
+  const state: Partial<RuntimeSessionState> = session.state.get() ?? {};
   const isFactoryRun = Boolean(state.factoryProjectId);
   if (isFactoryRun && hasResolvedOrg(state.factoryOrgId)) return;
 

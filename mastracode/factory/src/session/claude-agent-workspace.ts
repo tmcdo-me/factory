@@ -1,5 +1,5 @@
 // fork(claude-agent): a Claude Agent session's checkout, from Factory's own workspace factory.
-import type { SandboxProcesses, SessionWorkspace } from '@factory/agent-runtime';
+import type { RuntimeRequestContext, SandboxProcesses, SessionWorkspace } from '@factory/agent-runtime';
 import {
   ensureBashSandbox,
   ensureClaudeCode,
@@ -7,7 +7,6 @@ import {
   sandboxClaudeCodeLaunch,
 } from '@factory/runtime-claude-agent';
 import type { ClaudeCodeLaunch, InstalledClaudeCode, RunInSandbox } from '@factory/runtime-claude-agent';
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { Mastra } from '@mastra/core/mastra';
 import { RequestContext } from '@mastra/core/request-context';
 import type { MastraSandbox, Workspace, WorkspaceSkills } from '@mastra/core/workspace';
@@ -186,7 +185,7 @@ export function claudeAgentRequestContext(
     setState: async (updates: Record<string, unknown>) => {
       Object.assign(state, updates);
     },
-  } as unknown as AgentControllerRequestContext;
+  } as unknown as RuntimeRequestContext;
   return hostContext => {
     // oxlint-disable-next-line typescript/no-explicit-any -- a copy of the host's request context, keys and all.
     const context = new RequestContext<any>(contextEntries(hostContext));

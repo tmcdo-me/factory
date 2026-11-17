@@ -1,4 +1,4 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import type { RuntimeSessionEvents } from '@factory/agent-runtime';
 
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
@@ -36,9 +36,8 @@ export interface ContextLeftArgs {
 }
 
 /** What the run-in-flight check reads from a controller session. */
-export interface RunWatchSession {
+export interface RunWatchSession extends RuntimeSessionEvents {
   readonly stream: { isActive(): boolean };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 /**

@@ -1,9 +1,9 @@
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
+import { isSessionEvent } from '@factory/agent-runtime';
+import type { RuntimeSessionEvents } from '@factory/agent-runtime';
 
-export interface ThreadSessionStampSession {
+export interface ThreadSessionStampSession extends RuntimeSessionEvents {
   readonly identity: { getId(): string };
   readonly thread: { setSettingOn(args: { threadId: string; key: string; value: unknown }): Promise<void> };
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
 /**
@@ -13,7 +13,7 @@ export interface ThreadSessionStampSession {
  */
 export function observeSessionThreadStamp(session: ThreadSessionStampSession): () => void {
   return session.subscribe(event => {
-    if (event.type !== 'thread_created') return;
+    if (!isSessionEvent(event, 'thread_created')) return;
     void session.thread
       .setSettingOn({ threadId: event.thread.id, key: 'factorySessionId', value: session.identity.getId() })
       .catch(error => console.warn('[Factory thread stamp] Unable to tie the new thread to its session.', error));

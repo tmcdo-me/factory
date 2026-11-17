@@ -6,10 +6,12 @@ export type * from './workspace';
 export type * from './commands';
 export type * from './transcript';
 export type * from './thinking';
+export type * from './session-surface';
 export { THINKING_LEVEL_VALUES, isThinkingLevelSetting } from './thinking';
 export type { EventLog } from './event-log';
 
 export { FACTORY_TOOL_DEF, defineFactoryTool, isFactoryToolDef } from './tools';
+export { isSessionEvent } from './session-surface';
 export { SANDBOX_PROCESSES, sandboxProcessesOf } from './workspace';
 export { InMemoryEventLog } from './event-log';
 export { SessionEventHub } from './event-hub';
