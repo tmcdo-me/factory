@@ -5,8 +5,14 @@ import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
-import { InMemoryEventLog, InMemoryInteractionStore, InteractionBroker, SessionEventHub } from '@factory/agent-runtime';
-import type { InteractionRecord, SessionCommands } from '@factory/agent-runtime';
+import {
+  InMemoryEventLog,
+  InMemoryInteractionStore,
+  InteractionBroker,
+  SessionEventHub,
+  defineFactoryTool,
+} from '@factory/agent-runtime';
+import type { FactoryToolContext, InteractionRecord, SessionCommands } from '@factory/agent-runtime';
 import { ClaudeAgentSession } from '@factory/runtime-claude-agent';
 import type { QueryFn } from '@factory/runtime-claude-agent';
 import { RequestContext } from '@mastra/core/request-context';
@@ -340,6 +346,8 @@ async function mcpClient(server: McpSdkServerConfigWithInstance) {
   await client.connect(clientSide);
   return {
     list: async (): Promise<string[]> => (await client.listTools()).tools.map((tool: { name: string }) => tool.name),
+    listTools: async (): Promise<{ name: string; description?: string; inputSchema: Record<string, unknown> }[]> =>
+      (await client.listTools()).tools,
     call: async (name: string, args: Record<string, unknown>, toolUseId: string) =>
       (await client.callTool({ name, arguments: args, _meta: { 'claudecode/toolUseId': toolUseId } })) as {
         isError?: boolean;
@@ -459,6 +467,53 @@ describe('ClaudeAgentSessions with Factory tools', () => {
       'user-a',
       'user-b',
     ]);
+  });
+
+  // fork(claude-agent): slice 4, Factory's tool definitions reach Claude Code as they are.
+  it('runs a Factory tool definition directly, with the call context Factory binds, and observes it', async () => {
+    const calls: { input: unknown; ctx: FactoryToolContext }[] = [];
+    const inspect = defineFactoryTool({
+      name: 'factory_inspect_work_item',
+      description: 'Inspect a card',
+      input: z.object({ workItem: z.string().trim().min(1) }).strict(),
+      execute: async (input, ctx) => {
+        calls.push({ input, ctx });
+        return { item: input.workItem };
+      },
+    });
+    const replies: { isError?: boolean; content: { text: string }[] }[] = [];
+    const fake = toolCallingQuery(async client => {
+      replies.push(await client.call('factory_inspect_work_item', { workItem: '  #7 ' }, 'toolu_def'));
+      replies.push(await client.call('factory_inspect_work_item', { workItem: 7 }, 'toolu_bad'));
+    });
+    const onToolResult = vi.fn(async () => {});
+    const { sessions, log } = toolSetup(fake.fn, {
+      onToolResult,
+      tools: async () => ({ factory_inspect_work_item: inspect }),
+    });
+    await sessions.commands().send('s1', { text: 'look' }, { context: hostContext('user-a') });
+    await vi.waitFor(async () => expect((await log.list('s1')).some(e => e.event.type === 'run.ended')).toBe(true));
+
+    const listed = await (await fake.clients[0]!).listTools();
+    expect(listed.find(tool => tool.name === 'factory_inspect_work_item')).toMatchObject({
+      description: 'Inspect a card',
+      inputSchema: { properties: { workItem: { type: 'string', minLength: 1 } }, additionalProperties: false },
+    });
+    // The validated input, Claude's tool_use id, the turn's caller and the session's workspace.
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.input).toEqual({ workItem: '#7' });
+    expect(calls[0]!.ctx).toMatchObject({ sessionId: 's1', callId: 'toolu_def', orgId: 'org-1', userId: 'user-a' });
+    expect(calls[0]!.ctx.workspace).toMatchObject({ kind: 'local', checkoutDir: '/sandboxes/s1/repo' });
+    expect(JSON.parse(replies[0]!.content[0]!.text)).toEqual({ item: '#7' });
+    // A rejected input never reaches the definition.
+    expect(replies[1]!.isError).toBe(true);
+    expect(onToolResult).toHaveBeenCalledTimes(1);
+    expect(onToolResult.mock.calls[0]![0]).toMatchObject({
+      callId: 'toolu_def',
+      toolName: 'factory_inspect_work_item',
+      status: 'success',
+      value: { item: '#7' },
+    });
   });
 
   it("asks ask_user's question through Factory and answers it from the session's interactions route", async () => {

@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
 import { z } from 'zod';
 
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
@@ -82,11 +82,12 @@ function startedBy(event: AuditEventRow): string | undefined {
 export function createAuditEventsTool(scope: FactoryToolScope, deps: FactoryAuditToolDependencies) {
   const project = { orgId: scope.orgId, factoryProjectId: scope.factoryProjectId };
 
-  return createTool({
-    id: 'factory_list_audit_events',
+  // fork(claude-agent): a runtime-neutral definition (slice 4); Mastra Code gets it adapted.
+  return defineFactoryTool({
+    name: 'factory_list_audit_events',
     description:
       'List this Factory\'s audit events, newest first: who did what to which work item, run, branch or setting, and when. Filter by actor ("me" or a user id, optionally with the agent runs they started), action namespace or exact actions, work item, and time range. Pass `nextCursor` back as `cursor` for older events. Events from other people\'s private sessions are left out.',
-    inputSchema,
+    input: inputSchema,
     execute: async input => {
       if (input.cursor && !decodeAuditAfterCursor(input.cursor)) {
         throw new Error('That cursor is not one this tool returned.');

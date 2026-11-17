@@ -19,6 +19,7 @@ import type { SourceControlStorageHandle } from '../storage/domains/source-contr
 import { FACTORY_TOOL_ANNOTATIONS } from '../tools/annotations.js';
 import { createFactoryTools } from '../tools/index.js';
 import type { FactoryToolDependencies, FactoryToolScope } from '../tools/index.js';
+import { mastraSessionTools, scopeToolContext } from '../tools/toolset.js'; // fork(claude-agent)
 import { hasEveryWord, searchWords } from '../work-items/search-words.js';
 import { propagateClientDisconnect } from './disconnect.js';
 import { factoryActivityEvent } from './events.js';
@@ -180,7 +181,11 @@ export function createFactoryMcpTools(
   deps: FactoryMcpRoutesDeps,
   options: { persistedSession?: boolean } = {},
 ): Record<string, Tool<any, any, any, any>> {
-  const factoryTools = createFactoryTools({ scope, deps: deps.tools }) as Record<string, Tool<any, any, any, any>>;
+  // fork(claude-agent): the same definitions sessions get, as Mastra tools for Mastra's MCP server.
+  const factoryTools = mastraSessionTools(
+    createFactoryTools({ scope, deps: deps.tools }),
+    scopeToolContext(scope),
+  ) as Record<string, Tool<any, any, any, any>>;
   const tools: Record<string, Tool<any, any, any, any>> = {};
   for (const [name, tool] of Object.entries(factoryTools)) {
     if (EXCLUDED_TOOLS.has(name)) continue;

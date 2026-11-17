@@ -1,4 +1,5 @@
-import { createTool } from '@mastra/core/tools';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import { z } from 'zod';
 
 import {
@@ -12,7 +13,6 @@ import {
 import type { BoardRegistry } from '../boards/index.js';
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
-import type { IntegrationTools } from '../integrations/base.js';
 import { factorySessionUrl, factoryWorkItemUrl } from '../links.js';
 import { parkedRunLabel } from '../routes/attention-parked.js';
 import { decisionRetryable, overtakenDecisionIds } from '../rules/decision-applicability.js';
@@ -265,7 +265,11 @@ const listInputSchema = z
   })
   .strict();
 
-export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryReadToolDependencies): IntegrationTools {
+export function createFactoryReadTools(
+  scope: FactoryToolScope,
+  deps: FactoryReadToolDependencies,
+): Record<string, FactoryToolDef> {
+  // fork(claude-agent): runtime-neutral definitions (slice 4); Mastra Code gets them adapted.
   const project = { orgId: scope.orgId, factoryProjectId: scope.factoryProjectId };
   /**
    * Of `cards` filed by hand, those that name no repository while the Factory
@@ -288,11 +292,11 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
   };
 
   return {
-    factory_list_work_items: createTool({
-      id: 'factory_list_work_items',
+    factory_list_work_items: defineFactoryTool({
+      name: 'factory_list_work_items',
       description:
         "List this Factory's work items, newest activity first, with counts per stage for the whole Factory. Filter by text or #number, stage, board, role, whether an agent is working on it, items you filed, or items this session follows. Check here for an existing item before filing a new one.",
-      inputSchema: listInputSchema,
+      input: listInputSchema,
       execute: async input => {
         const [items, bindings, followed] = await Promise.all([
           deps.workItems.listShared(project),
@@ -332,11 +336,11 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
       },
     }),
 
-    factory_inspect_work_item: createTool({
-      id: 'factory_inspect_work_item',
+    factory_inspect_work_item: defineFactoryTool({
+      name: 'factory_inspect_work_item',
       description:
         'Everything the Factory knows about one work item: its description, stage history, sessions by role (with whether each is mid-run and when its thread last moved), decisions with errors, recent audit events, labels, linked items and the sessions following it. Use it to explain why an item is where it is.',
-      inputSchema: z.object({ workItem: workItemRefSchema }).strict(),
+      input: z.object({ workItem: workItemRefSchema }).strict(),
       execute: async ({ workItem }) => {
         const item = await findWorkItem(deps.workItems, scope, workItem);
         if (!item) throw workItemNotFound(workItem);
@@ -420,13 +424,13 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
       },
     }),
 
-    factory_list_attention: createTool({
-      id: 'factory_list_attention',
+    factory_list_attention: defineFactoryTool({
+      name: 'factory_list_attention',
       description:
         'What in this Factory needs a person: failed decisions grouped by failure code and error (one incident per group), proposals waiting for approval, runs parked on a tool prompt (a plan to review, a question to answer) while still in flight, Work cards triage left in Intake for a person to move on, and open cards filed by hand that need a repository set (factory_update_work_item) before a run can start.' +
         // fork(claude-agent)
         ' Each waiting run names its toolCallId (or, for a question a run asked in plain text, its interactionId), what it asks (the question and its options, or the plan file) and `answerWith`, the tool that answers it (factory_answer_question or factory_answer_approval).',
-      inputSchema: z.object({ limit: z.number().int().min(1).max(MAX_LIST).optional() }).strict(),
+      input: z.object({ limit: z.number().int().min(1).max(MAX_LIST).optional() }).strict(),
       execute: async ({ limit = DEFAULT_LIST }) => {
         const [decisions, items] = await Promise.all([
           deps.workItems.listDeferredDecisions(scope.orgId, scope.factoryProjectId, {

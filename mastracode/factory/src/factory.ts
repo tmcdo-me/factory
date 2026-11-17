@@ -241,6 +241,8 @@ import type { FactoryReporting } from './tools/reports.js';
 import { observeSessionRunReports } from './tools/run-watch.js';
 import { createFactorySandboxTools } from './tools/sandbox-tools.js';
 import { FactorySessionsStateProcessor } from './tools/sessions-state-processor.js';
+import { mastraCodeExtraTools } from './tools/toolset.js'; // fork(claude-agent)
+import type { FactorySessionTools } from './tools/toolset.js'; // fork(claude-agent)
 import { backfillUntilDone } from './work-items/split-backfill.js';
 import { createWorkspaceFactory, FACTORY_PLANS_DIR, FactoryWorkspaceRegistry } from './workspace.js';
 import type { FactorySandboxStart } from './workspace.js';
@@ -1758,7 +1760,9 @@ export class MastraFactory {
     });
     // fork(claude-agent): Factory's session tools, built per turn for Mastra Code (`extraTools`
     // below assigns it) and Claude Agent alike.
-    let factorySessionTools: ((context: { requestContext: RequestContext }) => Promise<IntegrationTools>) | undefined;
+    let factorySessionTools:
+      | ((context: { requestContext: RequestContext }) => Promise<FactorySessionTools>)
+      | undefined;
     // fork(claude-agent): the git audit Mastra Code's post-tool observer runs, for Claude Agent's commands.
     const auditAgentGitAction = (
       toolContext: { toolName: string; input: unknown; output?: unknown; error?: unknown },
@@ -2130,154 +2134,161 @@ export class MastraFactory {
           new FactoryReplyCredentialProcessor(),
         ],
         ...(vector ? { vector } : {}),
-        extraTools: (factorySessionTools = async ({ requestContext }: { requestContext: RequestContext }) => {
-          // fork(claude-agent)
-          const tools: IntegrationTools = {};
-          const toolOwners = new Map<string, string>();
-          const mergeTools = (ownerId: string, contributed: IntegrationTools) => {
-            for (const [name, tool] of Object.entries(contributed)) {
-              const owner = toolOwners.get(name);
-              if (owner) {
-                throw new Error(
-                  `MastraFactory: integration tool '${name}' from '${ownerId}' conflicts with '${owner}'.`,
-                );
+        // fork(claude-agent): Factory's tool definitions reach Mastra Code adapted to Mastra tools.
+        extraTools: mastraCodeExtraTools(
+          (factorySessionTools = async ({ requestContext }: { requestContext: RequestContext }) => {
+            // fork(claude-agent)
+            const tools: FactorySessionTools = {};
+            const toolOwners = new Map<string, string>();
+            const mergeTools = (ownerId: string, contributed: FactorySessionTools) => {
+              for (const [name, tool] of Object.entries(contributed)) {
+                const owner = toolOwners.get(name);
+                if (owner) {
+                  throw new Error(
+                    `MastraFactory: integration tool '${name}' from '${ownerId}' conflicts with '${owner}'.`,
+                  );
+                }
+                toolOwners.set(name, ownerId);
+                tools[name] = tool;
               }
-              toolOwners.set(name, ownerId);
-              tools[name] = tool;
-            }
-          };
-          if (storage.isDomainReady('source-control')) {
-            mergeTools(
-              'source-control',
-              await createSourceControlTools({
-                requestContext,
-                providers: sourceControlToolProviders,
-                audit: auditDomain,
-                ...(workItemsStorage
-                  ? {
-                      selfReviewApprovedHead: () =>
-                        selfReviewApprovedHead({
-                          requestContext,
-                          workItems: workItemsStorage,
-                          boards,
-                        }),
-                    }
-                  : {}),
-              }),
-            );
-          }
-          if (workItemsStorage && transitionService) {
-            mergeTools(
-              'factory',
-              await createFactoryTransitionTools({
-                requestContext,
-                storage: workItemsStorage,
-                transitionService,
-                boards: boards,
-                // Heals crash-resumed sessions: recovered addresses re-seed
-                // projectRepositoryId/baseRef from the source session record.
-                // Only offered while the source-control domain is ready — a
-                // throwing lookup would abort recovery's catch block and also
-                // skip the metadata baseRef fallback.
-                ...(storage.isDomainReady('source-control') ? { sessions: sourceControlSessions } : {}),
-              }),
-            );
-            // Review-role sessions get `factory_review_source` so the
-            // published review can carry the session URL that produced it
-            // — the affordance that lets a suspicious review (e.g. one
-            // that lands on the wrong PR) be traced back to its run.
-            //
-            // The session URL is browser-facing (a human opens it from a
-            // GitHub review comment), so it needs the UI host —
-            // the same origin Slack session deep-links resolve against
-            // (`integrations/slack/slack.ts:168-171`, `:809-812`). In a
-            // separate-SPA deployment `publicUrl` (i.e. `publicOrigin`)
-            // is the API host, so we read `MASTRACODE_PUBLIC_URL` and
-            // mirror Slack's behavior: when it is unset, pass `null` so
-            // the tool is omitted from the toolset rather than fall back
-            // to the API/localhost origin and publish that URL into a
-            // public review body. The skill's tool-not-available branch
-            // handles the absence as stop-don't-publish. Blank counts as
-            // unset: `.env.schema` ships `MASTRACODE_PUBLIC_URL=`, so an
-            // empty/whitespace value must not register the tool with a
-            // hostless `sessionUrl`.
-            const reviewSourceUiOrigin = resolveReviewSourceUiOrigin(process.env.MASTRACODE_PUBLIC_URL);
-            mergeTools(
-              'factory-review-source',
-              await createReviewSourceTool({
-                requestContext,
-                storage: workItemsStorage,
-                uiOrigin: reviewSourceUiOrigin,
-                boards,
-                ...(storage.isDomainReady('source-control') ? { sessions: sourceControlSessions } : {}),
-              }),
-            );
+            };
             if (storage.isDomainReady('source-control')) {
-              const scope = await resolveFactoryToolScope({
-                requestContext,
-                authEnabled: routeAuth.enabled(),
-                sessions: sourceControlSessions,
-                projects: factoryProjectsStorage,
-                workItems: workItemsStorage,
-              });
-              if (scope) {
-                mergeTools(
-                  'factory-tools',
-                  createFactoryTools({
-                    scope,
-                    deps: factoryToolDeps,
-                  }),
-                );
-                if (sessionRetirement && sandboxConfig && SELF_RECREATE_SANDBOX_PROVIDERS.has(sandboxConfig.provider)) {
+              mergeTools(
+                'source-control',
+                await createSourceControlTools({
+                  requestContext,
+                  providers: sourceControlToolProviders,
+                  audit: auditDomain,
+                  ...(workItemsStorage
+                    ? {
+                        selfReviewApprovedHead: () =>
+                          selfReviewApprovedHead({
+                            requestContext,
+                            workItems: workItemsStorage,
+                            boards,
+                          }),
+                      }
+                    : {}),
+                }),
+              );
+            }
+            if (workItemsStorage && transitionService) {
+              mergeTools(
+                'factory',
+                await createFactoryTransitionTools({
+                  requestContext,
+                  storage: workItemsStorage,
+                  transitionService,
+                  boards: boards,
+                  // Heals crash-resumed sessions: recovered addresses re-seed
+                  // projectRepositoryId/baseRef from the source session record.
+                  // Only offered while the source-control domain is ready — a
+                  // throwing lookup would abort recovery's catch block and also
+                  // skip the metadata baseRef fallback.
+                  ...(storage.isDomainReady('source-control') ? { sessions: sourceControlSessions } : {}),
+                }),
+              );
+              // Review-role sessions get `factory_review_source` so the
+              // published review can carry the session URL that produced it
+              // — the affordance that lets a suspicious review (e.g. one
+              // that lands on the wrong PR) be traced back to its run.
+              //
+              // The session URL is browser-facing (a human opens it from a
+              // GitHub review comment), so it needs the UI host —
+              // the same origin Slack session deep-links resolve against
+              // (`integrations/slack/slack.ts:168-171`, `:809-812`). In a
+              // separate-SPA deployment `publicUrl` (i.e. `publicOrigin`)
+              // is the API host, so we read `MASTRACODE_PUBLIC_URL` and
+              // mirror Slack's behavior: when it is unset, pass `null` so
+              // the tool is omitted from the toolset rather than fall back
+              // to the API/localhost origin and publish that URL into a
+              // public review body. The skill's tool-not-available branch
+              // handles the absence as stop-don't-publish. Blank counts as
+              // unset: `.env.schema` ships `MASTRACODE_PUBLIC_URL=`, so an
+              // empty/whitespace value must not register the tool with a
+              // hostless `sessionUrl`.
+              const reviewSourceUiOrigin = resolveReviewSourceUiOrigin(process.env.MASTRACODE_PUBLIC_URL);
+              mergeTools(
+                'factory-review-source',
+                await createReviewSourceTool({
+                  requestContext,
+                  storage: workItemsStorage,
+                  uiOrigin: reviewSourceUiOrigin,
+                  boards,
+                  ...(storage.isDomainReady('source-control') ? { sessions: sourceControlSessions } : {}),
+                }),
+              );
+              if (storage.isDomainReady('source-control')) {
+                const scope = await resolveFactoryToolScope({
+                  requestContext,
+                  authEnabled: routeAuth.enabled(),
+                  sessions: sourceControlSessions,
+                  projects: factoryProjectsStorage,
+                  workItems: workItemsStorage,
+                });
+                if (scope) {
                   mergeTools(
-                    'factory-sandbox-tools',
-                    createFactorySandboxTools(scope, {
-                      sessions: sourceControlSessions,
-                      resetSandbox: input => sessionRetirement.resetSessionSandbox(input),
-                      findSandbox: async ({ sourceControl, orgId, sessionId }) => {
-                        const session = await sourceControl.sessions.getBySessionId(sessionId);
-                        if (!session || session.orgId !== orgId) return undefined;
-                        return peekSessionSandbox(session.id)?.sandbox;
-                      },
-                      browser: this.#config.browser,
+                    'factory-tools',
+                    createFactoryTools({
+                      scope,
+                      deps: factoryToolDeps,
                     }),
+                  );
+                  if (
+                    sessionRetirement &&
+                    sandboxConfig &&
+                    SELF_RECREATE_SANDBOX_PROVIDERS.has(sandboxConfig.provider)
+                  ) {
+                    mergeTools(
+                      'factory-sandbox-tools',
+                      createFactorySandboxTools(scope, {
+                        sessions: sourceControlSessions,
+                        resetSandbox: input => sessionRetirement.resetSessionSandbox(input),
+                        findSandbox: async ({ sourceControl, orgId, sessionId }) => {
+                          const session = await sourceControl.sessions.getBySessionId(sessionId);
+                          if (!session || session.orgId !== orgId) return undefined;
+                          return peekSessionSandbox(session.id)?.sandbox;
+                        },
+                        browser: this.#config.browser,
+                      }),
+                    );
+                  }
+                }
+              }
+            }
+            for (const { integration, ready, ensureReady } of toolIntegrations) {
+              if (!ready && ensureReady) {
+                try {
+                  await ensureReady();
+                } catch {
+                  continue;
+                }
+              }
+              if (integration.agentTools) {
+                mergeTools(integration.id, await integration.agentTools({ requestContext }));
+              }
+              if (integration.sessionTools) {
+                mergeTools(integration.id, integration.sessionTools({ requestContext }));
+              }
+            }
+            if (sessionTools) {
+              const contributed =
+                typeof sessionTools === 'function' ? await sessionTools({ requestContext }) : sessionTools;
+              for (const [name, tool] of Object.entries(contributed)) {
+                const owner = toolOwners.get(name);
+                if (!owner) {
+                  tools[name] = tool;
+                } else if (!warnedConfiguredToolClashes.has(name)) {
+                  warnedConfiguredToolClashes.add(name);
+                  console.warn(
+                    `[factory] configured tool '${name}' is not offered to sessions: '${owner}' already provides a tool with that name.`,
                   );
                 }
               }
             }
-          }
-          for (const { integration, ready, ensureReady } of toolIntegrations) {
-            if (!ready && ensureReady) {
-              try {
-                await ensureReady();
-              } catch {
-                continue;
-              }
-            }
-            if (integration.agentTools) {
-              mergeTools(integration.id, await integration.agentTools({ requestContext }));
-            }
-            if (integration.sessionTools) {
-              mergeTools(integration.id, integration.sessionTools({ requestContext }));
-            }
-          }
-          if (sessionTools) {
-            const contributed =
-              typeof sessionTools === 'function' ? await sessionTools({ requestContext }) : sessionTools;
-            for (const [name, tool] of Object.entries(contributed)) {
-              const owner = toolOwners.get(name);
-              if (!owner) {
-                tools[name] = tool;
-              } else if (!warnedConfiguredToolClashes.has(name)) {
-                warnedConfiguredToolClashes.add(name);
-                console.warn(
-                  `[factory] configured tool '${name}' is not offered to sessions: '${owner}' already provides a tool with that name.`,
-                );
-              }
-            }
-          }
-          return tools;
-        }),
+            return tools;
+          }),
+        ),
         postToolObserver: async (toolContext: IntegrationPostToolContext) => {
           const requestContext = (toolContext.context as { requestContext?: RequestContext } | undefined)
             ?.requestContext;

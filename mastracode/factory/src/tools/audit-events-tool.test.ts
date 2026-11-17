@@ -1,3 +1,4 @@
+import { mastraTool } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import { LibSQLFactoryStorage } from '@mastra/libsql';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -8,6 +9,7 @@ import type { Card, FactoryRunBindingRecord } from '../storage/domains/work-item
 import { createAuditEventsTool } from './audit-events-tool.js';
 import type { FactoryAuditToolDependencies } from './audit-events-tool.js';
 import type { FactoryToolScope } from './scope.js';
+import { scopeToolContext } from './toolset.js'; // fork(claude-agent)
 
 const scope: FactoryToolScope = {
   orgId: 'org-1',
@@ -83,7 +85,8 @@ async function setup({
       }) as never,
     sessions: { getBySessionId: async (id: string) => (sessions.find(s => s.id === id) ?? null) as never },
   };
-  const tool = createAuditEventsTool(scope, deps) as unknown as {
+  // fork(claude-agent): the definition as Mastra Code's agent gets it, schema validation included.
+  const tool = mastraTool(createAuditEventsTool(scope, deps), scopeToolContext(scope)) as unknown as {
     execute: (input: unknown, context: unknown) => Promise<Result>;
   };
   return { run: (input: Record<string, unknown> = {}) => tool.execute(input, {}), audit };

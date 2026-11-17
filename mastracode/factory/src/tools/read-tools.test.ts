@@ -19,6 +19,7 @@ import { splitCardMetadata, workItemProviderAdapter } from '../work-items/provid
 import { MAX_ERROR, MAX_TEXT, createFactoryReadTools } from './read-tools.js';
 import type { FactoryReadToolDependencies } from './read-tools.js';
 import type { FactoryToolScope } from './scope.js';
+import { mastraSessionTools, scopeToolContext } from './toolset.js'; // fork(claude-agent)
 
 const scope: FactoryToolScope = {
   orgId: 'org-1',
@@ -162,7 +163,8 @@ function setup({
     boards: createTriageWorkRegistry(),
     ...(sessions ? { sessions } : {}),
   };
-  const tools = createFactoryReadTools(scope, deps) as Record<
+  // fork(claude-agent): the definitions as Mastra Code's agent gets them, schema validation included.
+  const tools = mastraSessionTools(createFactoryReadTools(scope, deps), scopeToolContext(scope)) as Record<
     string,
     { execute: (input: unknown, context: unknown) => Promise<unknown> }
   >;
@@ -279,10 +281,8 @@ describe('factory_list_work_items', () => {
 
   it('rejects a limit above 50', () => {
     const { deps } = setup({});
-    const tool = createFactoryReadTools(scope, deps).factory_list_work_items as {
-      inputSchema: { safeParse(input: unknown): { success: boolean } };
-    };
-    expect(tool.inputSchema.safeParse({ limit: 51 }).success).toBe(false);
+    const tool = createFactoryReadTools(scope, deps).factory_list_work_items!; // fork(claude-agent)
+    expect(tool.input.safeParse({ limit: 51 }).success).toBe(false);
   });
 
   it('truncates long titles', async () => {

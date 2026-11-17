@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { defineFactoryTool } from '@factory/agent-runtime';
 import type { FactoryToolContext, InteractionRequest, InteractionResponse } from '@factory/agent-runtime';
 import { RequestContext } from '@mastra/core/request-context';
 import { createTool } from '@mastra/core/tools';
@@ -237,5 +238,30 @@ describe('claudeAgentToolDefs', () => {
 
     await defs[0]!.execute({}, ctx().context);
     expect(run).toHaveBeenCalledWith('factory_list_work_items', {}, expect.objectContaining({ callId: 'toolu_1' }));
+  });
+
+  // fork(claude-agent): slice 4.
+  it('offers a Factory tool definition as it is, its calls still going through the turn', async () => {
+    const def = defineFactoryTool({
+      name: 'factory_list_attention',
+      description: 'What needs a person',
+      input: z.object({ limit: z.number().int().optional() }).strict(),
+      approval: 'none',
+      execute: async () => 'not called directly',
+    });
+    const run = vi.fn(async () => 'ran');
+    const [listed] = claudeAgentToolDefs({ factory_list_attention: def, missing: undefined }, run);
+    expect(listed).toMatchObject({
+      name: 'factory_list_attention',
+      description: 'What needs a person',
+      approval: 'none',
+    });
+    expect(listed!.input).toBe(def.input);
+    expect(await listed!.execute({ limit: 1 }, ctx().context)).toBe('ran');
+    expect(run).toHaveBeenCalledWith(
+      'factory_list_attention',
+      { limit: 1 },
+      expect.objectContaining({ callId: 'toolu_1' }),
+    );
   });
 });

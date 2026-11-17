@@ -366,6 +366,22 @@ Each slice: implement → focused tests → manual check where noted → commit.
        and decode rate (tok/s) have no counterpart in the log and show only on that path.
 4. **Tools on `FactoryToolDef`.** Port tool groups one at a time (read → work-item → source-control →
    integrations → sandbox); Mastra adapter adapts them; MCP endpoint serves the same defs.
+   - **4a** ✅ The seam for it, and the read tools. A session's Factory tools
+     (`FactorySessionTools`, `tools/toolset.ts`) are definitions (`FactoryToolDef`) or, until their
+     group is ported, Mastra tools; one per-turn builder makes them for both runtimes. Mastra Code's
+     `extraTools` gets each definition as a Mastra tool (`mastraTool`, `@factory/runtime-mastra-code`:
+     same name, description and Zod schema, Mastra's validation, `approval: 'required'` as
+     `requireApproval`), its context built from the call (Mastra's tool call id and abort signal) and
+     the turn's request context (the session, and the caller as `toolIdentity` reads them, as for
+     Claude Agent). Claude Agent's in-process MCP server lists a definition as it is and runs its
+     `execute` with the context it already bound (the MCP server validates the input); a Mastra tool
+     still goes through `runMastraTool`. Factory's MCP endpoint adapts the same definitions, with the
+     connector session's scope as their context. `FactoryToolContext.workspace` is optional (Factory's
+     MCP endpoint has none). Ported: `factory_list_work_items`, `factory_inspect_work_item`,
+     `factory_list_attention`, `factory_list_audit_events`; the tools themselves are unchanged. No
+     inventory row: these files never imported Mastra Code. Checked with a real Mastra Code session
+     on aimock (`tools/toolset.integration.test.ts`), a real `AgentController` (`tools.integration.test.ts`)
+     and the fake SDK's real MCP server (`claude-agent-sessions.test.ts`).
 5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
    `factory_answer_approval`, follower notifications.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the

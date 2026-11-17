@@ -27,7 +27,11 @@ export interface FactoryToolContext {
   projectId?: string;
   workItemId?: string;
   phase?: string;
-  workspace: SessionWorkspace;
+  /**
+   * The session's workspace: where workspace-backed tools (git push, files) act. Absent where the
+   * call has no session workspace, such as Factory's MCP endpoint; such tools then fail.
+   */
+  workspace?: SessionWorkspace;
   signal: AbortSignal;
   /** Ask the human and wait. Resolves with the answer; rejects if the interaction is cancelled. */
   interact<K extends InteractionKind>(request: Extract<InteractionRequest, { kind: K }>): Promise<ResponseFor<K>>;
