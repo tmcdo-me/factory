@@ -1059,6 +1059,7 @@ describe('Factory toolset composition', () => {
         'factory_subscribe_session',
         'factory_start_session',
         'factory_answer_approval',
+        'factory_answer_question', // fork(claude-agent)
         'factory_switch_session_model',
       ].sort(),
     );

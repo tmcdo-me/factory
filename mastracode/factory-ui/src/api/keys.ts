@@ -103,6 +103,9 @@ export const queryKeys = {
     [...queryKeys.workItems(factoryProjectId), 'session', sessionId ?? null] as const,
   workItemsWithSessions: (factoryProjectId: string | undefined) =>
     [...queryKeys.workItems(factoryProjectId), 'sessions'] as const,
+  // fork(claude-agent): the sessions waiting on a person. Under the board's key, so the feed's frames refresh it.
+  waitingSessions: (factoryProjectId: string | undefined) =>
+    [...queryKeys.workItems(factoryProjectId), 'waiting'] as const,
   unstartedWorkItems: (factoryProjectId: string | undefined, search: string) =>
     [...queryKeys.workItems(factoryProjectId), 'unstarted', search] as const,
   /** Every view of one board the tab holds. */

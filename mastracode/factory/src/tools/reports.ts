@@ -283,7 +283,10 @@ export async function sendRunEndReport(
           : `${subject} is waiting${outcome.toolName ? ` on ${outcome.toolName}` : ''} and needs an answer.${
               outcome.decision && outcome.toolCallId
                 ? ` Approve or decline it with factory_answer_approval (sessionId "${sender.sessionId}", toolCallId "${outcome.toolCallId}").`
-                : ''
+                : // fork(claude-agent): a question is answered from outside the session too.
+                  outcome.toolName === 'ask_user' && outcome.toolCallId
+                  ? ` Ask the person, then answer it with factory_answer_question (sessionId "${sender.sessionId}", toolCallId "${outcome.toolCallId}"); factory_list_attention shows the question.`
+                  : ''
             }`;
   const notification = reportNotification({
     sender,

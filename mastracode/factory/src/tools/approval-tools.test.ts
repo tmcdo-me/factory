@@ -1,6 +1,7 @@
+// fork(claude-agent): also factory_answer_question's checks.
 import { describe, expect, it, vi } from 'vitest';
 
-import { answerParkedCall, createFactoryApprovalTools } from './approval-tools.js';
+import { QUESTION_ANSWERERS, answerParkedCall, createFactoryApprovalTools } from './approval-tools.js';
 import type { FactoryToolScope } from './scope.js';
 
 const WORKER = '00000000-0000-4000-8000-000000000001';
@@ -46,6 +47,8 @@ function setup({
   armed = true,
   live = true,
   parkedTool,
+  filedBy = 'someone-else',
+  as = {},
 }: {
   row?: Record<string, unknown>;
   binding?: boolean;
@@ -53,6 +56,10 @@ function setup({
   armed?: boolean;
   live?: boolean;
   parkedTool?: string;
+  /** fork(claude-agent): who filed the card. */
+  filedBy?: string;
+  /** fork(claude-agent): the calling turn, where it differs from `scope`. */
+  as?: Partial<FactoryToolScope>;
 } = {}) {
   const respondToToolApproval = vi.fn((_input: unknown) => ({ accepted: true as const }));
   // As the live session does: a paused call is answered by whoever claims it first, and stays
@@ -82,7 +89,20 @@ function setup({
             ? [
                 [
                   'run-address',
-                  { toolCallId: 'call-1', toolName: parkedTool, resumeSchema: RESUME_SCHEMAS[parkedTool] },
+                  {
+                    toolCallId: 'call-1',
+                    toolName: parkedTool,
+                    resumeSchema: RESUME_SCHEMAS[parkedTool],
+                    ...(parkedTool === 'ask_user'
+                      ? {
+                          suspendPayload: {
+                            question: 'Which branch?',
+                            options: [{ label: 'main' }, { label: 'release' }],
+                            selectionMode: 'single_select',
+                          },
+                        }
+                      : {}),
+                  },
                 ],
               ]
             : [],
@@ -92,31 +112,39 @@ function setup({
     respondToToolSuspension,
   };
   const record = vi.fn();
-  const tools = createFactoryApprovalTools(scope, {
-    sessions: {
-      getBySessionId: async () =>
-        ({
-          sessionId: WORKER,
-          orgId: 'org-1',
-          factoryProjectId: 'project-1',
-          userId: 'someone-else',
-          visibility: 'org',
-          originSessionId: null,
-          ...row,
-        }) as never,
+  const tools = createFactoryApprovalTools(
+    { ...scope, ...as },
+    {
+      sessions: {
+        getBySessionId: async () =>
+          ({
+            sessionId: WORKER,
+            orgId: 'org-1',
+            factoryProjectId: 'project-1',
+            userId: 'someone-else',
+            visibility: 'org',
+            originSessionId: null,
+            ...row,
+          }) as never,
+      },
+      workItems: {
+        findActiveRunBindingForSession: async () => (binding ? ({ workItemId: ITEM } as never) : null),
+        listSessionSubscriptions: async () => (follows ? [{ workItemId: ITEM }] : []) as never,
+        getForProject: async () => ({ id: ITEM, createdBy: filedBy }) as never,
+      },
+      auditRecorder: { record } as never,
+      messaging: async () => ({ controller: { getSession: async () => (live ? session : null) } }) as never,
     },
-    workItems: {
-      findActiveRunBindingForSession: async () => (binding ? ({ workItemId: ITEM } as never) : null),
-      listSessionSubscriptions: async () => (follows ? [{ workItemId: ITEM }] : []) as never,
-    },
-    auditRecorder: { record } as never,
-    messaging: async () => ({ controller: { getSession: async () => (live ? session : null) } }) as never,
-  });
+  );
   const answer = (input: Record<string, unknown>) =>
     (
       tools.factory_answer_approval as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
     ).execute({ sessionId: WORKER, toolCallId: 'call-1', ...input }, {});
-  return { answer, session, respondToToolApproval, respondToToolSuspension, record };
+  const answerQuestion = (input: Record<string, unknown>) =>
+    (
+      tools.factory_answer_question as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
+    ).execute({ sessionId: WORKER, toolCallId: 'call-1', ...input }, {});
+  return { answer, answerQuestion, session, respondToToolApproval, respondToToolSuspension, record };
 }
 
 describe('factory_answer_approval', () => {
@@ -495,5 +523,67 @@ describe('factory_answer_approval on a Claude Agent session', () => {
     await expect(hidden.run({ decision: 'approve' })).rejects.toThrow('is private to its owner');
     expect(stranger.answer).not.toHaveBeenCalled();
     expect(hidden.answer).not.toHaveBeenCalled();
+  });
+});
+
+// fork(claude-agent): who may answer a question from another session, and what it takes.
+describe('factory_answer_question', () => {
+  it('lets the person who filed the card answer, telling the session who answered as it resumes', async () => {
+    const { answerQuestion, respondToToolSuspension, record } = setup({ parkedTool: 'ask_user', filedBy: 'user-1' });
+
+    await expect(answerQuestion({ answer: 'release' })).resolves.toMatchObject({
+      answered: true,
+      toolCallId: 'call-1',
+    });
+
+    expect(respondToToolSuspension).toHaveBeenCalledWith(
+      expect.objectContaining({ resumeData: 'Answered by Ada: release' }),
+    );
+    expect(record).toHaveBeenCalledWith(expect.objectContaining({ action: 'factory.run.answered', actorId: 'user-1' }));
+  });
+
+  it("gives the session's owner's answer as it is", async () => {
+    const { answerQuestion, respondToToolSuspension } = setup({ parkedTool: 'ask_user', row: { userId: 'user-1' } });
+    await answerQuestion({ answer: ['main'] });
+    expect(respondToToolSuspension).toHaveBeenCalledWith(expect.objectContaining({ resumeData: 'main' }));
+  });
+
+  it.each([
+    ['a follower who neither owns the session nor filed the card', {}, QUESTION_ANSWERERS],
+    [
+      "a session that doesn't follow it",
+      { follows: false, filedBy: 'user-1' },
+      `This session doesn't follow session ${WORKER}`,
+    ],
+    [
+      "another person's private session",
+      { row: { visibility: 'private' }, filedBy: 'user-1' },
+      `Session ${WORKER} is private to its owner.`,
+    ],
+    ['a turn no person started', { as: { interactive: false }, filedBy: 'user-1' }, 'answer a question'],
+    [
+      'the waiting session itself',
+      { as: { sessionId: WORKER }, row: { userId: 'user-1' } },
+      'This is the session that is waiting',
+    ],
+  ] as const)('refuses %s, leaving the question waiting', async (_case, options, message) => {
+    const { answerQuestion, respondToToolSuspension, record } = setup({ parkedTool: 'ask_user', ...options });
+
+    await expect(answerQuestion({ answer: 'main' })).rejects.toThrow(message);
+
+    expect(respondToToolSuspension).not.toHaveBeenCalled();
+    expect(record).not.toHaveBeenCalled();
+  });
+
+  it('refuses the waiting session approving its own call, too', async () => {
+    const { answer, respondToToolApproval } = setup({ as: { sessionId: WORKER } });
+    await expect(answer({ decision: 'approve' })).rejects.toThrow('This is the session that is waiting');
+    expect(respondToToolApproval).not.toHaveBeenCalled();
+  });
+
+  it('refuses an answer that does not fit a single choice', async () => {
+    const { answerQuestion, respondToToolSuspension } = setup({ parkedTool: 'ask_user', row: { userId: 'user-1' } });
+    await expect(answerQuestion({ answer: ['main', 'release'] })).rejects.toThrow('This question takes one choice.');
+    expect(respondToToolSuspension).not.toHaveBeenCalled();
   });
 });

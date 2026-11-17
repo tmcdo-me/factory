@@ -1,6 +1,7 @@
 /** Sessions parked on a tool, read live from the registry: the item exists exactly as long as an answer is owed. */
 
 import type { LiveSessions } from '../session/live-sessions.js';
+import type { ParkedInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
 import type {
   FactoryAttentionIdentity,
   FactoryAttentionReceiptRecord,
@@ -28,11 +29,39 @@ interface ParkedSession {
   toolName: string;
   occurredAt: Date;
   identity: FactoryAttentionIdentity;
+  /** fork(claude-agent): what it asks, so the inbox can answer it. */
+  interaction?: ParkedInteraction;
 }
 
 interface ReceiptedParkedSession {
   entry: ParkedSession;
   receipt: FactoryAttentionReceiptRecord | undefined;
+}
+
+/** fork(claude-agent): the most of a plan the inbox carries (64 KB); the session shows the rest. */
+const MAX_INBOX_PLAN = 64 * 1024;
+/** fork(claude-agent): the most of a gated call's arguments the inbox carries, as JSON (4 KB). */
+const MAX_INBOX_TOOL_INPUT = 4 * 1024;
+
+/** fork(claude-agent): what a parked call asks, capped for a list of many. */
+function inboxInteraction(interaction: ParkedInteraction): ParkedInteraction {
+  const { request } = interaction;
+  if (request.kind === 'plan_approval' && request.plan && request.plan.length > MAX_INBOX_PLAN) {
+    return {
+      ...interaction,
+      request: {
+        ...request,
+        plan: `${request.plan.slice(0, MAX_INBOX_PLAN)}\n\n…(cut short here: open the session for the whole plan)`,
+      },
+    };
+  }
+  if (request.kind === 'tool_approval') {
+    const input = JSON.stringify(request.input ?? null);
+    if (input.length > MAX_INBOX_TOOL_INPUT) {
+      return { ...interaction, request: { ...request, input: `${input.slice(0, MAX_INBOX_TOOL_INPUT)}…` } };
+    }
+  }
+  return interaction;
 }
 
 export function parkedRunLabel(toolName: string): string {
@@ -61,6 +90,8 @@ function toItem(scope: AttentionScope, { entry, receipt }: ReceiptedParkedSessio
     read: receipt !== undefined,
     archived: receipt?.state === 'archived',
     target: { kind: 'thread' as const, sessionId: entry.sessionId, threadId: entry.threadId },
+    // fork(claude-agent): the call it waits on and what it asks (a question and its options, a plan).
+    ...(entry.interaction ? { interaction: inboxInteraction(entry.interaction) } : {}),
   };
 }
 
@@ -100,6 +131,7 @@ export class ParkedRunAttentionProvider implements AttentionProvider {
           toolName: run.toolName,
           occurredAt: new Date(run.suspendedAt),
           identity: factoryAgentWaitingAttentionIdentity(ref.sessionId, run.suspendedAt),
+          ...(run.interaction ? { interaction: run.interaction } : {}), // fork(claude-agent)
         });
       }
     }

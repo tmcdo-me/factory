@@ -1,3 +1,4 @@
+// fork(claude-agent): also answers a question from outside the session (factory_answer_question, parked-question).
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -26,10 +27,14 @@ import {
   resetTenantCredentialResolverForTests,
 } from '../routes/tenant-credentials.js';
 import { fakeRouteAuth, mountApiRoutes } from '../routes/test-utils.js';
+import { WorkItemRoutes } from '../routes/work-items.js';
+import { FactoryTransitionService } from '../rules/transition-service.js';
 import { resolveFactoryCredentialTenant } from '../session/credential-policy.js';
+import { LiveSessions } from '../session/live-sessions.js';
 import { factoryPrincipalId } from '../storage/domains/projects/base.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
-import { createFactoryApprovalTools } from './approval-tools.js';
+import { QUESTION_ANSWERERS, createFactoryApprovalTools } from './approval-tools.js';
+import { createFactoryReadTools } from './read-tools.js';
 import { createSessionApprovalNotifier, createSessionRunEndReporter } from './reports.js';
 import { observeSessionRunReports } from './run-watch.js';
 import type { FactoryToolScope } from './scope.js';
@@ -124,6 +129,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       parkedOn?: keyof typeof PARKED;
       /** The person moved the card from their own session, rather than filing it. */
       movedFromOwnSession?: boolean;
+      /** fork(claude-agent): who filed the card (its owner unless said). */
+      filedBy?: string;
     }) {
       const parkedOn = options?.parkedOn ?? 'plan';
       const parked = PARKED[parkedOn];
@@ -142,7 +149,10 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       const toolArguments = {
         plan: { path: planPath },
         release: { version: '1.2.0' },
-        question: { question: 'Which branch should this target?' },
+        question: {
+          question: 'Which branch should this target?',
+          options: [{ label: 'main' }, { label: 'release/1.x', description: 'The maintenance line' }],
+        },
       }[parkedOn];
       mock.on(
         { sequenceIndex: 0 },
@@ -236,7 +246,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       });
       const { item } = await seeded.workItems.prepareRunStart({
         orgId: ORG,
-        userId: owner,
+        userId: options?.filedBy ?? owner,
         factoryProjectId: project.id,
         workItem: {
           input: {
@@ -309,6 +319,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       }
 
       const ownerContext = () => new RequestContext([['user', { workosId: owner, organizationId: ORG }]]);
+      // What the Factory server reads parked sessions from: the inbox, factory_list_attention, the board.
+      const liveSessions = new LiveSessions(code.controller);
       const session = await code.controller.createSession({
         id: phase.sessionId,
         resourceId: phase.sessionId,
@@ -353,6 +365,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
           },
         ),
       );
+      // A Factory session knows its project, as the server seeds it.
+      await session.state.set({ factoryOrgId: ORG, factoryProjectId: project.id });
       if (parkedOn === 'plan') await session.mode.switch({ modeId: 'plan' });
       void session.sendMessage({ content: 'Plan the fix.', requestContext: ownerContext() }).catch(() => {});
       /** The tool the run is stopped on, however it stopped. */
@@ -403,6 +417,57 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         );
         return app;
       };
+      const answerQuestion = (reply: string | string[]) =>
+        (
+          tools.factory_answer_question as unknown as {
+            execute: (input: unknown, context: unknown) => Promise<unknown>;
+          }
+        ).execute({ sessionId: phase.sessionId, toolCallId: parked.toolCallId, answer: reply }, {});
+      const answerQuestionOnWeb = (viewer: string, reply: string | string[]) =>
+        web(viewer).request(`/web/user-sessions/${phase.sessionId}/parked-question`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ answer: reply }),
+        });
+      /** What the requester's own session sees in factory_list_attention. */
+      const attention = async () =>
+        (await (
+          createFactoryReadTools(scope, {
+            workItems: seeded.workItems,
+            audit: { list: async () => ({ events: [] }) } as never,
+            boards: createBoardRegistry(),
+            liveSessions: () => liveSessions,
+            sessions: {
+              getSourceControlBySessionId: async () => sourceControl,
+              getBySessionId: sessionId => sourceControl.sessions.getBySessionId(sessionId),
+            },
+          }).factory_list_attention as unknown as { execute: (input: unknown, context: unknown) => Promise<unknown> }
+        ).execute({}, {})) as { waiting: Array<Record<string, unknown>> };
+      /** The inbox the web app lists, signed in as `viewer`. */
+      const inbox = async (viewer: string) => {
+        const app = new Hono();
+        app.use('*', async (context, next) => {
+          context.set('factoryAuthUser' as never, { workosId: viewer, organizationId: ORG } as never);
+          await next();
+        });
+        mountApiRoutes(
+          app as never,
+          new WorkItemRoutes({
+            auth: fakeRouteAuth(),
+            audit: { emit: async () => {} },
+            projects: seeded.projects,
+            workItems: seeded.workItems,
+            queueHealth: seeded.queueHealth,
+            transitionService: new FactoryTransitionService({
+              configVersion: 'factory-config-v1',
+              storage: seeded.workItems,
+            }),
+            liveSessions,
+          } as never).routes(),
+        );
+        const response = await app.request(`/web/factory/projects/${project.id}/attention?kind=agent-waiting`);
+        return (await response.json()) as { items: Array<Record<string, unknown>> };
+      };
       const answerOnWeb = (viewer: string, decision: 'approve' | 'decline', toolCallId?: string) =>
         web(viewer).request(`/web/user-sessions/${phase.sessionId}/parked-approval`, {
           method: 'POST',
@@ -412,6 +477,10 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       return {
         answer,
         answerOnWeb,
+        answerQuestion,
+        answerQuestionOnWeb,
+        attention,
+        inbox,
         web,
         errors,
         audit,
@@ -618,6 +687,134 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       expect(waitingOn()).toBe('ask_user');
       expect(mock.getRequests().length).toBe(requestsBefore);
       expect(audit).toEqual([]);
+    });
+
+    // fork(claude-agent): a question is answered from outside the session too, with an answer
+    // rather than a yes or no, by the same people, and the run carries on as the session's owner.
+    it('refuses an answer that does not fit the question, leaving it waiting', async () => {
+      const { answerQuestionOnWeb, waitingOn } = await parkedPhaseSession({ parkedOn: 'question' });
+
+      const response = await answerQuestionOnWeb(OWNER, ['main', 'release/1.x']);
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({ error: 'This question takes one choice.' });
+      expect(waitingOn()).toBe('ask_user');
+    });
+
+    it('lists the question with its options and the call that asked, in the inbox and factory_list_attention', async () => {
+      const { attention, inbox, phase, item } = await parkedPhaseSession({ parkedOn: 'question' });
+      const asked = {
+        kind: 'question',
+        question: 'Which branch should this target?',
+        options: [{ label: 'main' }, { label: 'release/1.x', description: 'The maintenance line' }],
+        selection: 'single',
+      };
+
+      expect((await attention()).waiting).toEqual([
+        expect.objectContaining({
+          sessionId: phase.sessionId,
+          toolName: 'ask_user',
+          toolCallId: 'call_question',
+          answerWith: 'factory_answer_question',
+          ...asked,
+        }),
+      ]);
+      const { kind: _kind, ...request } = asked;
+      expect((await inbox(REQUESTER)).items).toEqual([
+        expect.objectContaining({
+          kind: 'agent-waiting',
+          sessionId: phase.sessionId,
+          workItemId: item.id,
+          interaction: { toolCallId: 'call_question', request: { kind: 'question', ...request } },
+        }),
+      ]);
+    });
+
+    // The owner's rule: an answer in words comes from the session's owner, an org admin, or the
+    // person who filed the card. Here the Factory owns the phase session and the requester filed it.
+    it.each(['tool', 'web'] as const)(
+      'lets the person who filed the card answer the question from outside the session, and the run carries on with it as its owner (%s)',
+      async surface => {
+        const { answerQuestion, answerQuestionOnWeb, errors, audit, waitingOn, inbox, owner } =
+          await parkedPhaseSession({
+            parkedOn: 'question',
+            ownedByFactory: true,
+            filedBy: REQUESTER,
+          });
+        const requestsBefore = mock.getRequests().length;
+        resolved = [];
+
+        if (surface === 'tool') {
+          await answerQuestion('release/1.x');
+        } else {
+          const response = await answerQuestionOnWeb(REQUESTER, 'release/1.x');
+          expect(response.status).toBe(200);
+          expect(await response.json()).toMatchObject({ answered: true, ...PARKED.question });
+        }
+
+        await vi.waitFor(() => expect(mock.getRequests().length).toBeGreaterThan(requestsBefore), { timeout: 30_000 });
+        // Not the owner: the session is told who answered.
+        const answerer = surface === 'web' ? `Person ${REQUESTER}` : REQUESTER;
+        expect(JSON.stringify(mock.getRequests().at(-1))).toContain(
+          `User answered: Answered by ${answerer}: release/1.x`,
+        );
+        expect(errors).toEqual([]);
+        expect(waitingOn()).toBeUndefined();
+        expect([...new Set(resolved.map(tenant => `${tenant?.userId} ${tenant?.credentialScope}`))]).toEqual([
+          `${owner} factory`,
+        ]);
+        expect(audit).toEqual([expect.objectContaining({ actorId: REQUESTER, action: 'factory.run.answered' })]);
+        expect((await inbox(REQUESTER)).items).toEqual([]);
+      },
+    );
+
+    it("refuses an answer in words from a follower who didn't file the card, while they may still approve its plans", async () => {
+      const { answerQuestionOnWeb, answerQuestion, waitingOn, audit } = await parkedPhaseSession({
+        parkedOn: 'question',
+      });
+
+      const response = await answerQuestionOnWeb(REQUESTER, 'main');
+      expect(response.status).toBe(403);
+      expect(await response.json()).toEqual({ error: QUESTION_ANSWERERS });
+      await expect(answerQuestion('main')).rejects.toThrow(QUESTION_ANSWERERS);
+      expect(waitingOn()).toBe('ask_user');
+      expect(audit).toEqual([]);
+    });
+
+    it('refuses a question answer from a teammate who neither owns the session nor follows its card', async () => {
+      const { answerQuestionOnWeb, waitingOn, audit } = await parkedPhaseSession({ parkedOn: 'question' });
+      const requestsBefore = mock.getRequests().length;
+
+      expect((await answerQuestionOnWeb(STRANGER, 'main')).status).toBe(403);
+      expect(waitingOn()).toBe('ask_user');
+      expect(mock.getRequests().length).toBe(requestsBefore);
+      expect(audit).toEqual([]);
+    });
+
+    it('answers a question once when two people answer it at the same moment', async () => {
+      const { answerQuestionOnWeb, audit, waitingOn } = await parkedPhaseSession({ parkedOn: 'question' });
+
+      // The session's owner, from two tabs.
+      const responses = await Promise.all([
+        answerQuestionOnWeb(OWNER, 'main'),
+        answerQuestionOnWeb(OWNER, 'release/1.x'),
+      ]);
+
+      expect(responses.map(response => response.status).sort()).toEqual([200, 409]);
+      expect(audit).toHaveLength(1);
+      expect(waitingOn()).toBeUndefined();
+    });
+
+    it('refuses to take a plan as a question, leaving it waiting for a yes or no', async () => {
+      const { answerQuestionOnWeb, waitingOn } = await parkedPhaseSession();
+
+      const response = await answerQuestionOnWeb(OWNER, 'Yes');
+
+      expect(response.status).toBe(409);
+      expect(await response.json()).toEqual({
+        error: 'This session is not waiting on a question. Open it to see what it needs.',
+      });
+      expect(waitingOn()).toBe('submit_plan');
     });
 
     // A follow belongs to the session that made it. Once that session is handed to someone else,

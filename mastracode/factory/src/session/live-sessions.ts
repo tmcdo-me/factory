@@ -3,13 +3,18 @@ import type { PubSub } from '@mastra/core/events';
 
 import { touchFeed } from '../feed-events.js';
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
+import { pausedToolInteraction } from './parked-interaction.js'; // fork(claude-agent)
+import type { ParkedInteraction, PausedToolCall } from './parked-interaction.js'; // fork(claude-agent)
 
 /** The slice of a live session this registry needs: its id, its run, its parked tools, and who it works for. */
 export interface LiveSession {
   readonly identity: { getId(): string };
   readonly run: { isRunning(): boolean };
   readonly state: { get(): Readonly<{ factoryOrgId?: string; factoryProjectId?: string }> };
-  readonly displayState: { get(): { pendingSuspensions: ReadonlyMap<string, { toolName: string }> } };
+  // fork(claude-agent): the whole paused call, so what it asks can be answered from outside the session.
+  readonly displayState: {
+    get(): { pendingSuspensions: ReadonlyMap<string, Omit<PausedToolCall, 'toolCallId'> & { toolCallId?: string }> };
+  };
   subscribe(listener: (event: AgentControllerEvent) => void): () => void;
 }
 
@@ -27,6 +32,8 @@ export interface SessionRows {
 export interface ParkedRun {
   toolName: string;
   suspendedAt: number;
+  /** fork(claude-agent): what the call asks, when a person can answer it from outside the session. */
+  interaction?: ParkedInteraction;
 }
 
 /** fork(claude-agent): sessions parked outside the agent controller (Claude Agent's questions and plans). */
@@ -122,9 +129,15 @@ export class LiveSessions {
     const tracked = this.#byId.get(sessionId);
     if (!tracked) return undefined;
     let oldest: ParkedRun | undefined;
-    for (const [toolCallId, { toolName }] of tracked.session.displayState.get().pendingSuspensions) {
+    for (const [toolCallId, suspension] of tracked.session.displayState.get().pendingSuspensions) {
+      const { toolName } = suspension;
       const suspendedAt = tracked.suspendedAt.get(toolCallId) ?? tracked.seenAt;
-      if (!oldest || suspendedAt < oldest.suspendedAt) oldest = { toolName, suspendedAt };
+      if (!oldest || suspendedAt < oldest.suspendedAt) {
+        // fork(claude-agent): entries are keyed by run address; the call's own id is on the entry
+        // (else the key, as `pausedCalls` names it for the answer).
+        const interaction = pausedToolInteraction({ ...suspension, toolCallId: suspension.toolCallId ?? toolCallId });
+        oldest = { toolName, suspendedAt, ...(interaction ? { interaction } : {}) };
+      }
     }
     return oldest;
   }

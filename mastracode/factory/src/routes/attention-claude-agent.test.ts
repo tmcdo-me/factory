@@ -56,6 +56,58 @@ beforeEach(async () => {
 });
 
 describe('a Claude Agent session waiting on a person', () => {
+  it('carries what it asks into the inbox, so it can be answered there: the question and its options, or the plan', async () => {
+    const { item } = await seed.workItems.upsert({
+      orgId: 'org1',
+      userId: 'u1',
+      factoryProjectId: PROJECT_ID,
+      input: { title: 'Ship the login fix', stages: ['intake'], sessions: {}, metadata: {} },
+    });
+    await seed.workItems.update({
+      orgId: 'org1',
+      userId: 'u1',
+      id: item.id,
+      patch: { sessions: { work: { sessionId: SESSION, branch: 'factory/login', threadId: SESSION } } },
+    });
+    const { broker, pending, request } = setup();
+    const question = {
+      kind: 'question' as const,
+      question: 'Which database?',
+      options: [{ label: 'Postgres' }, { label: 'SQLite', description: 'For local runs' }],
+      selection: 'single' as const,
+    };
+    void broker.request(SESSION, question, { callId: 'toolu_ask' });
+    await vi.waitFor(() => expect(pending.parkedIn(PROJECT_ID)).toHaveLength(1));
+    const [asked] = await broker.listPending({ sessionId: SESSION });
+
+    const inbox = await (await request('GET', `/web/factory/projects/${PROJECT_ID}/attention`)).json();
+    expect(inbox.items).toEqual([
+      expect.objectContaining({
+        kind: 'agent-waiting',
+        sessionId: SESSION,
+        toolName: 'ask_user',
+        detail: 'Agent is waiting for an answer',
+        interaction: { toolCallId: 'toolu_ask', interactionId: asked!.id, request: question },
+      }),
+    ]);
+
+    await broker.resolve(asked!.id, { kind: 'question', answer: 'Postgres' });
+    const plan = {
+      kind: 'plan_approval' as const,
+      planPath: '.artifacts/plans/login.md',
+      plan: '# Login\n\n1. Fix it.',
+    };
+    void broker.request(SESSION, plan, { callId: 'toolu_plan' });
+    await vi.waitFor(() => expect(pending.parked(SESSION)?.toolName).toBe('submit_plan'));
+    const planned = await (await request('GET', `/web/factory/projects/${PROJECT_ID}/attention`)).json();
+    expect(planned.items).toEqual([
+      expect.objectContaining({
+        toolName: 'submit_plan',
+        interaction: expect.objectContaining({ toolCallId: 'toolu_plan', request: plan }),
+      }),
+    ]);
+  });
+
   it('shows in the inbox and on its card until it is answered, like a parked Mastra Code run', async () => {
     const { item } = await seed.workItems.upsert({
       orgId: 'org1',

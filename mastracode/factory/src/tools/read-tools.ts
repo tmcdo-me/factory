@@ -20,6 +20,8 @@ import { factoryDispatchFailureMetadata } from '../rules/dispatch-errors.js';
 import { needsApproval } from '../rules/types.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import type { LiveSessions } from '../session/live-sessions.js';
+import { answeringTool } from '../session/parked-interaction.js'; // fork(claude-agent)
+import type { ParkedInteraction } from '../session/parked-interaction.js'; // fork(claude-agent)
 import { resolveWorkItemRepository } from '../session/work-item-repository.js';
 import type { AuditStorage } from '../storage/domains/audit/base.js';
 import type {
@@ -57,9 +59,63 @@ export interface FactoryReadToolDependencies {
   /** The live controller, for whether a session is mid-run and when it last moved; absent before the mount is up. */
   messaging?: () => Promise<Pick<FactoryMessaging, 'controller'> | null>;
   /** Finds the caller session's source-control provider, to tell which cards can't pick a repository. */
-  sessions?: Pick<SourceControlSessionLookup, 'getSourceControlBySessionId'>;
+  sessions?: Pick<SourceControlSessionLookup, 'getSourceControlBySessionId'> &
+    // fork(claude-agent): a waiting session is listed only when the caller may see it.
+    Partial<Pick<SourceControlSessionLookup, 'getBySessionId'>>;
   /** Which live sessions are parked on a tool prompt; absent before the mount is up. */
   liveSessions?: () => Pick<LiveSessions, 'parked' | 'parkedIn'> | undefined;
+}
+
+/**
+ * fork(claude-agent): the entries whose session the caller may see: one in this Factory that is
+ * shared or the caller's own (as the audit tool decides). Fails closed when a row can't be read.
+ */
+async function visibleSessions<Entry extends { sessionId: string }>(
+  scope: FactoryToolScope,
+  deps: Pick<FactoryReadToolDependencies, 'sessions'>,
+  entries: Entry[],
+): Promise<Entry[]> {
+  const lookup = deps.sessions?.getBySessionId;
+  if (!lookup || entries.length === 0) return [];
+  const visible = await Promise.all(
+    entries.map(async ({ sessionId }) => {
+      const row = await lookup(sessionId).catch(() => null);
+      return (
+        row !== null &&
+        row.orgId === scope.orgId &&
+        row.factoryProjectId === scope.factoryProjectId &&
+        (row.visibility !== 'private' || row.userId === scope.userId)
+      );
+    }),
+  );
+  return entries.filter((_, index) => visible[index]);
+}
+
+/** fork(claude-agent): what a waiting run asks, and how to answer it from here. */
+function waitingOn(interaction: ParkedInteraction) {
+  const { request } = interaction;
+  return {
+    ...(interaction.toolCallId ? { toolCallId: interaction.toolCallId } : {}),
+    ...(interaction.interactionId ? { interactionId: interaction.interactionId } : {}),
+    kind: request.kind,
+    answerWith: answeringTool(interaction),
+    ...(request.kind === 'question'
+      ? {
+          question: truncate(request.question, MAX_TEXT * 4),
+          ...(request.options
+            ? {
+                options: request.options.map(option => ({
+                  label: option.label,
+                  ...(option.description ? { description: truncate(option.description, MAX_TEXT) } : {}),
+                })),
+              }
+            : {}),
+          ...(request.selection ? { selection: request.selection } : {}),
+        }
+      : {}),
+    ...(request.kind === 'plan_approval' && request.planPath ? { planPath: request.planPath } : {}),
+    ...(request.kind === 'tool_approval' ? { tool: request.toolName } : {}),
+  };
 }
 
 export function truncate(text: string, max: number): string {
@@ -367,7 +423,9 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
     factory_list_attention: createTool({
       id: 'factory_list_attention',
       description:
-        'What in this Factory needs a person: failed decisions grouped by failure code and error (one incident per group), proposals waiting for approval, runs parked on a tool prompt (a plan to review, a question to answer) while still in flight, Work cards triage left in Intake for a person to move on, and open cards filed by hand that need a repository set (factory_update_work_item) before a run can start.',
+        'What in this Factory needs a person: failed decisions grouped by failure code and error (one incident per group), proposals waiting for approval, runs parked on a tool prompt (a plan to review, a question to answer) while still in flight, Work cards triage left in Intake for a person to move on, and open cards filed by hand that need a repository set (factory_update_work_item) before a run can start.' +
+        // fork(claude-agent)
+        ' Each waiting run names its toolCallId (or, for a question a run asked in plain text, its interactionId), what it asks (the question and its options, or the plan file) and `answerWith`, the tool that answers it (factory_answer_question or factory_answer_approval).',
       inputSchema: z.object({ limit: z.number().int().min(1).max(MAX_LIST).optional() }).strict(),
       execute: async ({ limit = DEFAULT_LIST }) => {
         const [decisions, items] = await Promise.all([
@@ -416,9 +474,10 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
           items.filter(item => !item.externalSource && !isTerminalWorkItem(boards, item)),
         );
         const needsRepository = unplaced.items;
-        const waiting = (deps.liveSessions?.()?.parkedIn(scope.factoryProjectId) ?? []).sort(
-          (a, b) => a.run.suspendedAt - b.run.suspendedAt,
-        );
+        // fork(claude-agent): another person's private session is never listed, nor what it asks.
+        const waiting = (
+          await visibleSessions(scope, deps, deps.liveSessions?.()?.parkedIn(scope.factoryProjectId) ?? [])
+        ).sort((a, b) => a.run.suspendedAt - b.run.suspendedAt);
         return {
           incidents: incidents.map(group => ({
             failureCode: group.failureCode,
@@ -440,6 +499,7 @@ export function createFactoryReadTools(scope: FactoryToolScope, deps: FactoryRea
             toolName: run.toolName,
             label: parkedRunLabel(run.toolName),
             waitingSince: new Date(run.suspendedAt).toISOString(),
+            ...(run.interaction ? waitingOn(run.interaction) : {}), // fork(claude-agent)
           })),
           held: held.slice(0, limit).map(item => ({
             ...ref(item.id),

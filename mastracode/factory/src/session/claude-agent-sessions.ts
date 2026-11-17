@@ -1032,7 +1032,45 @@ export class ClaudeAgentSessions {
           return result.ok ? 'answered' : 'not_pending';
         },
       },
+      questions: {
+        waiting: async sessionId =>
+          (await this.#questions(sessionId)).map(record => ({
+            ...(record.callId ? { toolCallId: record.callId } : {}),
+            interactionId: record.id,
+            toolName: interactionToolName(record.request),
+            request: record.request,
+          })),
+        answer: async (sessionId, target, { answer, answeredBy }, requestContext) => {
+          // Looked up first, as an approval is: a stale answer never starts Claude Code.
+          const pending = (await this.#questions(sessionId)).find(
+            record =>
+              (target.toolCallId === undefined || record.callId === target.toolCallId) &&
+              (target.interactionId === undefined || record.id === target.interactionId) &&
+              (target.toolCallId !== undefined || target.interactionId !== undefined),
+          );
+          if (!pending) return 'not_pending';
+          const session = await this.open(sessionId, requestContext);
+          if (!session) return 'not_pending';
+          const result = await this.#resolve(
+            session,
+            pending,
+            { kind: 'question', answer },
+            requestContext,
+            answeredBy,
+          );
+          return result.ok ? 'answered' : 'not_pending';
+        },
+      },
     };
+  }
+
+  /**
+   * The questions a session waits on, oldest first: its `ask_user` calls, and a question its board
+   * run's turn ended on in plain text (no tool call asked that one).
+   */
+  async #questions(sessionId: string): Promise<InteractionRecord[]> {
+    const pending = (await this.#deps.interactions?.listPending({ sessionId })) ?? [];
+    return pending.filter(record => record.request.kind === 'question');
   }
 
   /** The calls a session waits on that a yes or no answers (a plan, a gated tool), oldest first. */

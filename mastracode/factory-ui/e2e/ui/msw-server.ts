@@ -3,6 +3,7 @@ import { setupServer } from 'msw/node';
 
 import { builtinBoardCatalog } from './board-catalog';
 import { boardReadHandlers } from './board-reads';
+import { emptyAttention } from './waiting';
 
 /**
  * Shared MSW server for the jsdom web-ui test suite. The global setup
@@ -98,6 +99,9 @@ export const server = setupServer(
   http.get('*/web/factory/projects/:id/sandbox-envs', () => HttpResponse.json({ envs: [], writable: true })),
   http.get('*/web/factory/projects/:id/audit', () => HttpResponse.json({ events: [], actors: {} })),
   http.get('*/web/factory/projects/:id/decisions', () => HttpResponse.json({ decisions: [] })),
+  // fork(claude-agent): ambient inbox (the sidebar's Waiting count): nothing waits on a person.
+  // Waiting-page tests override it with `server.use(...)`.
+  http.get('*/web/factory/projects/:id/attention', () => HttpResponse.json(emptyAttention)),
   // What a test stubs here is the project's cards: the board's paged reads are answered from it.
   http.get('*/web/factory/projects/:id/work-items', () => HttpResponse.json({ workItems: [] })),
   ...boardReadHandlers,

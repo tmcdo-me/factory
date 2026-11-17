@@ -95,10 +95,13 @@ export function SuspensionCard({
   prompt,
   isSubmitting,
   onRespond,
+  sessionId,
 }: {
   prompt: SuspensionPrompt;
   isSubmitting: boolean;
   onRespond: (toolCallId: string, resumeData: string | string[] | PlanResume, promptId: string) => void;
+  /** fork(claude-agent): the session that asked, when the card is shown outside its thread. */
+  sessionId?: string;
 }) {
   const payload = suspensionPayloadShape(prompt.suspendPayload);
 
@@ -109,6 +112,7 @@ export function SuspensionCard({
         input={prompt.suspendPayload}
         isSubmitting={isSubmitting}
         onRespond={response => onRespond(prompt.toolCallId, response, prompt.id)}
+        sessionId={sessionId}
       />
     );
   }

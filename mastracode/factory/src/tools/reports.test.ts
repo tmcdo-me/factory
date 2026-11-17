@@ -330,7 +330,8 @@ describe('sendRunEndReport', () => {
     });
   });
 
-  it('sends a question to the session that asked it, with no approval to answer', async () => {
+  // fork(claude-agent): the notice names the call, so the question can be answered from there.
+  it('sends a question to the session that asked it, with no approval to answer, naming how to answer it', async () => {
     const env = reporting();
     await sendRunEndReport(env.reporting, {
       sender: SENDER,
@@ -340,7 +341,8 @@ describe('sendRunEndReport', () => {
       subject: 'The work session for #7',
     });
     expect(env.deliveries[0]!.notification).toMatchObject({
-      summary: 'The work session for #7 is waiting on ask_user and needs an answer.',
+      summary:
+        'The work session for #7 is waiting on ask_user and needs an answer. Ask the person, then answer it with factory_answer_question (sessionId "session-w", toolCallId "call-9"); factory_list_attention shows the question.',
     });
     expect(env.deliveries[0]!.notification.attributes).not.toHaveProperty('waiting-for');
   });
