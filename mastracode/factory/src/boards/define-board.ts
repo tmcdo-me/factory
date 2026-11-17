@@ -1,4 +1,4 @@
-import { CODE_AGENT_ID } from '@mastra/code-sdk/constants';
+import { MASTRA_CODE_AGENT_ID } from '@factory/agent-runtime';
 import { cardRuleGroupSchema, evaluateRuleGroup } from '../rules/rule-group.js';
 import type { RuleFacts, RuleGroup } from '../rules/rule-group.js';
 import { FACTORY_GITHUB_EVENTS } from '../rules/types.js';
@@ -54,7 +54,7 @@ const BOARD_EVENT_NAMES: Readonly<Record<BoardEventIntegration, readonly string[
 export type BoardPhaseKind = 'resting' | 'working' | 'terminal';
 
 /** The agent Factory runs every phase with. */
-export const FACTORY_AGENT_ID = CODE_AGENT_ID;
+export const FACTORY_AGENT_ID = MASTRA_CODE_AGENT_ID;
 
 /** The session context a working phase runs in when it names none. */
 export const DEFAULT_PHASE_CONTEXT = 'work';

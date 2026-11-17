@@ -16,7 +16,6 @@ export const restrictedMastraCodeImports = {
 
 /** Files under `mastracode/factory` that still import Mastra Code's controller or SDK. */
 export const factoryAllowList: string[] = [
-  'src/boards/define-board.ts',
   'src/factory.ts',
   'src/integrations/base.ts',
   'src/integrations/github/routes.ts',
@@ -25,11 +24,8 @@ export const factoryAllowList: string[] = [
   'src/rules/mastra-code-sessions.ts',
   'src/rules/processor.ts',
   'src/rules/start-coordinator.ts',
-  'src/run-error.ts',
   'src/session/controller-event-hub.ts',
-  'src/session/credential-policy.ts',
   'src/session/factory-session.ts',
-  'src/session/reply-credential-processor.ts',
   'src/workspace.ts',
 ];
 

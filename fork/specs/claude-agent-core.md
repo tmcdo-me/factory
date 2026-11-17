@@ -974,6 +974,12 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      beyond `event.type ===` becoming the equivalent `isSessionEvent(event, ...)` guard. Left: `controller-event-hub`
      (feeds the adapter's event mapper), `dispatcher`, `start-coordinator`, `factory-session`, `mastra-code-sessions`
      (adapter internals, 7l), and the runtime imports (7i to 7m).
+   - **7i** Error and credential classifiers: `run-error.ts` and `boards/define-board.ts` use Factory-owned constants
+     (`@factory/agent-runtime` `error-names.ts`: the provider-auth and Claude-subscription-refused error names, the
+     gateway model prefix, Mastra Code's agent id), and `runtime-mastra-code/src/error-names.test.ts` pins each to
+     the package's own value. `session/credential-policy.ts` and `reply-credential-processor.ts` take the credential
+     resolver helpers from `@factory/runtime-mastra-code/sdk` (a new group; re-exports only), so the injected
+     capability replaces them at the composition root (7m). Four files left the factory allow-list; baseline shrunk (now 11). Behaviour unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

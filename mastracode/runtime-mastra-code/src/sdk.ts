@@ -17,10 +17,18 @@ export { getCustomProviderId, MASTRA_GATEWAY_PROVIDER } from '@mastra/code-sdk/o
 export type { CustomProviderSetting } from '@mastra/code-sdk/onboarding/settings';
 export { AMAZON_BEDROCK_GATEWAY_ID } from '@mastra/code-sdk/providers/amazon-bedrock-gateway';
 export { GOOGLE_VERTEX_GATEWAY_ID } from '@mastra/code-sdk/providers/google-vertex-gateway';
-export { getCredentialProviderId, MASTRA_GATEWAY_PREFIX } from '@mastra/code-sdk/providers/model-ids';
+export {
+  getCredentialProviderId,
+  MASTRA_GATEWAY_PREFIX,
+  normalizeLegacyProviderId,
+} from '@mastra/code-sdk/providers/model-ids';
 
 // routes/custom-provider-source
-export { resolveTenantFromRequestContext } from '@mastra/code-sdk/agents/credential-resolver';
+export {
+  resolveAuthenticatedCredentialTenant,
+  resolveCredentialStore,
+  resolveTenantFromRequestContext,
+} from '@mastra/code-sdk/agents/credential-resolver';
 export { setCustomProvidersSource } from '@mastra/code-sdk/agents/custom-provider-source';
 
 // routes/fs

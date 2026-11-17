@@ -1,5 +1,8 @@
-import { resolveCredentialStore, resolveTenantFromRequestContext } from '@mastra/code-sdk/agents/credential-resolver';
-import { normalizeLegacyProviderId } from '@mastra/code-sdk/providers/model-ids';
+import {
+  normalizeLegacyProviderId,
+  resolveCredentialStore,
+  resolveTenantFromRequestContext,
+} from '@factory/runtime-mastra-code/sdk';
 import type { Processor, ProcessOutputStepArgs } from '@mastra/core/processors';
 import type { RequestContext } from '@mastra/core/request-context';
 
