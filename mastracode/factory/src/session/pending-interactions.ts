@@ -161,10 +161,14 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     try {
       record = await this.#options.store.settle(id, settlement);
     } catch (error) {
-      // A held call settled by its runtime stops being listed, whether or not the write landed.
+      // A held call settled by its runtime stops being listed, whether or not the write landed. Its
+      // runtime has already taken the answer, so whoever answered is not told it failed.
       const indexed = this.#indexed(id);
-      if (indexed?.heldBy) this.#remove(indexed);
-      throw error;
+      if (!indexed?.heldBy) throw error;
+      console.warn(`[factory] interactions: recording that ${id} settled failed; it is settled in memory.`, error);
+      const settled = this.#settleIndexed(id, settlement);
+      this.#remove(indexed);
+      return settled;
     }
     // One that was only ever in memory (its write failed) settles there.
     record ??= this.#settleIndexed(id, settlement);

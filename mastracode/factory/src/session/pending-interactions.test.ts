@@ -191,7 +191,8 @@ describe('PendingInteractions', () => {
 
     expect(pending.parked('s-ask')).toMatchObject({ toolName: 'ask_user' });
     expect(await pending.get(held.id)).toMatchObject({ status: 'pending' });
-    await expect(broker.settleHeld(held.id, { status: 'cancelled', reason: 'aborted' })).rejects.toThrow('locked');
+    // Its runtime already settled it: the failed write is logged, not reported to whoever answered.
+    await expect(broker.settleHeld(held.id, { status: 'cancelled', reason: 'aborted' })).resolves.toBe(true);
     expect(pending.parked('s-ask')).toBeUndefined();
     // A Claude Agent question is not taken in memory: its tool must hear the write failed.
     await expect(broker.request('s-plan', plan, { callId: 'toolu_plan' })).rejects.toThrow('locked');
