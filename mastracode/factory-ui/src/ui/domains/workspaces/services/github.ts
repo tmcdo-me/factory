@@ -13,7 +13,7 @@
  * still reaches the Mastra server — same pattern as the shared API client.
  */
 
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 import type { ProjectListRepository } from '@mastra/factory/routes/contracts';
 
 import { postRepositoryGitOp, postSourceControlRepositoryOp, readJsonOrThrow } from './http';

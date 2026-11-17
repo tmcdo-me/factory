@@ -1,5 +1,5 @@
-import { isThinkingLevelSetting } from '@mastra/code-sdk/thinking';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import { isThinkingLevelSetting } from '@factory/agent-runtime/browser';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 
 import type { PendingImage } from '../context/ComposerImagesContext';
 

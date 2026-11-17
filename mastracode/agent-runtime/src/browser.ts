@@ -5,6 +5,8 @@
 export type * from './events';
 export type * from './interactions';
 export type * from './transcript';
-export type { Attachment, Author, ThinkingLevel, TurnInput } from './runtime';
+export type { Attachment, Author, TurnInput } from './runtime';
+export type { ThinkingLevel, ThinkingLevelSetting } from './thinking';
+export { THINKING_LEVEL_VALUES, isThinkingLevelSetting } from './thinking';
 
 export { applyEvent, buildTranscript, emptyTranscript, finishedToolCalls } from './transcript';

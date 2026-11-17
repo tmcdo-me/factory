@@ -1,5 +1,6 @@
-import { THINKING_LEVEL_VALUES, getAvailableThinkingLevelsForModel, runThinkingLevel } from '@mastra/code-sdk/thinking';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import { THINKING_LEVEL_VALUES } from '@factory/agent-runtime/browser';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
+import { getAvailableThinkingLevelsForModel, runThinkingLevel } from '@mastra/code-sdk/thinking';
 import type { ModelReasoningOption } from '@mastra/core/llm';
 import { DEFAULT_THINKING_LEVEL } from '@mastra/factory/default-thinking-level';
 import type { ThinkingLevelOption } from '@mastra/playground-ui/components/ThinkingLevel';

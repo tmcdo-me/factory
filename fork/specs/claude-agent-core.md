@@ -930,6 +930,14 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      calls in the same order); `webhook.test.ts` and the event worker suites run through the new seam. Not done
      yet in slice 7: Slack, routes and config, credentials, voice, moving the adapter and its internals, the
      composition root.
+   - **7c** Factory-owned thinking levels: `@factory/agent-runtime` (and `/browser`) exports `ThinkingLevel` /
+     `ThinkingLevelSetting`, `THINKING_LEVEL_VALUES` and `isThinkingLevelSetting` (`src/thinking.ts`);
+     Factory's storage, routes, defaults and UI import them instead of `@mastra/code-sdk/thinking`
+     (`thinking-levels.test.ts` pins the values to Mastra Code's). 5 factory and 14 factory-ui files left the
+     allow-list (now 41 and 12), and `seam-import-baseline.json` shrank with it. The per-model resolver
+     (`runThinkingLevel`, `getAvailableThinkingLevelsForModel`, the `/think` parser) stays in Mastra Code's
+     package: `thinkingLevels.ts` and `useChatCommandRegistry.ts` still import it and move behind the adapter's
+     capabilities later. UI-owned message types (`MastraDBMessage`, `TokenUsage`) are the next change.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

@@ -1,5 +1,5 @@
-import { THINKING_LEVEL_VALUES } from '@mastra/code-sdk/thinking';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import { THINKING_LEVEL_VALUES } from '@factory/agent-runtime';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime';
 import { validateSkillContent } from '@mastra/core/skills';
 import { z } from 'zod';
 

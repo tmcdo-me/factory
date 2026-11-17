@@ -1,5 +1,5 @@
 import { toast } from '@mastra/playground-ui/components/Toaster';
-import type { ThinkingLevelSetting } from '@mastra/code-sdk/thinking';
+import type { ThinkingLevelSetting } from '@factory/agent-runtime/browser';
 
 import { useAvailableModelsQuery, useModelReasoningOptions } from '../../../../../hooks/useAvailableModels';
 import { useChatModelScope } from '../../context/useChatModelScope';

@@ -5,6 +5,8 @@ export type * from './tools';
 export type * from './workspace';
 export type * from './commands';
 export type * from './transcript';
+export type * from './thinking';
+export { THINKING_LEVEL_VALUES, isThinkingLevelSetting } from './thinking';
 export type { EventLog } from './event-log';
 
 export { FACTORY_TOOL_DEF, defineFactoryTool, isFactoryToolDef } from './tools';

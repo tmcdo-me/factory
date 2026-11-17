@@ -10,7 +10,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | ---- | ------------------------------------------------------ | ---: | ----- | ---------------------------------------------------------------------------------------------------------------- |
 | [ ]  | `auth.ts`                                              | 1022 | 7     |                                                                                                                  |
 | [ ]  | `boards/define-board.ts`                               |  790 | 6     | dispatcher / boards / goals                                                                                      |
-| [ ]  | `default-thinking-level.ts`                            |    3 | 7     |                                                                                                                  |
+| [x]  | `default-thinking-level.ts`                            |    3 | 7     |                                                                                                                  |
 | [ ]  | `factory.ts`                                           | 2644 | 2→7   | composition root; shrinks every slice                                                                            |
 | [ ]  | `integrations/base.ts`                                 |  322 | 7     |                                                                                                                  |
 | [ ]  | `integrations/github/routes.ts`                        | 1771 | 7     |                                                                                                                  |
@@ -58,7 +58,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `session/run-audit.ts`                                 |  302 | 7     |                                                                                                                  |
 | [ ]  | `session/session-threads.ts`                           |  179 | 7     |                                                                                                                  |
 | [x]  | `session/source-control-tools.ts`                      |  822 | 4     | tools → FactoryToolDef                                                                                           |
-| [ ]  | `session/thinking-default.ts`                          |   60 | 7     |                                                                                                                  |
+| [x]  | `session/thinking-default.ts`                          |   60 | 7     |                                                                                                                  |
 | [ ]  | `session/thread-session-stamp.ts`                      |   21 | 7     |                                                                                                                  |
 | [ ]  | `session/thread-title-mirror.ts`                       |   75 | 7     |                                                                                                                  |
 | [ ]  | `skills/service.ts`                                    |  120 | 6     | dispatcher / boards / goals                                                                                      |

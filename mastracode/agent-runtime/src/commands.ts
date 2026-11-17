@@ -1,5 +1,5 @@
 import type { InteractionResponse } from './interactions';
-import type { ThinkingLevel } from './runtime';
+import type { ThinkingLevel } from './thinking';
 
 /**
  * Commands Factory's session API sends to a session, whatever runtime runs it. Each runtime adapter

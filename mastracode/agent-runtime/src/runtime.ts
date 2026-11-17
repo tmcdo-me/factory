@@ -1,5 +1,6 @@
 import type { FactoryEvent, RunEndReason } from './events';
 import type { InteractionResponse } from './interactions';
+import type { ThinkingLevel } from './thinking';
 import type { FactoryToolContext, FactoryToolDef } from './tools';
 import type { SessionWorkspace } from './workspace';
 
@@ -31,8 +32,6 @@ export interface RuntimeCapabilities {
   /** Supported thinking/effort levels, lowest first. Empty when not configurable. */
   thinkingLevels: readonly ThinkingLevel[];
 }
-
-export type ThinkingLevel = 'off' | 'low' | 'medium' | 'high' | 'xhigh' | 'max';
 
 export interface RuntimeModel {
   /** Runtime-scoped model id, passed back in `SessionSpec.model` / `setModel`. */
