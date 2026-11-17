@@ -27,6 +27,9 @@ import { exitToolSucceeded, PHASE_EXIT_METADATA_KEY } from '../boards/phase-auto
 import { toBoardSource } from '../boards/project-boards.js';
 import type { ProjectBoardSource } from '../boards/project-boards.js';
 import { hasOpenPullRequest, hasPullRequest } from '../boards/semantics.js';
+import type { ContextBlock, ContextProvider, ContextRequest } from '../session/context-providers.js';
+import { unchanged } from '../session/context-providers.js';
+import { computeMastraStateSignal } from '../session/mastra-context.js';
 import { WorkItemUpdateConflictError } from '../storage/domains/work-items/base.js';
 import type { FactoryRunBindingRecord, WorkItemsStorage, Card } from '../storage/domains/work-items/base.js';
 import { findSessionRunBinding, getFactorySessionCoordinates } from './binding-context.js';
@@ -271,16 +274,8 @@ function escapeText(value: string): string {
   return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;');
 }
 
-function phaseFromSignal(signal: { metadata?: Record<string, unknown> } | undefined): PhaseSnapshotValue | undefined {
-  return (signal?.metadata?.value as { phase?: PhaseSnapshotValue } | undefined)?.phase;
-}
-
-function latestPhase(args: ComputeStateSignalArgs): PhaseSnapshotValue | undefined {
-  for (const signal of [...args.activeStateSignals].reverse()) {
-    const phase = phaseFromSignal(signal);
-    if (phase) return phase;
-  }
-  return phaseFromSignal(args.lastSnapshot);
+function phaseFromValue(value: Record<string, unknown> | undefined): PhaseSnapshotValue | undefined {
+  return (value as { phase?: PhaseSnapshotValue } | undefined)?.phase;
 }
 
 async function withRuleTimeout<T>(operation: Promise<T>): Promise<T> {
@@ -325,6 +320,170 @@ export function reportMemorySettingsUnavailable(
   });
 }
 
+/**
+ * The card's phase as the session is told it: where the card sits, what ends the phase, what it may
+ * move to. Runtime-independent: Mastra Code shows it as a state signal (`FactoryPhaseStateProcessor`),
+ * Claude Agent with the turn it changed for.
+ */
+export class FactoryPhaseContext implements ContextProvider {
+  readonly id = STATE_ID;
+  private readonly boards: ProjectBoardSource;
+
+  constructor(
+    private readonly options: {
+      configVersion: string;
+      storage: WorkItemsStorage;
+      boards: BoardRegistry | ProjectBoardSource;
+      /** The session's routed thinking default, used when the session has not picked a level. */
+      defaultThinkingLevel?: (requestContext: ComputeStateSignalArgs['requestContext']) => Promise<ThinkingLevel>;
+    },
+  ) {
+    this.boards = toBoardSource(options.boards);
+  }
+
+  async provide({ requestContext, previous }: ContextRequest): Promise<ContextBlock | undefined> {
+    const address = getFactorySessionCoordinates(requestContext);
+    if (!address) return;
+    const binding = await this.options.storage.findRunBindingBySession(address);
+    const prior = phaseFromValue(previous?.value);
+    const hasBase = previous !== undefined;
+
+    if (!binding) return;
+    if (binding.status !== 'active') {
+      if (!hasBase || prior?.status !== 'active') return;
+      // Say where the card went, so the session stops its work instead of guessing why its phase vanished.
+      const moved = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
+      const movedBoards = moved ? await this.boards.load(binding) : undefined;
+      const movedTo = moved && movedBoards ? ruleStage(movedBoards, moved) : undefined;
+      const movedName = movedTo
+        ? (movedBoards?.get(boardForWorkItem(moved!))?.phases[movedTo]?.name ?? movedTo)
+        : undefined;
+      return {
+        id: STATE_ID,
+        cacheKey: `factory:none:${prior.bindingId ?? 'revoked'}${movedTo ? `:${movedTo}` : ''}`,
+        mode: 'snapshot',
+        tag: 'factory-phase',
+        text: movedName
+          ? `This session no longer works its Factory card; the card is now in ${escapeText(movedName)}. Your part is done: do not continue its work here. Answer questions only.\n`
+          : '\n',
+        value: { phase: { status: 'none' } },
+        attributes: { status: 'none' },
+      };
+    }
+
+    const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
+    const boards = await this.boards.load(binding);
+    const stage = ruleStage(boards, item);
+    if (!item || !stage) return;
+    const linked = await this.options.storage.listLinked({ item, limit: MAX_LINKED_ITEMS });
+    const board = boardForWorkItem(item);
+    const baseValue: ActivePhaseSnapshotBase = {
+      status: 'active',
+      bindingId: binding.id,
+      itemId: item.id,
+      revision: item.revision,
+      stage,
+      role: binding.role,
+      configVersion: this.options.configVersion,
+    };
+    const flow = boardFlow(boards.get(board));
+    const value: ActivePhaseSnapshotValue = reviewsPullRequest({
+      flow,
+      item: { source: workItemSource(item.externalSource), workItem: item.workItem },
+    })
+      ? {
+          ...baseValue,
+          board,
+          ...reviewRuntimeFromRequestContext(requestContext, await this.options.defaultThinkingLevel?.(requestContext)),
+        }
+      : { ...baseValue, board };
+    const cacheKey = await phaseCacheKey(value, linked);
+    if (unchanged(previous, cacheKey)) return;
+
+    const linkedText = linked.length
+      ? `\nLinked items: ${linked.map(candidate => `${workItemSource(candidate.externalSource)} ${candidate.title}`).join('; ')}`
+      : '';
+    const definition = boards.get(board);
+    const phase = definition?.phases[stage];
+    const phaseLabel = phase?.name ?? stage;
+    const nextText = phase
+      ? `Next phases: ${
+          phase.nextPhases.length
+            ? phase.nextPhases
+                .map(key => `${escapeText(definition?.phases[key]?.name ?? key)} (${escapeText(key)})`)
+                .join('; ')
+            : 'none'
+        }\n`
+      : '';
+    const exitText =
+      phase?.kind === 'working' && phase.exitTool
+        ? `This phase ends when ${escapeText(phase.exitTool.id)} succeeds${phase.exitTool.id === 'submit_plan' ? ' with an approved plan' : ''}; until then the card stays here. ${
+            definition?.tools[phase.exitTool.id]
+              ? 'Its result moves the card on.'
+              : `Then move the card with factory_transition_work_item to one of: ${phase.nextPhases.map(escapeText).join(', ')}.`
+          }\n`
+        : '';
+    // Skills name phases by role in the pull request loop, never by key: this line maps them.
+    const flowPhase = (key: string | undefined) =>
+      key ? `${escapeText(definition?.phases[key]?.name ?? key)} (${escapeText(key)})` : undefined;
+    const completed = flow.completed?.phase;
+    const canceled = flow.canceled?.phase === completed ? undefined : flow.canceled?.phase;
+    const flowParts = [
+      definition ? `rest: ${flowPhase(definition.initialPhase)}` : undefined,
+      flow.triage ? `triage: ${flowPhase(flow.triage)}` : undefined,
+      flow.build ? `build: ${flowPhase(flow.build)}` : undefined,
+      flow.selfReview ? `self-review: ${flowPhase(flow.selfReview)}` : undefined,
+      flow.pullRequestReview ? `pull request review: ${flowPhase(flow.pullRequestReview)}` : undefined,
+      completed ? `completed: ${flowPhase(completed)}` : undefined,
+      canceled ? `canceled: ${flowPhase(canceled)}` : undefined,
+    ].filter(part => part !== undefined);
+    const flowText = flowParts.length ? `Board phases by part: ${flowParts.join('; ')}\n` : '';
+    // The card moved to a phase another context works; this session's tools for it are gone.
+    const handedOnText =
+      phase?.kind === 'working' &&
+      phase.runner.context !== binding.role &&
+      // A Work card planned before Planning ran in `work` keeps its `plan` session there.
+      workStageCarries(definition, stage, binding.role, undefined) !== true
+        ? `This card is now in ${escapeText(phaseLabel)}, which runs in the ${escapeText(phase.runner.context)} context in another session. Your part is done: do not continue its work here. Answer questions, and move the card only if it must come back to you.\n`
+        : '';
+    const runtime =
+      value.modelId && value.thinkingLevel ? { modelId: value.modelId, thinkingLevel: value.thinkingLevel } : null;
+    const snapshotContents =
+      `Factory ${board} phase: ${escapeText(phaseLabel)} (${escapeText(stage)})\n` +
+      `Work item: ${escapeText(item.title)} (${item.id})\n` +
+      `Role: ${escapeText(binding.role)}\nRevision: ${item.revision}\nConfig: ${escapeText(this.options.configVersion)}\n` +
+      (runtime
+        ? `Runtime: model=${escapeText(runtime.modelId)}, reasoning-setting=${escapeText(runtime.thinkingLevel)}\n`
+        : '') +
+      (phase?.kind === 'resting'
+        ? `This card rests in ${escapeText(phaseLabel)}: its work is paused. Answer questions without moving it; when the user asks to resume, request the transition into the working stage first, then continue the work in this session.\n`
+        : '') +
+      nextText +
+      flowText +
+      exitText +
+      handedOnText +
+      `Use factory_transition_work_item with expectedRevision ${item.revision} to request a phase change.${escapeText(linkedText)}`;
+    const isDelta = hasBase && prior?.status === 'active';
+    return {
+      id: STATE_ID,
+      cacheKey,
+      mode: isDelta ? 'delta' : 'snapshot',
+      tag: 'factory-phase',
+      text: isDelta ? `Factory phase update:\n${snapshotContents}` : snapshotContents,
+      value: { phase: value },
+      ...(isDelta ? { delta: { phase: value } } : {}),
+      attributes: {
+        status: 'active',
+        board,
+        stage,
+        role: binding.role,
+        revision: item.revision,
+        ...(runtime ?? {}),
+      },
+    };
+  }
+}
+
 export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
   readonly id = STATE_ID;
   readonly stateId = STATE_ID;
@@ -332,6 +491,8 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
   private readonly loadedMemorySettings = new WeakSet<object>();
   private readonly bindingReconciles = new Map<string, Promise<void>>();
   private readonly boards: ProjectBoardSource;
+  /** The card's phase as a runtime-independent context (Claude Agent reads it directly). */
+  readonly context: FactoryPhaseContext;
 
   constructor(
     private readonly options: {
@@ -371,6 +532,7 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     },
   ) {
     this.boards = toBoardSource(options.boards);
+    this.context = new FactoryPhaseContext(options);
   }
 
   /**
@@ -458,152 +620,8 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
     }
   }
 
-  async computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
-    const address = getFactorySessionCoordinates(args.requestContext);
-    if (!address) return;
-    const binding = await this.options.storage.findRunBindingBySession(address);
-    const prior = latestPhase(args);
-    const hasBase = Boolean(args.lastSnapshot) && args.contextWindow.hasSnapshot;
-
-    if (!binding) return;
-    if (binding.status !== 'active') {
-      if (!hasBase || prior?.status !== 'active') return;
-      // Say where the card went, so the session stops its work instead of guessing why its phase vanished.
-      const moved = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
-      const movedBoards = moved ? await this.boards.load(binding) : undefined;
-      const movedTo = moved && movedBoards ? ruleStage(movedBoards, moved) : undefined;
-      const movedName = movedTo
-        ? (movedBoards?.get(boardForWorkItem(moved!))?.phases[movedTo]?.name ?? movedTo)
-        : undefined;
-      return {
-        id: STATE_ID,
-        cacheKey: `factory:none:${prior.bindingId ?? 'revoked'}${movedTo ? `:${movedTo}` : ''}`,
-        mode: 'snapshot',
-        tagName: 'factory-phase',
-        contents: movedName
-          ? `This session no longer works its Factory card; the card is now in ${escapeText(movedName)}. Your part is done: do not continue its work here. Answer questions only.\n`
-          : '\n',
-        value: { phase: { status: 'none' } },
-        attributes: { status: 'none' },
-        metadata: { value: { phase: { status: 'none' } } },
-      };
-    }
-
-    const item = await this.options.storage.get({ orgId: binding.orgId, id: binding.workItemId });
-    const boards = await this.boards.load(binding);
-    const stage = ruleStage(boards, item);
-    if (!item || !stage) return;
-    const linked = await this.options.storage.listLinked({ item, limit: MAX_LINKED_ITEMS });
-    const board = boardForWorkItem(item);
-    const baseValue: ActivePhaseSnapshotBase = {
-      status: 'active',
-      bindingId: binding.id,
-      itemId: item.id,
-      revision: item.revision,
-      stage,
-      role: binding.role,
-      configVersion: this.options.configVersion,
-    };
-    const flow = boardFlow(boards.get(board));
-    const value: ActivePhaseSnapshotValue = reviewsPullRequest({
-      flow,
-      item: { source: workItemSource(item.externalSource), workItem: item.workItem },
-    })
-      ? {
-          ...baseValue,
-          board,
-          ...reviewRuntimeFromRequestContext(
-            args.requestContext,
-            await this.options.defaultThinkingLevel?.(args.requestContext),
-          ),
-        }
-      : { ...baseValue, board };
-    const cacheKey = await phaseCacheKey(value, linked);
-    if (hasBase && (args.tracking?.currentCacheKey ?? args.lastSnapshot?.metadata?.state?.cacheKey) === cacheKey)
-      return;
-
-    const linkedText = linked.length
-      ? `\nLinked items: ${linked.map(candidate => `${workItemSource(candidate.externalSource)} ${candidate.title}`).join('; ')}`
-      : '';
-    const definition = boards.get(board);
-    const phase = definition?.phases[stage];
-    const phaseLabel = phase?.name ?? stage;
-    const nextText = phase
-      ? `Next phases: ${
-          phase.nextPhases.length
-            ? phase.nextPhases
-                .map(key => `${escapeText(definition?.phases[key]?.name ?? key)} (${escapeText(key)})`)
-                .join('; ')
-            : 'none'
-        }\n`
-      : '';
-    const exitText =
-      phase?.kind === 'working' && phase.exitTool
-        ? `This phase ends when ${escapeText(phase.exitTool.id)} succeeds${phase.exitTool.id === 'submit_plan' ? ' with an approved plan' : ''}; until then the card stays here. ${
-            definition?.tools[phase.exitTool.id]
-              ? 'Its result moves the card on.'
-              : `Then move the card with factory_transition_work_item to one of: ${phase.nextPhases.map(escapeText).join(', ')}.`
-          }\n`
-        : '';
-    // Skills name phases by role in the pull request loop, never by key: this line maps them.
-    const flowPhase = (key: string | undefined) =>
-      key ? `${escapeText(definition?.phases[key]?.name ?? key)} (${escapeText(key)})` : undefined;
-    const completed = flow.completed?.phase;
-    const canceled = flow.canceled?.phase === completed ? undefined : flow.canceled?.phase;
-    const flowParts = [
-      definition ? `rest: ${flowPhase(definition.initialPhase)}` : undefined,
-      flow.triage ? `triage: ${flowPhase(flow.triage)}` : undefined,
-      flow.build ? `build: ${flowPhase(flow.build)}` : undefined,
-      flow.selfReview ? `self-review: ${flowPhase(flow.selfReview)}` : undefined,
-      flow.pullRequestReview ? `pull request review: ${flowPhase(flow.pullRequestReview)}` : undefined,
-      completed ? `completed: ${flowPhase(completed)}` : undefined,
-      canceled ? `canceled: ${flowPhase(canceled)}` : undefined,
-    ].filter(part => part !== undefined);
-    const flowText = flowParts.length ? `Board phases by part: ${flowParts.join('; ')}\n` : '';
-    // The card moved to a phase another context works; this session's tools for it are gone.
-    const handedOnText =
-      phase?.kind === 'working' &&
-      phase.runner.context !== binding.role &&
-      // A Work card planned before Planning ran in `work` keeps its `plan` session there.
-      workStageCarries(definition, stage, binding.role, undefined) !== true
-        ? `This card is now in ${escapeText(phaseLabel)}, which runs in the ${escapeText(phase.runner.context)} context in another session. Your part is done: do not continue its work here. Answer questions, and move the card only if it must come back to you.\n`
-        : '';
-    const runtime =
-      value.modelId && value.thinkingLevel ? { modelId: value.modelId, thinkingLevel: value.thinkingLevel } : null;
-    const snapshotContents =
-      `Factory ${board} phase: ${escapeText(phaseLabel)} (${escapeText(stage)})\n` +
-      `Work item: ${escapeText(item.title)} (${item.id})\n` +
-      `Role: ${escapeText(binding.role)}\nRevision: ${item.revision}\nConfig: ${escapeText(this.options.configVersion)}\n` +
-      (runtime
-        ? `Runtime: model=${escapeText(runtime.modelId)}, reasoning-setting=${escapeText(runtime.thinkingLevel)}\n`
-        : '') +
-      (phase?.kind === 'resting'
-        ? `This card rests in ${escapeText(phaseLabel)}: its work is paused. Answer questions without moving it; when the user asks to resume, request the transition into the working stage first, then continue the work in this session.\n`
-        : '') +
-      nextText +
-      flowText +
-      exitText +
-      handedOnText +
-      `Use factory_transition_work_item with expectedRevision ${item.revision} to request a phase change.${escapeText(linkedText)}`;
-    const isDelta = hasBase && prior?.status === 'active';
-    return {
-      id: STATE_ID,
-      cacheKey,
-      mode: isDelta ? 'delta' : 'snapshot',
-      tagName: 'factory-phase',
-      contents: isDelta ? `Factory phase update:\n${snapshotContents}` : snapshotContents,
-      value: { phase: value },
-      ...(isDelta ? { delta: { phase: value } } : {}),
-      attributes: {
-        status: 'active',
-        board,
-        stage,
-        role: binding.role,
-        revision: item.revision,
-        ...(runtime ?? {}),
-      },
-      metadata: { value: { phase: value } },
-    };
+  computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
+    return computeMastraStateSignal(this.context, args);
   }
 
   async reconcileAllBoundThreads(): Promise<void> {

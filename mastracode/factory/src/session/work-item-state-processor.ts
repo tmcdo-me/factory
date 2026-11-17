@@ -18,6 +18,9 @@ import {
   workItemBranch,
   workItemBranchSource,
 } from '../work-item-branch.js';
+import { unchanged } from './context-providers.js';
+import type { ContextBlock, ContextProvider, ContextRequest } from './context-providers.js';
+import { computeMastraStateSignal } from './mastra-context.js';
 
 const STATE_ID = 'factory-work-item';
 
@@ -102,17 +105,16 @@ function cacheKeyOf(input: unknown): string {
  * card or its sources change. No comment threads: the agent
  * fetches those with the source's tool.
  */
-export class FactoryWorkItemStateProcessor implements Processor<'factory-work-item'> {
+export class FactoryWorkItemContext implements ContextProvider {
   readonly id = STATE_ID;
-  readonly stateId = STATE_ID;
   readonly #boards: ProjectBoardSource;
 
   constructor(private readonly options: FactoryWorkItemStateProcessorOptions) {
     this.#boards = toBoardSource(options.boards);
   }
 
-  async computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
-    const address = getFactorySessionCoordinates(args.requestContext);
+  async provide({ requestContext, previous }: ContextRequest): Promise<ContextBlock | undefined> {
+    const address = getFactorySessionCoordinates(requestContext);
     if (!address) return;
     const binding = await this.options.storage.findRunBindingBySession(address);
     if (!binding || binding.status !== 'active') return;
@@ -127,9 +129,7 @@ export class FactoryWorkItemStateProcessor implements Processor<'factory-work-it
       (item.workItem.sources ?? []).map(source => [source.id, source.revision]),
       binding.id,
     ]);
-    const hasBase = Boolean(args.lastSnapshot) && args.contextWindow.hasSnapshot;
-    if (hasBase && (args.tracking?.currentCacheKey ?? args.lastSnapshot?.metadata?.state?.cacheKey) === cacheKey)
-      return;
+    if (unchanged(previous, cacheKey)) return;
 
     const contents = renderWorkItem({ item, binding, boards });
     const stage = item.stages[0]!;
@@ -137,12 +137,26 @@ export class FactoryWorkItemStateProcessor implements Processor<'factory-work-it
       id: STATE_ID,
       cacheKey,
       mode: 'snapshot',
-      tagName: 'factory-work-item',
-      contents,
+      tag: 'factory-work-item',
+      text: contents,
       value: { workItem: { id: item.id, revision: item.revision, stage } },
       attributes: { id: item.id, board: boardForWorkItem(item), stage, revision: item.revision },
-      metadata: { value: { workItem: { id: item.id, revision: item.revision, stage } } },
     };
+  }
+}
+
+/** The card's context as Mastra Code's state signal. */
+export class FactoryWorkItemStateProcessor implements Processor<'factory-work-item'> {
+  readonly id = STATE_ID;
+  readonly stateId = STATE_ID;
+  readonly context: FactoryWorkItemContext;
+
+  constructor(options: FactoryWorkItemStateProcessorOptions) {
+    this.context = new FactoryWorkItemContext(options);
+  }
+
+  computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
+    return computeMastraStateSignal(this.context, args);
   }
 }
 

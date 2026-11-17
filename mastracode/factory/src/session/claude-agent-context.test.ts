@@ -6,7 +6,7 @@ import { createTriageWorkRegistry } from '../boards/test-utils.js';
 import { FactoryPhaseStateProcessor } from '../rules/processor.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
 import type { ClaudeAgentContextBlock } from './claude-agent-context.js';
-import { stateSignalContext } from './claude-agent-context.js';
+import { providerContext } from './claude-agent-context.js';
 import { claudeAgentRequestContext } from './claude-agent-workspace.js';
 import { FactoryWorkItemStateProcessor } from './work-item-state-processor.js';
 
@@ -51,10 +51,10 @@ const told = (blocks: ClaudeAgentContextBlock[], previous = new Map<string, Clau
   return next;
 };
 
-describe('stateSignalContext', () => {
+describe('providerContext', () => {
   it("tells a Claude Agent session its card and phase as Mastra Code's state signals would, once", async () => {
     const { phase, workItem, requestContext } = await boundSession();
-    const context = stateSignalContext([phase, workItem]);
+    const context = providerContext([phase.context, workItem.context]);
 
     const first = await context(requestContext, new Map());
     expect(first.map(block => [block.id, block.kind, block.tag])).toEqual([
@@ -71,7 +71,7 @@ describe('stateSignalContext', () => {
 
   it('tells the session what changed when the card moves on', async () => {
     const { storage, prepared, phase, requestContext } = await boundSession();
-    const context = stateSignalContext([phase]);
+    const context = providerContext([phase.context]);
     const first = await context(requestContext, new Map());
     await storage.update({
       orgId: 'org-1',
@@ -87,8 +87,8 @@ describe('stateSignalContext', () => {
 
   it('skips a context that fails, keeping the rest of the turn', async () => {
     const { workItem, requestContext } = await boundSession();
-    const broken = { stateId: 'broken', computeStateSignal: async () => Promise.reject(new Error('boom')) };
-    const blocks = await stateSignalContext([broken, workItem])(requestContext, new Map());
+    const broken = { id: 'broken', provide: async () => Promise.reject(new Error('boom')) };
+    const blocks = await providerContext([broken, workItem.context])(requestContext, new Map());
     expect(blocks.map(block => block.id)).toEqual(['factory-work-item']);
   });
 });

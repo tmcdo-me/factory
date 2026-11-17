@@ -2,6 +2,10 @@ import { createHash } from 'node:crypto';
 import type { ComputeStateSignalArgs, ComputeStateSignalResult, Processor } from '@mastra/core/processors';
 import type { RequestContext } from '@mastra/core/request-context';
 
+import { unchanged } from './context-providers.js';
+import type { ContextBlock, ContextProvider, ContextRequest } from './context-providers.js';
+import { computeMastraStateSignal } from './mastra-context.js';
+
 const STATE_ID = 'factory-environment';
 
 export type EnvironmentRepositorySetupStatus = 'ok' | 'failed' | 'skipped';
@@ -122,19 +126,16 @@ function environmentCacheKey(state: SessionEnvironmentState): string {
  * repository is a directory beneath it. Snapshot mode only; a new snapshot
  * is emitted when the booted set changes (a start after an environment edit).
  */
-export class FactoryEnvironmentStateProcessor implements Processor<'factory-environment'> {
+export class FactoryEnvironmentContext implements ContextProvider {
   readonly id = STATE_ID;
-  readonly stateId = STATE_ID;
 
-  async computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
-    const sessionId = sessionIdFromContext(args.requestContext);
+  async provide({ requestContext, previous }: ContextRequest): Promise<ContextBlock | undefined> {
+    const sessionId = sessionIdFromContext(requestContext);
     if (!sessionId) return;
     const state = environments.get(sessionId)?.state;
     if (!state) return;
     const cacheKey = environmentCacheKey(state);
-    const hasBase = Boolean(args.lastSnapshot) && args.contextWindow.hasSnapshot;
-    if (hasBase && (args.tracking?.currentCacheKey ?? args.lastSnapshot?.metadata?.state?.cacheKey) === cacheKey)
-      return;
+    if (unchanged(previous, cacheKey)) return;
     const lines = state.repositories.map(
       (repo, index) =>
         `${index + 1}. ${escapeText(repo.slug)} at ${escapeText(repo.dir)} on ${escapeText(repo.branch ?? '(detached)')} (default ${escapeText(repo.defaultBranch)}, setup ${repo.setupStatus})` +
@@ -152,11 +153,21 @@ export class FactoryEnvironmentStateProcessor implements Processor<'factory-envi
       id: STATE_ID,
       cacheKey,
       mode: 'snapshot',
-      tagName: 'factory-environment',
-      contents,
+      tag: 'factory-environment',
+      text: contents,
       value: { environment: state },
       attributes: { workingDirectory: only?.dir ?? state.workingDirectory, repositories: state.repositories.length },
-      metadata: { value: { environment: state } },
     };
+  }
+}
+
+/** The environment as Mastra Code's state signal. */
+export class FactoryEnvironmentStateProcessor implements Processor<'factory-environment'> {
+  readonly id = STATE_ID;
+  readonly stateId = STATE_ID;
+  readonly context = new FactoryEnvironmentContext();
+
+  computeStateSignal(args: ComputeStateSignalArgs): Promise<ComputeStateSignalResult> {
+    return computeMastraStateSignal(this.context, args);
   }
 }
