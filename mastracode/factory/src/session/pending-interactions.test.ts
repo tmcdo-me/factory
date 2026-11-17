@@ -6,6 +6,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { LiveSession } from './live-sessions.js';
 import { LiveSessions } from './live-sessions.js';
 import {
+  FallbackInteractionStore,
   PendingInteractions,
   alsoParked,
   answersWithDecision,
@@ -143,33 +144,127 @@ describe('PendingInteractions', () => {
     expect(registry.parkedIn('project-1')[0]).toMatchObject({ sessionId: 's-plan' });
   });
 
-  it("never lists a session twice when the controller holds it too, preferring the controller's park", async () => {
-    const { pending, broker } = setup();
-    let created: ((session: LiveSession) => void) | undefined;
-    const registry = alsoParked(
-      new LiveSessions({
-        onSessionCreated: listener => {
-          created = listener;
-          return () => {};
-        },
-        onSessionDeleted: () => () => {},
-      }),
-      pending,
-    );
-    const pendingSuspensions = new Map([['call-1', { toolName: 'ask_user' }]]);
-    created!({
-      identity: { getId: () => 's-plan' },
-      run: { isRunning: () => false },
-      state: { get: () => ({ factoryOrgId: 'org-1', factoryProjectId: 'project-1' }) },
-      displayState: { get: () => ({ pendingSuspensions }) },
-      subscribe: () => () => {},
+  // Slice 5b: a Mastra Code session's waiting calls are broker records its controller holds.
+  // After a restart a gate's run is gone, but its approval persisted and can still be answered.
+  it('counts a gated call as a parked run once its run is no longer in flight', async () => {
+    const running = new Set(['s-plan']);
+    const pending = new PendingInteractions({
+      store: new InMemoryInteractionStore(),
+      projectOf: async sessionId => PROJECTS[sessionId] ?? null,
+      isRunning: sessionId => running.has(sessionId),
     });
-    void broker.request('s-plan', plan, { callId: 'toolu_plan' });
-    await vi.waitFor(() => expect(pending.parkedIn('project-1')).toHaveLength(1));
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    await broker.track({
+      id: 'tool_approval:call-gate',
+      sessionId: 's-plan',
+      callId: 'call-gate',
+      heldBy: 'mastra-code',
+      request: { kind: 'tool_approval', toolName: 'ship_release', input: {}, gate: true },
+      requestedAt: new Date().toISOString(),
+    });
 
-    expect(registry.parkedIn('project-1')).toEqual([
-      { sessionId: 's-plan', run: { toolName: 'ask_user', suspendedAt: expect.any(Number) } },
-    ]);
+    expect(pending.parked('s-plan')).toBeUndefined();
+    running.delete('s-plan');
+    expect(pending.parked('s-plan')).toMatchObject({ toolName: 'ship_release' });
+  });
+
+  it("lists and settles a Mastra Code session's calls from memory while its store fails", async () => {
+    class FailingStore extends InMemoryInteractionStore {
+      override async create(): Promise<void> {
+        throw new Error('database is locked');
+      }
+      override async settle(): Promise<undefined> {
+        throw new Error('database is locked');
+      }
+    }
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const pending = new PendingInteractions({ store: new FailingStore(), projectOf: async () => null });
+    const broker = new InteractionBroker({ store: pending, hub: new SessionEventHub(new InMemoryEventLog()) });
+    const held = await broker.track({
+      id: 'question:call-ask',
+      sessionId: 's-ask',
+      callId: 'call-ask',
+      heldBy: 'mastra-code',
+      request: question,
+      requestedAt: new Date().toISOString(),
+    });
+
+    expect(pending.parked('s-ask')).toMatchObject({ toolName: 'ask_user' });
+    expect(await pending.get(held.id)).toMatchObject({ status: 'pending' });
+    // Its runtime already settled it: the failed write is logged, not reported to whoever answered.
+    await expect(broker.settleHeld(held.id, { status: 'cancelled', reason: 'aborted' })).resolves.toBe(true);
+    expect(pending.parked('s-ask')).toBeUndefined();
+    // A Claude Agent question is not taken in memory: its tool must hear the write failed.
+    await expect(broker.request('s-plan', plan, { callId: 'toolu_plan' })).rejects.toThrow('locked');
+    warn.mockRestore();
+  });
+
+  it('keeps what sessions wait on in memory when the storage domain fails to start', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const broken = Object.assign(new InMemoryInteractionStore(), {
+      ensureReady: async () => {
+        throw new Error('migration failed');
+      },
+    });
+    const store = new FallbackInteractionStore(broken);
+    await store.create({
+      id: 'question:call-ask',
+      sessionId: 's-ask',
+      request: question,
+      requestedAt: new Date().toISOString(),
+      status: 'pending',
+    });
+
+    expect(await store.listPending()).toHaveLength(1);
+    expect(await broken.listPending()).toEqual([]);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it("reports a Mastra Code session's paused call as parked, but not a call waiting at its approval gate", async () => {
+    const { pending, broker, requested } = setup();
+    const held = (id: string, sessionId: string, request: InteractionRecord['request']) =>
+      broker.track({
+        id,
+        sessionId,
+        callId: id.split(':')[1],
+        heldBy: 'mastra-code',
+        request,
+        requestedAt: new Date().toISOString(),
+      });
+    await held('question:call-ask', 's-ask', question);
+    await held('tool_approval:call-gate', 's-plan', {
+      kind: 'tool_approval',
+      toolName: 'ship_release',
+      input: {},
+      gate: true,
+    });
+
+    await vi.waitFor(() => expect(pending.parkedIn('project-1')).toHaveLength(1));
+    // Named by its tool call, as the controller takes the answer.
+    expect(pending.parked('s-ask')).toEqual({
+      toolName: 'ask_user',
+      suspendedAt: expect.any(Number),
+      interaction: { toolCallId: 'call-ask', request: question },
+    });
+    expect(pending.parked('s-plan')).toBeUndefined();
+    expect(pending.waitingOn('s-plan', 'call-gate')).toHaveLength(1);
+    // The controller's own reports tell followers, until slice 5d.
+    expect(requested).toEqual([]);
+  });
+
+  it('lists a tool that resumes on input of its own as parked, with nothing to answer from outside', async () => {
+    const { pending, broker } = setup();
+    await broker.track({
+      id: 'tool_input:call-access',
+      sessionId: 's-ask',
+      callId: 'call-access',
+      heldBy: 'mastra-code',
+      request: { kind: 'tool_input', toolName: 'request_access', input: { path: '/etc' } },
+      requestedAt: new Date().toISOString(),
+    });
+
+    expect(pending.parked('s-ask')).toEqual({ toolName: 'request_access', suspendedAt: expect.any(Number) });
   });
 
   it('names each request by the tool that asks it, and says which a yes or no answers', () => {

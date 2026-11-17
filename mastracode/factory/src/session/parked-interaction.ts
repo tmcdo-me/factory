@@ -10,7 +10,7 @@ export interface ParkedInteraction {
    * Claude Agent turn ended on in plain text, which only the interaction id names.
    */
   toolCallId?: string;
-  /** The interaction broker's id for it (Claude Agent sessions only). */
+  /** The interaction broker's id for it (Claude Agent sessions only: Mastra Code's calls are named by their tool call). */
   interactionId?: string;
   request: InteractionRequest;
 }
@@ -78,12 +78,17 @@ export function pausedToolInteraction(call: PausedToolCall): ParkedInteraction |
 }
 
 /**
- * What a Claude Agent session's pending interaction asks. A question the run's turn ended on in
- * plain text was asked by no tool call: only its interaction id names it.
+ * What a pending interaction asks, when a person can answer it from outside the session. A question
+ * a Claude Agent run's turn ended on in plain text was asked by no tool call: only its interaction id
+ * names it. A call a runtime holds (Mastra Code's) is named by its tool call, as before; a tool that
+ * resumes on input of its own is answered only in its session.
  */
 export function brokerInteraction(record: InteractionRecord): ParkedInteraction | undefined {
-  if (!record.callId && record.request.kind !== 'question') return undefined;
-  return { ...(record.callId ? { toolCallId: record.callId } : {}), interactionId: record.id, request: record.request };
+  const { request } = record;
+  if (request.kind === 'tool_input') return undefined;
+  if (!record.callId && request.kind !== 'question') return undefined;
+  if (record.heldBy && record.callId) return { toolCallId: record.callId, request };
+  return { ...(record.callId ? { toolCallId: record.callId } : {}), interactionId: record.id, request };
 }
 
 /** The Factory tool that answers it from another session. */

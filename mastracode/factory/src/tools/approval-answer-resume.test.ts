@@ -359,6 +359,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         store: interactionStore,
         projectOf: sessionId => sourceControl.sessions.getBySessionId(sessionId),
       });
+      // Slice 5b: the inbox, factory_list_attention and the board read parked runs from the broker.
+      liveSessions.addParkedSource(pendingInteractions);
       const mastraCodeCommands = createMastraCodeSessionCommands({
         mastra: () => ({ getAgentController: () => code.controller }) as never,
         controllerId: 'code',
@@ -423,6 +425,8 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         session.suspensions.resolve({ toolCallId: parked.toolCallId })?.toolName ??
         session.approval.list().find(gate => gate.toolCallId === parked.toolCallId)?.toolName;
       await vi.waitFor(() => expect(waitingOn()).toBe(parked.toolName), { timeout: 30_000 });
+      // fork(claude-agent): and the broker has recorded it, as the controller reported it.
+      await vi.waitFor(() => expect(pendingInteractions.waitingOn(phase.sessionId, parked.toolCallId)).toHaveLength(1));
       expect(errors).toEqual([]);
 
       const audit: Array<{ actorId: string }> = [];
@@ -549,8 +553,50 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
         interactionStore, // fork(claude-agent)
         pendingInteractions, // fork(claude-agent)
         controller: code.controller, // fork(claude-agent)
+        liveSessions, // fork(claude-agent)
+        projectOf: (sessionId: string) => sourceControl.sessions.getBySessionId(sessionId), // fork(claude-agent)
       };
     }
+
+    // fork(claude-agent): slice 5b. Parked runs are read from the broker's index, for both runtimes.
+    it('lists a session parked on its plan after a restart, before its controller holds it again', async () => {
+      const { phase, interactionStore, projectOf, project } = await parkedPhaseSession();
+
+      // The restarted server reads what was pending from storage; no controller session is live yet.
+      const restarted = new PendingInteractions({ store: interactionStore, projectOf });
+      await restarted.load();
+      const liveAfterRestart = new LiveSessions({ onSessionCreated: () => () => {}, onSessionDeleted: () => () => {} });
+      liveAfterRestart.addParkedSource(restarted);
+
+      await vi.waitFor(() => expect(liveAfterRestart.parkedIn(project.id)).toHaveLength(1));
+      expect(liveAfterRestart.parked(phase.sessionId)).toEqual({
+        toolName: 'submit_plan',
+        suspendedAt: expect.any(Number),
+        interaction: {
+          toolCallId: 'call_plan',
+          request: expect.objectContaining({ kind: 'plan_approval', planPath: expect.stringContaining('fix.md') }),
+        },
+      });
+    });
+
+    it('stops listing a parked session once its run is aborted', async () => {
+      const { session, phase, liveSessions, project } = await parkedPhaseSession({ parkedOn: 'question' });
+      expect(liveSessions.parked(phase.sessionId)).toMatchObject({ toolName: 'ask_user' });
+
+      session.abort();
+
+      await vi.waitFor(() => expect(liveSessions.parked(phase.sessionId)).toBeUndefined());
+      expect(liveSessions.parkedIn(project.id)).toEqual([]);
+    });
+
+    it('keeps a call that waits for approval answerable without counting the session as parked on it', async () => {
+      const { phase, liveSessions, broker } = await parkedPhaseSession({ parkedOn: 'release' });
+
+      expect(await broker.listPending({ sessionId: phase.sessionId })).toEqual([
+        expect.objectContaining({ callId: 'call_release', request: expect.objectContaining({ gate: true }) }),
+      ]);
+      expect(liveSessions.parked(phase.sessionId)).toBeUndefined();
+    });
 
     // fork(claude-agent): slice 5a. What a Mastra Code session waits on is one broker record,
     // held by its controller, as a Claude Agent session's is; the controller stays the authority.

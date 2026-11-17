@@ -185,7 +185,12 @@ import type { LiveSessions } from './session/live-sessions.js';
 import { hydrateSessionMemorySettings } from './session/memory-settings-hydration.js';
 import { hasResolvedOrg } from './session/org-seed.js';
 // fork(claude-agent)
-import { PendingInteractions, alsoParked, waitingReport } from './session/pending-interactions.js';
+import {
+  FallbackInteractionStore,
+  PendingInteractions,
+  alsoParked,
+  waitingReport,
+} from './session/pending-interactions.js';
 import { FactoryReplyCredentialProcessor } from './session/reply-credential-processor.js';
 import { migrateSessionResources, privatizeOwnerResourceSessions } from './session/resource-migration.js';
 import { observeSessionRunEnd } from './session/run-audit.js';
@@ -1819,7 +1824,10 @@ export class MastraFactory {
     // session lists as Mastra Code's parked runs are. A session that starts waiting tells its followers,
     // as a Mastra Code run that parks does when it ends.
     const pendingInteractions = new PendingInteractions({
-      store: agentInteractionsStorage,
+      // Kept in memory when the domain can't start, so Mastra Code's parked runs still show.
+      store: new FallbackInteractionStore(agentInteractionsStorage),
+      // A gate whose run is gone (a restart) is a parked run; one holding its run open is not.
+      isRunning: sessionId => liveSessions?.isRunning(sessionId) ?? false,
       projectOf: sessionId => sourceControlSessions.getBySessionId(sessionId),
       onChanged: (_sessionId, project) => touchFeed(eventBus, project),
       onRequested: record => {
@@ -1851,16 +1859,13 @@ export class MastraFactory {
       waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
       hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
     };
-    this.#interactionsLoaded = agentInteractionsStorage
-      .ensureReady()
-      .then(() => pendingInteractions.load())
-      .then(
-        () => true,
-        error => {
-          console.warn('[factory] Unable to read the questions sessions wait on.', error);
-          return false;
-        },
-      );
+    this.#interactionsLoaded = pendingInteractions.load().then(
+      () => true,
+      error => {
+        console.warn('[factory] Unable to read the questions sessions wait on.', error);
+        return false;
+      },
+    );
     this.#pendingInteractions = pendingInteractions;
     // fork(claude-agent): this process, by host, Claude Agent home, pid and boot.
     const claudeAgentHost = claudeAgentHostLease({

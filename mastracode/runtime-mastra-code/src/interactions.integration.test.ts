@@ -129,7 +129,7 @@ describe('observeMastraCodeInteractions on a real AgentController session', () =
         sessionId: 's1',
         callId: 'call-1',
         heldBy: 'mastra-code',
-        request: { kind: 'tool_approval', toolName: 'ship_release', input: { version: '1.2.0' } },
+        request: { kind: 'tool_approval', toolName: 'ship_release', input: { version: '1.2.0' }, gate: true },
       }),
     ]);
 
