@@ -830,6 +830,19 @@ Each slice: implement → focused tests → manual check where noted → commit.
      (the dispatcher's own run watch, which answers paused calls). Tests: `session/observers-on-hub.test.ts`
      runs the real mirror, publisher and hub; `session/controller-event-hub.ts` feeds the older suites'
      fake sessions through the same mapper.
+   - **6k** ✅ Prepared starts (`#dispatchPendingStart`) on Mastra Code go through the same seam path as a
+     skill kickoff (`#runOnSeam` with the Mastra Code adapter and the controller session), so the dispatcher no
+     longer builds a run watch, sends the notification or records the run itself. `RuntimeKickoff.notification`
+     (`{sourceId, dedupeKey, retryDedupeKey}`) makes the adapter send the text as a `run-kickoff` notification
+     (deliver onto a run in flight, wake an idle session, inbox-deduped on the kickoff key) instead of a
+     skill or prompt signal, follow every run boundary and send it again under the retry key until it wakes
+     the session, and `RuntimeKickoff.label` names the run in errors. A wait on a run that never ends still
+     fails as a plain, retryable error for these (a decision's kickoff keeps `run_terminal_event_missing`).
+     Behaviour difference: the adapter's run watch has the broker approver, so a prepared start's run now
+     auto-approves the board's exit tool when the rule allows (the old watch had the tool name but no
+     approver, so every plan waited for a person; the Claude Agent path already approved). Test:
+     `mastra-code-sessions.test.ts` (notification kickoff and its retry); the dispatcher's pending-start
+     suites run unchanged.
 7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
