@@ -64,6 +64,8 @@ type PersistedMessageReader = {
   listMessages(input: {
     threadId: string;
     resourceId?: string;
+    /** fork(claude-agent): the session the binding runs in (a transcript kept per session reads it). */
+    sessionId?: string;
     page: number;
     perPage: number;
     filter?: { dateRange?: { start?: Date } };
@@ -658,6 +660,7 @@ export class FactoryPhaseStateProcessor implements Processor<'factory-phase'> {
       const result = await reader.listMessages({
         threadId: binding.threadId,
         resourceId: binding.resourceId,
+        sessionId: binding.sessionId,
         page,
         perPage: TRANSCRIPT_PAGE_SIZE,
         ...(cursor ? { filter: { dateRange: { start: cursor.lastMessageCreatedAt } } } : {}),

@@ -53,6 +53,7 @@ export class MastraCodeEventMapper {
   readonly #interactions = new Map<string, OpenInteraction>(); // callId → interaction
   readonly #sessionId: string;
   readonly #now: () => Date;
+  readonly #threadId: (() => string | undefined) | undefined;
 
   constructor(options: {
     sessionId: string;
@@ -64,7 +65,10 @@ export class MastraCodeEventMapper {
      * model that produced it when its reply already said (else the host takes the session's model).
      */
     contextWindow?: (modelId: string | undefined) => number | undefined;
+    /** The thread the session is on, read when a run starts and named on `run.started`. */
+    threadId?: () => string | undefined;
   }) {
+    this.#threadId = options.threadId;
     this.#sessionId = options.sessionId;
     this.#newRunId = options.newRunId ?? randomUUID;
     this.#now = options.now ?? (() => new Date());
@@ -89,7 +93,13 @@ export class MastraCodeEventMapper {
         this.#replyModelId = undefined;
         if (this.#runId) out.push({ type: 'run.ended', runId: this.#runId, reason: 'complete' });
         this.#runId = this.#newRunId();
-        out.push({ type: 'run.started', runId: this.#runId });
+        let threadId: string | undefined;
+        try {
+          threadId = this.#threadId?.();
+        } catch {
+          // No thread yet: the run starts without one.
+        }
+        out.push({ type: 'run.started', runId: this.#runId, ...(threadId ? { threadId } : {}) });
         return out;
       }
       case 'agent_end': {

@@ -865,6 +865,24 @@ Each slice: implement → focused tests → manual check where noted → commit.
      controller's own end (sandbox retirement, session deletion, the GitHub routes) still sees the
      capture pending. The thread is the one the session last reported (deleteSession clears it before
      the end is stored, #24893). Test: a reader waits through the gap. Still on controller events: `rules/watch-run.ts`.
+   - **6m** ✅ Board rules reconcile from Factory's transcript: the processor's `messageReader` (the pass that
+     catches up tool results after a restart or terminal cleanup, by a durable cursor) is now
+     `eventTranscriptReader(agentEventsStorage)` (`session/event-transcript-reader.ts`), not Mastra memory.
+     `run.started` names the thread the session was on (`threadId`, from the mapper's `threadId()` option,
+     given by `observeSessionAgentEvents`); the reader keeps the finished tool calls (`tool.started/input/
+ended`) of runs on the binding's thread, shaped as the assistant messages the processor already
+     reads, with the id of the assistant message that held the call (the one open when it finished, else the
+     next), so the rule ingress `[binding, thread, message id, call id]` is the one the step's live
+     `processInputStep` ingest uses and a result is evaluated once whichever reads it (checked against real
+     Mastra memory in `session/event-transcript-aimock.test.ts`). Live ingestion for Mastra Code stays on
+     `processInputStep` (synchronous: the phase-exit stamp and pull request hand-off must land before the
+     agent reads the result; a hub listener hears it after the append). Not call-id keyed after all:
+     providers repeat call ids across turns (the existing test), which would drop a later real call. Cut-over:
+     the cursor is unchanged and keeps its message time, so results before it are not read again; events
+     from runs that did not name a thread (before this) are skipped; a binding with no cursor reads its
+     session's whole log (as it read the whole thread). Cost: the log is read from its start per
+     reconcile (no time index), paged. Left: processInputStep's tool-result ingest and the processor's
+     state-signal and `controller` request-context reads (next).
    - **Owner decisions (slice 7 planning):** (1) board rules read the Factory transcript: Mastra Code's
      tool results are ingested from the event log (reconcile reads it instead of Mastra memory), with a
      cut-over at the memory cursor's time so old results are never re-evaluated, and a `thread` marker on
