@@ -15,10 +15,15 @@ const WINDOWS_KEPT = 4;
  * has the call, so a call is matched to the window open when it started waiting.
  */
 export class SessionReportWindows {
-  readonly #sessions = new Map<string, { threadId: () => string | null; opened: Date[] }>();
+  readonly #sessions = new Map<string, { threadId: () => string | null | undefined; opened: Date[] }>();
 
-  /** Follow a session's windows; `threadId` reads the thread it runs on now. */
-  watch(sessionId: string, threadId: () => string | null): (since: Date) => void {
+  /**
+   * Follow a session's windows; `threadId` reads the thread it runs on now, or `undefined` once the
+   * session is gone (so it should not be held on to: the entry is dropped the next time one is added).
+   */
+  watch(sessionId: string, threadId: () => string | null | undefined): (since: Date) => void {
+    for (const [id, gone] of this.#sessions)
+      if (id !== sessionId && gone.threadId() === undefined) this.#sessions.delete(id);
     const entry = { threadId, opened: [] as Date[] };
     this.#sessions.set(sessionId, entry);
     return since => {
@@ -30,10 +35,11 @@ export class SessionReportWindows {
   /** The thread and the run window `sessionId` was in at `moment`, if it is followed. */
   at(sessionId: string, moment: Date): { threadId: string | null; since: Date } | undefined {
     const entry = this.#sessions.get(sessionId);
-    if (!entry) return undefined;
+    const threadId = entry?.threadId();
+    if (!entry || threadId === undefined) return undefined;
     // Never a window opened after the moment: one older than any kept is judged from the moment itself.
     const since = entry.opened.findLast(opened => opened.getTime() <= moment.getTime()) ?? moment;
-    return { threadId: entry.threadId(), since };
+    return { threadId, since };
   }
 }
 

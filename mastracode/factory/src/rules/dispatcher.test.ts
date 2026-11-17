@@ -81,7 +81,7 @@ function heldInteractions(
     }): Promise<void>;
   },
   /** Review fix: a controller that refuses the board's answer, keeping the call waiting. */
-  { refuses = false }: { refuses?: boolean } = {},
+  { refuses = false, answeredFirst = false }: { refuses?: boolean; answeredFirst?: boolean } = {},
 ) {
   const listeners: Array<(record: InteractionRecord) => void> = [];
   const pending = new PendingInteractions({
@@ -95,6 +95,14 @@ function heldInteractions(
     answerHeld: async (record, response, { context }) => {
       if (refuses) {
         return { ok: false, reason: 'resume_failed', message: 'The run could not carry on.', waiting: true };
+      }
+      if (answeredFirst) {
+        // A person answered in the session before the board: the run carries on from theirs.
+        await session.respondToToolSuspension({
+          resumeData: mastraCodeResumeData(response),
+          toolCallId: record.callId,
+        });
+        return { ok: false, reason: 'not_pending' };
       }
       await session.respondToToolSuspension({
         resumeData: mastraCodeResumeData(response),
@@ -8563,6 +8571,29 @@ describe('board phase automation', () => {
     expect(JSON.stringify(decision)).toContain('run_failed');
     await vi.waitFor(() => expect(told).toEqual(['submit_plan']));
     expect(dispatcher.autoApproves('call-plan')).toBe(false);
+  });
+
+  it('keeps following the run when a person answered the plan before the board did', async () => {
+    const storage = (await createFactoryStorageForTests()).workItems;
+    const { transitionService } = await queueBuild(storage, ['effort:low'], 'notice-person-first');
+    const { controller, session } = createSession(undefined, { suspendsOnPlan: true });
+    const interactions = heldInteractions(session, { answeredFirst: true });
+    const dispatcher = new FactoryDecisionDispatcher({
+      controller: controller as never,
+      interactions,
+      transitionService,
+      storage,
+      boards: autoStartingBoards(boardsWithBuilding({ exitTool: { id: 'submit_plan', autoApprove: true } })),
+      ownerId: 'worker-1',
+    });
+    const told = pausesFollowersHearOf(session, dispatcher, interactions);
+
+    await dispatcher.runOnce(new Date('2030-01-01T00:00:00Z'));
+
+    const [decision] = await storage.listDeferredDecisions('org-1', PROJECT_ID);
+    expect(JSON.stringify(decision)).not.toContain('run_failed');
+    expect(told).toEqual([]);
+    expect(session.respondToToolSuspension).toHaveBeenCalledTimes(1);
   });
 
   it('leaves a pause the broker never recorded for a person, and tells the followers', async () => {

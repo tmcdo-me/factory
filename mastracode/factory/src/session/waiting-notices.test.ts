@@ -29,6 +29,20 @@ function notices(answersItself: (toolCallId: string) => boolean = () => false) {
   return { announce, reports, approvals, windows };
 }
 
+describe('SessionReportWindows', () => {
+  it('forgets a session that is gone once another is followed', () => {
+    const windows = new SessionReportWindows();
+    let gone = false;
+    windows.watch('s1', () => (gone ? undefined : 'thread-1'))(new Date('2030-01-01T00:00:00.000Z'));
+    expect(windows.at('s1', new Date('2030-01-01T00:00:01.000Z'))?.threadId).toBe('thread-1');
+    gone = true;
+    expect(windows.at('s1', new Date('2030-01-01T00:00:01.000Z'))).toBeUndefined();
+    windows.watch('s2', () => 'thread-2');
+    gone = false;
+    expect(windows.at('s1', new Date('2030-01-01T00:00:01.000Z'))).toBeUndefined();
+  });
+});
+
 describe('createWaitingNotices', () => {
   // The run's end moves its window before the broker has kept the call it parked on.
   it("judges a Mastra Code call on the run window it started waiting in, though that run's end came first", async () => {

@@ -2790,7 +2790,14 @@ export class MastraFactory {
           }),
         {
           answersItself: toolCallId => this.#dispatcher?.autoApproves(toolCallId) ?? false,
-          onWindow: reportWindows.watch(session.identity.getId(), () => session.thread.getId()),
+          // Held weakly: the windows outlive a closed session, and must not keep it in memory.
+          onWindow: reportWindows.watch(
+            session.identity.getId(),
+            (
+              ref => () =>
+                ref.deref()?.thread.getId()
+            )(new WeakRef(session)),
+          ),
         },
       );
       observeSessionThreadStamp(session);
