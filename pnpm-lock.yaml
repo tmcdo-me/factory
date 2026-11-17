@@ -2771,6 +2771,9 @@ importers:
       '@factory/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@mastra/code-sdk':
+        specifier: workspace:*
+        version: link:../sdk
       '@mastra/server':
         specifier: workspace:*
         version: link:../../packages/server

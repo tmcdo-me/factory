@@ -944,6 +944,13 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      owns `TokenUsage` (a plain interface, structurally the controller's). Ten factory-ui files left the controller
      import; the factory-ui allow-list is down to 2 (`thinkingLevels.ts`, `useChatCommandRegistry.ts`, the per-model
      thinking resolver); factory stays at 39. Types only, no runtime change; chat unit suites (212) unchanged.
+   - **7e** routes/config: the SDK utilities `routes/config.ts`, `custom-provider-source.ts`, `provider-credentials.ts`,
+     `fs.ts` and `source-control-sessions.ts` use (gateways, provider ids, OM defaults, `SandboxFilesystem`,
+     `detectProject`, `resolveModel`, `AuthStorage` type) are re-exported from one adapter-owned subpath,
+     `@factory/runtime-mastra-code/sdk` (`src/sdk.ts`; re-exports only, `@mastra/code-sdk` is now a dependency of
+     the adapter package and external to its bundle). Behaviour-preserving: same functions, no new logic. The
+     factory allow-list is 34. Later route groups (credentials/OAuth/voice, Slack, storage types) extend that file
+     with their own group; the composition-root change then replaces the subpath imports with injected capabilities.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

@@ -2,7 +2,7 @@ import { generateTypes } from '@internal/types-builder';
 import { defineConfig } from 'tsdown';
 
 export default defineConfig({
-  entry: ['src/index.ts'],
+  entry: ['src/index.ts', 'src/sdk.ts'],
   format: ['esm'],
   fixedExtension: false,
   nodeProtocol: 'strip',
@@ -11,7 +11,7 @@ export default defineConfig({
   treeshake: true,
   sourcemap: true,
   deps: {
-    neverBundle: ['@mastra/core', '@mastra/server', '@factory/agent-runtime'],
+    neverBundle: ['@mastra/core', '@mastra/server', '@mastra/code-sdk', '@factory/agent-runtime'],
   },
   onSuccess: async () => {
     await generateTypes(process.cwd());
