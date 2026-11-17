@@ -401,7 +401,8 @@ Each slice: implement → focused tests → manual check where noted → commit.
      `source_control_push_branch` runs git in the call's session workspace (`ctx.workspace.sandbox`):
      Claude Agent's, or for Mastra Code the agent's workspace as the seam describes it
      (`mastraSessionWorkspace`: its sandbox, the session's checkout, the sandbox's processes where it
-     has them). The session a turn runs in is read in one place, `turnSession`
+     has them; `kind: 'remote'` for a provider that launches none, such as Platform), built only
+     when a tool reads it. The session a turn runs in is read in one place, `turnSession`
      (`session/turn-session.ts`): the `controller` entry of the turn's request context, which Mastra
      Code's controller sets and Claude Agent's turns mirror; the tool scope and the source-control
      tools read it there instead of through Mastra Code's types. Allowing Factory's no-approval tools
