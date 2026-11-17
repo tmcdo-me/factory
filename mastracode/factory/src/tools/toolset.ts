@@ -2,13 +2,17 @@
 import { randomUUID } from 'node:crypto';
 
 import { isFactoryToolDef as isDefinition } from '@factory/agent-runtime';
-import type { FactoryToolContext, FactoryToolDef } from '@factory/agent-runtime';
+import type { FactoryToolContext, FactoryToolDef, SessionWorkspace } from '@factory/agent-runtime';
 import { mastraTool } from '@factory/runtime-mastra-code';
 import type { MastraToolCall, MastraToolContextOf } from '@factory/runtime-mastra-code';
 import type { RequestContext } from '@mastra/core/request-context';
+import type { MastraSandbox } from '@mastra/core/workspace';
 
 import { factoryUserOrgId, getFactoryAuthUserFromContext, getFactoryAuthUserId } from '../auth.js';
 import type { IntegrationTools } from '../integrations/base.js';
+import { sessionSandboxProcesses } from '../sandbox/sandbox-processes.js';
+import { findSessionSandboxEntry, sessionLayout } from '../sandbox/session-sandbox.js';
+import { turnSession } from '../session/turn-session.js';
 import type { FactoryToolScope } from './scope.js';
 
 /** A Mastra tool, as Mastra Code's `extraTools` takes one. */
@@ -44,12 +48,33 @@ export function toolIdentity(requestContext: RequestContext): { orgId: string; u
 
 /** The session and thread a turn's request context carries (`controller`, set by both runtimes). */
 function turnIds(requestContext: RequestContext | undefined): { sessionId: string; threadId: string } {
-  const controller = (typeof requestContext?.get === 'function' ? requestContext.get('controller') : undefined) as
-    | { sessionId?: unknown; threadId?: unknown }
-    | undefined;
+  const session = turnSession(requestContext);
+  return { sessionId: session?.sessionId ?? '', threadId: session?.threadId ?? '' };
+}
+
+/**
+ * The seam's view of a Mastra Code agent's workspace: its sandbox (commands, and processes where the
+ * sandbox can launch them) and the session's checkout in it. `undefined` without a sandbox.
+ */
+export function mastraSessionWorkspace(workspace: unknown): SessionWorkspace | undefined {
+  const sandbox = (workspace as { sandbox?: MastraSandbox } | undefined)?.sandbox;
+  if (!sandbox) return undefined;
+  const processes = sessionSandboxProcesses(sandbox);
   return {
-    sessionId: typeof controller?.sessionId === 'string' ? controller.sessionId : '',
-    threadId: typeof controller?.threadId === 'string' ? controller.threadId : '',
+    // A provider that launches no processes (Platform, E2B) runs only commands: `remote`.
+    kind: processes?.kind ?? 'remote',
+    checkoutDir: sessionLayout(findSessionSandboxEntry(sandbox))?.root ?? '',
+    sandbox,
+    env: async () =>
+      Object.fromEntries(
+        Object.entries((sandbox as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {}).filter(
+          (entry): entry is [string, string] => typeof entry[1] === 'string',
+        ),
+      ),
+    spawn: (command, args, options) => {
+      if (!processes) throw new Error("This session's sandbox cannot launch processes");
+      return processes.spawn(command, args, options);
+    },
   };
 }
 
@@ -79,14 +104,27 @@ export function mastraCodeToolContext(turn: RequestContext): MastraToolContextOf
         );
       }
     }
-    return {
+    const context: FactoryToolContext = {
       sessionId: own.sessionId,
       callId: call.callId ?? '',
       ...toolIdentity(turn),
       signal: call.signal ?? new AbortController().signal,
       interact: cannotAsk(call.toolName),
     };
+    return withLazyWorkspace(context, call.workspace);
   };
+}
+
+/**
+ * Gives the context the call's session workspace, built only when a tool reads it (most never do),
+ * and at most once. Absent when the agent's workspace has none to offer.
+ */
+function withLazyWorkspace(context: FactoryToolContext, agentWorkspace: unknown): FactoryToolContext {
+  let built: { workspace: SessionWorkspace | undefined } | undefined;
+  return Object.defineProperty(context, 'workspace', {
+    enumerable: true,
+    get: () => (built ??= { workspace: mastraSessionWorkspace(agentWorkspace) }).workspace,
+  });
 }
 
 /**

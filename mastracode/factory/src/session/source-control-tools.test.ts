@@ -12,8 +12,16 @@ import type { VersionControl } from '../capabilities/version-control.js';
 import type { AuditAgentEmitter } from '../storage/domains/audit/domain.js';
 import { SourceControlStorageInMemory } from '../storage/domains/source-control/inmemory.js';
 import { createFactoryStorageForTests } from '../storage/test-utils.js';
+import { mastraCodeToolContext, mastraSessionTools } from '../tools/toolset.js'; // fork(claude-agent)
 import { selfReviewApprovedHead } from './self-review-gate.js';
-import { createSourceControlTools, resolveReviewedChangeRequest } from './source-control-tools.js';
+import {
+  createSourceControlTools as createSourceControlToolsDefs,
+  resolveReviewedChangeRequest,
+} from './source-control-tools.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createSourceControlTools = async (...args: Parameters<typeof createSourceControlToolsDefs>) =>
+  mastraSessionTools(await createSourceControlToolsDefs(...args), mastraCodeToolContext(args[0].requestContext));
 
 function requestContext({ orgId = 'org-1', userId = 'user-1' } = {}) {
   const requestContext = new RequestContext();

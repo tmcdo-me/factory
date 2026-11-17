@@ -2,7 +2,7 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it } from 'vitest';
 
-import { mastraCodeToolContext, scopeToolContext } from './toolset.js';
+import { mastraCodeToolContext, mastraSessionWorkspace, scopeToolContext } from './toolset.js';
 
 function turn(ids: { sessionId: string; threadId: string }, user = 'user-1') {
   const context = new RequestContext();
@@ -44,6 +44,34 @@ describe('mastraCodeToolContext', () => {
       requestContext: new RequestContext(),
     });
     expect(ctx).toMatchObject({ sessionId: 's1', userId: 'user-1', callId: '' });
+  });
+});
+
+describe("a Mastra Code call's session workspace", () => {
+  const own = { sessionId: 's1', threadId: 't1' };
+
+  it('is built only when a tool reads it, once, from the agent workspace', async () => {
+    let reads = 0;
+    const sandbox = { provider: 'local', executeCommand: async () => ({}) };
+    const agentWorkspace = {
+      get sandbox() {
+        reads++;
+        return sandbox;
+      },
+    };
+    const ctx = await mastraCodeToolContext(turn(own))({ toolName: 'x', workspace: agentWorkspace as never });
+    expect(reads).toBe(0);
+    expect(ctx.workspace?.sandbox).toBe(sandbox);
+    expect(ctx.workspace?.kind).toBe('local');
+    expect(reads).toBe(1);
+    const none = await mastraCodeToolContext(turn(own))({ toolName: 'x' });
+    expect(none.workspace).toBeUndefined();
+  });
+
+  it("is `remote` for a provider that launches no processes, and can't spawn there", () => {
+    const workspace = mastraSessionWorkspace({ sandbox: { provider: 'platform' } });
+    expect(workspace?.kind).toBe('remote');
+    expect(() => workspace!.spawn('claude', [], { cwd: '/', env: {} })).toThrow(/cannot launch processes/);
   });
 });
 

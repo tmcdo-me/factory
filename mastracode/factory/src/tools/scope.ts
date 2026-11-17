@@ -1,4 +1,3 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
 import type { RequestContext } from '@mastra/core/request-context';
 
 import {
@@ -9,6 +8,7 @@ import {
 } from '../auth.js';
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 import { isWorkerSession } from '../session/session-threads.js';
+import { turnSession } from '../session/turn-session.js'; // fork(claude-agent)
 import { auditActorProfile } from '../storage/domains/audit/base.js';
 import type { AuditActorProfileInput } from '../storage/domains/audit/base.js';
 import type { FactoryProjectsStorage } from '../storage/domains/projects/base.js';
@@ -63,7 +63,7 @@ export async function resolveFactoryToolScope({
   workItems,
 }: ResolveFactoryToolScopeOptions): Promise<FactoryToolScope | null> {
   if (typeof requestContext?.get !== 'function') return null;
-  const controller = requestContext.get('controller') as AgentControllerRequestContext<unknown> | undefined;
+  const controller = turnSession(requestContext); // fork(claude-agent)
   const sessionId = controller?.sessionId;
   const resourceId = controller?.resourceId;
   const threadId = controller?.threadId;

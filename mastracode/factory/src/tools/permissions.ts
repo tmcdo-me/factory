@@ -1,4 +1,5 @@
-import type { PermissionPolicy, PermissionRules } from '@mastra/core/agent-controller';
+import { allowToolsWithoutAsking } from '@factory/runtime-mastra-code'; // fork(claude-agent)
+import type { MastraCodePermissionsSession } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 
 import type { SourceControlSessionLookup } from '../session/factory-session.js';
 
@@ -33,13 +34,8 @@ export const FACTORY_TOOLS_WITHOUT_APPROVAL: readonly string[] = [
   'factory_sandbox_port_url',
 ];
 
-export interface FactoryToolPermissionsSession {
-  readonly identity: { getId(): string };
-  readonly permissions: {
-    getRules(): PermissionRules;
-    setForTool(args: { toolName: string; policy: PermissionPolicy }): Promise<void>;
-  };
-}
+// fork(claude-agent): the session's permission rules are Mastra Code's, written by its adapter.
+export type FactoryToolPermissionsSession = MastraCodePermissionsSession;
 
 export interface FactoryToolPermissionsDependencies {
   sessions: Pick<SourceControlSessionLookup, 'getBySessionId'>;
@@ -58,10 +54,5 @@ export async function applyFactoryToolPermissions(
 ): Promise<void> {
   const row = await sessions.getBySessionId(session.identity.getId());
   if (!row?.factoryProjectId) return;
-  const rules = session.permissions.getRules();
-  if (rules.categories.mcp !== undefined) return;
-  for (const toolName of toolNames) {
-    if (session.permissions.getRules().tools[toolName] !== undefined) continue;
-    await session.permissions.setForTool({ toolName, policy: 'allow' });
-  }
+  await allowToolsWithoutAsking(session, toolNames); // fork(claude-agent)
 }

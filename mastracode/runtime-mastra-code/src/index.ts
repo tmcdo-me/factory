@@ -8,3 +8,5 @@ export { historyPredatesEventLog, LOGGED_HISTORY_SLACK_MS } from './history';
 export type { ConversationReader } from './history';
 export { mastraTool } from './tools';
 export type { MastraTool, MastraToolCall, MastraToolContextOf } from './tools';
+export { allowToolsWithoutAsking } from './permissions';
+export type { MastraCodePermissionsSession } from './permissions';
