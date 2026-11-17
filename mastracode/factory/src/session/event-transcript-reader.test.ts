@@ -121,4 +121,25 @@ describe('listFinishedToolCalls', () => {
     expect(last.messages.map(message => message.id)).toEqual(['c']);
     expect(last.hasMore).toBe(true);
   });
+
+  it('does not keep a fold whose read failed, and keeps few for passes that stop early', async () => {
+    const log = await logOf(
+      { type: 'run.started', runId: 'r1', threadId: 't1' },
+      ...call('a'),
+      { type: 'tool.ended', callId: 'a', result: 1 },
+      ...call('b'),
+      { type: 'tool.ended', callId: 'b', result: 1 },
+    );
+    const reader = eventTranscriptReader(log);
+    const base = { threadId: 't1', sessionId: 's1', perPage: 1 };
+    const list = vi.spyOn(log, 'list').mockRejectedValueOnce(new Error('storage down'));
+    await expect(reader.listMessages({ ...base, page: 0 })).rejects.toThrow('storage down');
+    // The next page-1 read folds afresh instead of re-awaiting the failed fold.
+    const page = await reader.listMessages({ ...base, page: 1 });
+    expect(page.messages.map(m => m.id)).toEqual(['b']);
+    list.mockRestore();
+    // Many passes that never reach their last page do not pile up (no error, still correct).
+    for (let n = 0; n < 40; n++) await reader.listMessages({ ...base, threadId: `t${n}`, page: 0 });
+    expect((await reader.listMessages({ ...base, page: 0 })).messages.map(m => m.id)).toEqual(['a']);
+  });
 });

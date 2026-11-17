@@ -136,6 +136,9 @@ async function foldFinishedToolCalls(
   return { messages: out, lastSeq: afterSeq };
 }
 
+/** Folds kept at once: a pass that stops early never reaches its last page, so older ones are dropped. */
+const MAX_KEPT_FOLDS = 16;
+
 /**
  * A message reader (the processor's) over the event log, for the bound thread of one session. The
  * processor pages through a reconcile, so the fold is kept for the pages of one pass (dropped when the
@@ -157,8 +160,12 @@ export function eventTranscriptReader(log: EventLogReader) {
       let fold = input.page > 0 ? folds.get(key) : undefined;
       if (fold) {
         // Still this pass's fold only while nothing was appended since it was read.
-        const { lastSeq } = await fold;
-        if ((await log.list(sessionId, { afterSeq: lastSeq, limit: 1 })).length > 0) fold = undefined;
+        try {
+          const { lastSeq } = await fold;
+          if ((await log.list(sessionId, { afterSeq: lastSeq, limit: 1 })).length > 0) fold = undefined;
+        } catch {
+          fold = undefined; // a failed fold is made again
+        }
       }
       if (!fold) {
         fold = foldFinishedToolCalls(log, {
@@ -167,8 +174,16 @@ export function eventTranscriptReader(log: EventLogReader) {
           ...(input.filter?.dateRange?.start ? { start: input.filter.dateRange.start } : {}),
         });
         folds.set(key, fold);
+        // A pass that stops early never reaches its last page: keep only the most recent few.
+        while (folds.size > MAX_KEPT_FOLDS) folds.delete(folds.keys().next().value!);
       }
-      const { messages: finished } = await fold;
+      let finished: MastraDBMessage[];
+      try {
+        ({ messages: finished } = await fold);
+      } catch (error) {
+        if (folds.get(key) === fold) folds.delete(key);
+        throw error;
+      }
       const from = input.page * input.perPage;
       const hasMore = from + input.perPage < finished.length;
       if (!hasMore) folds.delete(key);
