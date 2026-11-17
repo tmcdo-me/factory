@@ -988,6 +988,12 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      `@factory/runtime-mastra-code/sdk`. One file left the allow-list (now 10). Not done: moving the
      Mastra processor wrapper (`FactoryPhaseStateProcessor`) into the adapter; it is entangled with Factory's
      ingest and reconcile logic, so it waits for 7l. Behaviour unchanged.
+   - **7k** Workspace: `workspace.ts` takes the runtime's workspace pieces as an injected
+     `RuntimeWorkspaceBuilders` (`@factory/agent-runtime`: sandbox filesystem, workspace tools, config directory) plus
+     Factory-owned `RuntimeSkillExtension`, `RuntimeWorkspaceContext` and `RuntimeWorkspaceSession` types.
+     `@factory/runtime-mastra-code` implements it (`mastraCodeWorkspaceBuilders`) and `workspace-builders.test.ts`
+     checks the types against Mastra Code's own; `factory.ts` passes it to `createWorkspaceFactory` (a required
+     `builders` option; `workspace.test.ts` passes it too). `workspace.ts` left the allow-list. `claude-agent-workspace.ts` and `context-sandboxes.ts` are handled by 7h. Behaviour unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

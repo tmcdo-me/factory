@@ -27,6 +27,7 @@ import {
   createMastraCodeSessionCommands,
   historyPredatesEventLog,
   mastraCodeSessionToAnswer,
+  mastraCodeWorkspaceBuilders,
 } from '@factory/runtime-mastra-code';
 import type { MastraCodeAnswerSession } from '@factory/runtime-mastra-code'; // fork(claude-agent)
 import { MastraAuthStudio } from '@mastra/auth-studio';
@@ -1765,6 +1766,7 @@ export class MastraFactory {
     // fork(claude-agent): one workspace factory for every runtime, so a Claude Agent session gets
     // the same checkout, credentials and sandbox a Mastra Code session would.
     const workspaceFactory = createWorkspaceFactory({
+      builders: mastraCodeWorkspaceBuilders,
       skills: this.#skills,
       ...(storage.isDomainReady('skill-overrides') ? { skillOverrides: skillOverridesStorage } : {}),
       ...(sandboxConfig ? { sandbox: sandboxConfig } : {}),

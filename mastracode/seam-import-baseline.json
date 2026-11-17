@@ -9,7 +9,7 @@
     "src/rules/start-coordinator.ts",
     "src/session/controller-event-hub.ts",
     "src/session/factory-session.ts",
-    "src/workspace.ts"
+    "src/session/thread-title-mirror.ts"
   ],
   "factoryUi": [
     "src/ui/domains/chat/context/useChatCommandRegistry.ts",
