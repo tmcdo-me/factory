@@ -1,4 +1,4 @@
-import { createTool } from '@mastra/core/tools';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { SlackAdapter } from '@mastra/slack';
 import type { Chat } from 'chat';
 import {
@@ -13,7 +13,7 @@ import {
 } from 'chat/ai';
 import { z } from 'zod';
 
-import type { IntegrationTools } from '../base.js';
+import type { FactorySessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import type { SlackToolSettings } from './tool-settings.js';
 
 /** Pages read per lookup, so one call can't walk a huge workspace. */
@@ -71,7 +71,8 @@ export function createSlackChatTools({
   /** The session's own chat thread id, e.g. `slack:C123:1700000000.000100`. */
   sessionThreadId: string;
   settings: SlackToolSettings;
-}): IntegrationTools {
+}): FactorySessionTools {
+  // fork(claude-agent): Factory's own Slack tools are definitions; the Chat SDK's stay its own tools.
   const all = settings.channels === 'all';
   const allowed = new Set([
     channelOf(chat, sessionThreadId),
@@ -86,7 +87,9 @@ export function createSlackChatTools({
     const channel = channelOf(chat, withPrefix(id));
     // Other people's DMs with the app are theirs, even when every channel is granted.
     if (channel.startsWith('slack:D') && channel !== ownChannel) {
-      throw new Error(`"${id}" is someone else's direct message with the app. Use sendDirectMessage to message a person.`);
+      throw new Error(
+        `"${id}" is someone else's direct message with the app. Use sendDirectMessage to message a person.`,
+      );
     }
     if (all) return;
     if (!allowed.has(channel)) {
@@ -97,7 +100,9 @@ export function createSlackChatTools({
     settings.channelAccess === 'read'
       ? (id: string) => {
           if (channelOf(chat, id) !== ownChannel) {
-            throw new Error(`"${id}" is read only for this session: it can only post in its own channel, ${ownChannel}.`);
+            throw new Error(
+              `"${id}" is read only for this session: it can only post in its own channel, ${ownChannel}.`,
+            );
           }
         }
       : guard;
@@ -129,11 +134,11 @@ export function createSlackChatTools({
         },
       }),
     ),
-    findChannel: createTool({
-      id: 'findChannel',
+    findChannel: defineFactoryTool({
+      name: 'findChannel',
       description:
         'Find Slack channels by name, e.g. "eng" or "#eng-proj-factories". Returns full channel ids (slack:C…) to pass to the other Slack tools, and whether the app is a member. `incomplete: true` means the workspace was too large to check every channel.',
-      inputSchema: z.object({ name: z.string().min(1).describe('All or part of the channel name') }),
+      input: z.object({ name: z.string().min(1).describe('All or part of the channel name') }),
       execute: async ({ name }) => {
         const query = normalize(name);
         const { items: found, incomplete } = await listAll(async cursor => {
@@ -157,11 +162,11 @@ export function createSlackChatTools({
         };
       },
     }),
-    searchMessages: createTool({
-      id: 'searchMessages',
+    searchMessages: defineFactoryTool({
+      name: 'searchMessages',
       description:
         "Search recent top-level messages in Slack channels for words. Matches messages containing every word, ignoring case. Reads each channel's newest messages (not thread replies), so older messages are missed. Defaults to this session's channel; use findChannel to get other channel ids.",
-      inputSchema: z.object({
+      input: z.object({
         query: z.string().min(1).describe('Words to look for'),
         channelIds: z
           .array(z.string().min(1))
@@ -222,11 +227,11 @@ export function createSlackChatTools({
         };
       },
     }),
-    findUser: createTool({
-      id: 'findUser',
+    findUser: defineFactoryTool({
+      name: 'findUser',
       description:
         'Find people in Slack by name, e.g. "Caleb" or "@caleb". Returns their user ids (U…), to mention them as <@U…> in a message or to DM them. `incomplete: true` means the workspace was too large to check everyone.',
-      inputSchema: z.object({ name: z.string().min(1).describe('All or part of their name or display name') }),
+      input: z.object({ name: z.string().min(1).describe('All or part of their name or display name') }),
       execute: async ({ name }) => {
         const query = normalize(name);
         const { items: people, incomplete } = await listAll(async cursor => {
@@ -253,10 +258,11 @@ export function createSlackChatTools({
     // The Chat SDK's own sendDirectMessage asks for approval; this one doesn't.
     ...(settings.directMessages === 'anyone'
       ? {
-          sendDirectMessage: createTool({
-            id: 'sendDirectMessage',
-            description: 'Send a direct message to a person in Slack. Use findUser to get their user id (U…) from a name.',
-            inputSchema: z.object({
+          sendDirectMessage: defineFactoryTool({
+            name: 'sendDirectMessage',
+            description:
+              'Send a direct message to a person in Slack. Use findUser to get their user id (U…) from a name.',
+            input: z.object({
               userId: z.string().min(1).describe('Slack user id, e.g. U123456'),
               text: z.string().min(1).describe('The message, in markdown'),
             }),

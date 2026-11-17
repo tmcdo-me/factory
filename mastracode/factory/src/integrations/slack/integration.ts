@@ -24,8 +24,8 @@ import type { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute } from '@mastra/core/server';
 import type { SlackAdapterChannelConfig } from '@mastra/slack';
 
-
-import type { FactoryChannelsConfig, FactoryIntegration, IntegrationContext, IntegrationTools } from '../base.js';
+import type { FactorySessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
+import type { FactoryChannelsConfig, FactoryIntegration, IntegrationContext } from '../base.js';
 import { announcePullRequest } from '../channel-thread-announcements.js';
 import { parseCreatedPullRequest } from '../github/session-subscriptions.js';
 import { FactoryChannelReplyProcessor } from './channel-reply-processor.js';
@@ -129,22 +129,22 @@ function describeToolCall(args: unknown): string | undefined {
 const factoryTypingStatus =
   (textDisplay: SlackAdapterChannelConfig['textDisplay']): TypingStatusFn =>
   chunk => {
-  switch (chunk.type) {
-    case 'reasoning-delta':
-      return 'is thinking...';
-    case 'text-delta':
-      return textDisplay === 'hidden' ? undefined : 'is typing...';
-    // The reply tool's text streams into the thread as the model writes it.
-    case 'tool-call-input-streaming-start':
-      return chunk.payload.toolName === REPLY_TOOL_NAME ? 'is typing...' : undefined;
-    case 'tool-call':
-      // Still finishing the streamed reply; don't flip to "is working...".
-      if (chunk.payload.toolName === REPLY_TOOL_NAME) return 'is typing...';
-      return describeToolCall(chunk.payload.args) ?? 'is working...';
-    default:
-      return undefined;
-  }
-};
+    switch (chunk.type) {
+      case 'reasoning-delta':
+        return 'is thinking...';
+      case 'text-delta':
+        return textDisplay === 'hidden' ? undefined : 'is typing...';
+      // The reply tool's text streams into the thread as the model writes it.
+      case 'tool-call-input-streaming-start':
+        return chunk.payload.toolName === REPLY_TOOL_NAME ? 'is typing...' : undefined;
+      case 'tool-call':
+        // Still finishing the streamed reply; don't flip to "is working...".
+        if (chunk.payload.toolName === REPLY_TOOL_NAME) return 'is typing...';
+        return describeToolCall(chunk.payload.args) ?? 'is working...';
+      default:
+        return undefined;
+    }
+  };
 
 /**
  * Drops keys the caller set to `undefined` so spreading the overrides cannot
@@ -206,7 +206,9 @@ export class SlackIntegration implements FactoryIntegration {
       );
     }
     if (mode === 'socket' && !config.appToken) {
-      throw new Error("SlackIntegration: 'appToken' is required in socket mode — Slack cannot open a Socket Mode connection without it.");
+      throw new Error(
+        "SlackIntegration: 'appToken' is required in socket mode — Slack cannot open a Socket Mode connection without it.",
+      );
     }
     if (mode === 'socket' && !config.botToken) {
       throw new Error("SlackIntegration: 'botToken' is required in socket mode — Factory cannot reply without it.");
@@ -218,10 +220,7 @@ export class SlackIntegration implements FactoryIntegration {
     this.#adapterOptions = factoryAdapterOptions(adapterOverrides(config.adapterOptions));
     const textHidden = this.#textHidden;
     this.processors = {
-      input: [
-        new FactoryChannelReplyProcessor(),
-        ...(textHidden ? [new FactoryReplyReminderProcessor()] : []),
-      ],
+      input: [new FactoryChannelReplyProcessor(), ...(textHidden ? [new FactoryReplyReminderProcessor()] : [])],
       output: [
         new FactoryChannelSessionLinkProcessor(),
         ...(textHidden ? [new FactoryReplyStreamProcessor(this.#deps)] : []),
@@ -243,7 +242,8 @@ export class SlackIntegration implements FactoryIntegration {
    * search, lookup and DM tools. The tools find the thread to post into when
    * they are called.
    */
-  async agentTools({ requestContext }: { requestContext: RequestContext }): Promise<IntegrationTools> {
+  async agentTools({ requestContext }: { requestContext: RequestContext }): Promise<FactorySessionTools> {
+    // fork(claude-agent)
     const slackThread = await slackThreadOf(requestContext, this.#deps);
     if (!slackThread) return {};
     const chat = this.#channels?.()?.sdk;
@@ -282,9 +282,7 @@ export class SlackIntegration implements FactoryIntegration {
     return createSlackChannelsConfig({
       slack: {
         mode: this.#config.mode,
-        ...(mode === 'webhook'
-          ? { clientId: this.#config.clientId, clientSecret: this.#config.clientSecret }
-          : {}),
+        ...(mode === 'webhook' ? { clientId: this.#config.clientId, clientSecret: this.#config.clientSecret } : {}),
         signingSecret: this.#config.signingSecret,
         appToken: this.#config.appToken,
         botToken: this.#config.botToken,

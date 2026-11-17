@@ -1,5 +1,7 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import type { GithubIntegration } from './integration.js';
 
 const mocks = vi.hoisted(() => ({
@@ -99,7 +101,7 @@ const githubStub = {
 } as unknown as GithubIntegration;
 
 import {
-  createGithubSubscriptionTools,
+  createGithubSubscriptionTools as createGithubSubscriptionToolsDefs,
   parseCreatedPullRequest,
   refreshGithubToken,
   subscribeCurrentSessionToPullRequest,
@@ -107,6 +109,10 @@ import {
   upsertFactoryTriageComment,
 } from './session-subscriptions.js';
 import { registerGithubPatKind, registerGithubRefreshTarget, registerGithubTokenInjector } from './token-refresh.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createGithubSubscriptionTools = (...args: Parameters<typeof createGithubSubscriptionToolsDefs>) =>
+  mastraSessionTools(createGithubSubscriptionToolsDefs(...args), mastraCodeToolContext(args[0]));
 
 function authenticatedRequestContext(
   state: { factoryProjectId?: string; projectRepositoryId?: string } = {
@@ -384,7 +390,9 @@ describe('GitHub subscription entry points', () => {
         'explicit-tool',
         githubStub,
       ),
-    ).rejects.toThrow('Pull request https://github.com/other/repo/pull/123 is not in a repository linked to this Factory.');
+    ).rejects.toThrow(
+      'Pull request https://github.com/other/repo/pull/123 is not in a repository linked to this Factory.',
+    );
 
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(

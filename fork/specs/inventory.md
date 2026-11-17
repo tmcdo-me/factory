@@ -14,7 +14,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `factory.ts`                                           | 2644 | 2→7   | composition root; shrinks every slice                                                                            |
 | [ ]  | `integrations/base.ts`                                 |  322 | 7     |                                                                                                                  |
 | [ ]  | `integrations/github/routes.ts`                        | 1771 | 7     |                                                                                                                  |
-| [ ]  | `integrations/github/session-subscriptions.ts`         |  375 | 7     |                                                                                                                  |
+| [x]  | `integrations/github/session-subscriptions.ts`         |  375 | 7     |                                                                                                                  |
 | [ ]  | `integrations/github/webhook.ts`                       |  649 | 7     |                                                                                                                  |
 | [x]  | `integrations/gitlab/agent-tools.ts`                   |   56 | drop  | removed, not migrated (integration dropped)                                                                      |
 | [x]  | `integrations/gitlab/session-subscriptions.ts`         |  254 | drop  | removed, not migrated (integration dropped)                                                                      |
@@ -27,7 +27,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [x]  | `integrations/platform/jira/agent-tools.ts`            |  120 | drop  | removed, not migrated (integration dropped)                                                                      |
 | [ ]  | `integrations/slack/channel-session-link-processor.ts` |  121 | 7     |                                                                                                                  |
 | [ ]  | `integrations/slack/run-error-card.ts`                 |   64 | 7     |                                                                                                                  |
-| [ ]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                                           |
+| [x]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                                           |
 | [ ]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                                                  |
 | [ ]  | `integrations/subscription-session.ts`                 |  197 | 7     |                                                                                                                  |
 | [ ]  | `routes/config.ts`                                     | 1800 | 7     |                                                                                                                  |

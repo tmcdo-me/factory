@@ -12,7 +12,7 @@ runtimes (Mastra Code, Claude Agent, …) implement it as adapters. Design:
 | `events.ts`       | `FactoryEvent` — the one runtime-neutral event format — and `EventEnvelope` (`seq` per session)                                                                                       |
 | `tools.ts`        | `FactoryToolDef` / `FactoryToolContext` — Factory tools defined once, adapted per runtime (Mastra Code: `mastraTool` in `@factory/runtime-mastra-code`; Claude Agent: its MCP server) |
 | `interactions.ts` | Questions, plan approvals, tool approvals; `InteractionStore`                                                                                                                         |
-| `workspace.ts`    | `SessionWorkspace` (checkout, sandbox API, env, `spawn`) and `SandboxProcess`                                                                                                         |
+| `workspace.ts`    | `SessionWorkspace` (checkout, sandbox API, filesystem, env, `spawn`) and `SandboxProcess`                                                                                             |
 
 ## Factory-owned services
 

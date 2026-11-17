@@ -1,13 +1,14 @@
-import type { AgentControllerRequestContext } from '@mastra/core/agent-controller';
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { RequestContext } from '@mastra/core/request-context';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 import { getFactoryAuthOrgId, getFactoryAuthUserFromContext, getFactoryAuthUserId } from '../../auth.js';
 import { findEnvironmentRepository, resolveSessionRepositories } from '../../session/environment-repositories.js';
 import type { EnvironmentRepository } from '../../session/environment-repositories.js';
 import { runsPullRequestCreate } from '../../session/shell-commands.js';
+import { turnSession } from '../../session/turn-session.js'; // fork(claude-agent)
+import type { TurnSession } from '../../session/turn-session.js'; // fork(claude-agent)
 import type { SourceControlInstallation, SourceControlSession } from '../../storage/domains/source-control/base.js';
-import type { IntegrationTools } from '../base.js';
 import type { GithubIntegration } from './integration.js';
 import { getGithubPat } from './pat.js';
 import { subscribeToPullRequest, unsubscribeFromPullRequest } from './subscriptions.js';
@@ -66,7 +67,7 @@ async function serializeTriageComment<T>(key: string, operation: () => Promise<T
  * target, the environment list plus its own link.
  */
 interface SessionTarget {
-  context: AgentControllerRequestContext<RepositorySessionState>;
+  context: TurnSession<RepositorySessionState>; // fork(claude-agent)
   session: SourceControlSession | null;
   repositories: EnvironmentRepository[];
   orgId: string;
@@ -99,26 +100,29 @@ function ownRepository(target: SessionTarget): EnvironmentRepository | undefined
  * for passive callers that should no-op instead of erroring.
  */
 function isGithubProjectSession(requestContext: RequestContext): boolean {
-  const context = requestContext.get('controller') as AgentControllerRequestContext<RepositorySessionState> | undefined;
+  const context = turnSession<RepositorySessionState>(requestContext); // fork(claude-agent)
   return Boolean(
     context?.threadId &&
-    context.getState().factoryProjectId &&
+    context.state().factoryProjectId &&
     sessionOrgId(requestContext) &&
     sessionUserId(requestContext),
   );
 }
 
 async function resolveSessionTarget(requestContext: RequestContext, github: GithubIntegration): Promise<SessionTarget> {
-  const context = requestContext.get('controller') as AgentControllerRequestContext<RepositorySessionState> | undefined;
+  const context = turnSession<RepositorySessionState>(requestContext); // fork(claude-agent)
   const orgId = sessionOrgId(requestContext);
   const userId = sessionUserId(requestContext);
-  const factoryProjectId = context?.getState().factoryProjectId;
+  const factoryProjectId = context?.state().factoryProjectId;
   if (!context || !context.threadId || !factoryProjectId || !orgId || !userId) {
     throw new Error('GitHub subscriptions require an authenticated repository session with an active thread.');
   }
   const sourceControl = github.sourceControlStorage;
   const session = await sourceControl.sessions.getBySessionId(context.sessionId);
-  if (session && (session.orgId !== orgId || (session.factoryProjectId && session.factoryProjectId !== factoryProjectId))) {
+  if (
+    session &&
+    (session.orgId !== orgId || (session.factoryProjectId && session.factoryProjectId !== factoryProjectId))
+  ) {
     throw new Error('The active session does not belong to this Factory.');
   }
   const repositories = await resolveSessionRepositories({
@@ -180,8 +184,9 @@ function subscriptionInput(target: SessionTarget, pullRequest: PullRequestTarget
     repositoryExternalId: pullRequest.repository.externalId,
     repositorySlug: pullRequest.repository.slug,
     changeRequestId: String(pullRequest.number),
-    sessionId: target.context.session.id,
-    ownerId: target.context.session.ownerId,
+    // fork(claude-agent): the runtime's session record, else the turn's session.
+    sessionId: target.context.session?.id ?? target.context.sessionId,
+    ownerId: target.context.session?.ownerId ?? '',
     resourceId: pullRequest.connection.factoryProjectId,
     threadId: target.context.threadId!,
     source: 'explicit-tool' as const,
@@ -302,13 +307,13 @@ export async function refreshGithubToken(requestContext: RequestContext, github:
 }
 
 export function createGithubSubscriptionTools(requestContext: RequestContext, github: GithubIntegration) {
-  const tools: IntegrationTools = {};
+  const tools: Record<string, FactoryToolDef> = {}; // fork(claude-agent)
   if (getGithubRefreshTarget(requestContext)) {
-    tools.github_refresh_token = createTool({
-      id: 'github_refresh_token',
+    tools.github_refresh_token = defineFactoryTool({
+      name: 'github_refresh_token',
       description:
         'Refresh GitHub CLI authentication in the active Factory sandbox. Use this after a gh command fails because authentication is expired, invalid, or missing. It installs a fresh GH_TOKEN for subsequent sandbox commands. After this tool succeeds, retry the failed gh command. Takes no arguments and never returns the token.',
-      inputSchema: z.object({}),
+      input: z.object({}),
       execute: async () => {
         await refreshGithubToken(requestContext, github);
         return { refreshed: true };
@@ -319,28 +324,28 @@ export function createGithubSubscriptionTools(requestContext: RequestContext, gi
 
   return {
     ...tools,
-    github_upsert_factory_triage_comment: createTool({
-      id: 'github_upsert_factory_triage_comment',
+    github_upsert_factory_triage_comment: defineFactoryTool({
+      name: 'github_upsert_factory_triage_comment',
       description:
         'Create or update this Factory App’s canonical triage handoff comment on an issue in the active repository. Use this for every marked pending or final Factory triage handoff; never use gh to create or edit that handoff.',
-      inputSchema: triageCommentInputSchema,
+      input: triageCommentInputSchema,
       execute: async input => upsertFactoryTriageComment(requestContext, input, github),
     }),
-    github_subscribe_pr: createTool({
-      id: 'github_subscribe_pr',
+    github_subscribe_pr: defineFactoryTool({
+      name: 'github_subscribe_pr',
       description:
         'Subscribe this thread to GitHub pull request activity. You usually do not need this tool: successful gh pr create commands subscribe automatically. Use it for an existing PR or to recover when automatic subscription did not occur. Closed or merged PRs are unsubscribed automatically. Accepts a canonical PR URL for any repository in this Factory; a bare PR number only when this session is filed under a single repository, so pass the URL when the Factory has more than one.',
-      inputSchema: pullRequestInputSchema,
+      input: pullRequestInputSchema,
       execute: async ({ pullRequest }) => {
         const number = await subscribeCurrentSessionToPullRequest(requestContext, pullRequest, 'explicit-tool', github);
         return { subscribed: true, pullRequestNumber: number };
       },
     }),
-    github_unsubscribe_pr: createTool({
-      id: 'github_unsubscribe_pr',
+    github_unsubscribe_pr: defineFactoryTool({
+      name: 'github_unsubscribe_pr',
       description:
         'Manually unsubscribe this thread from GitHub pull request activity. You usually do not need this tool because closed or merged PRs are unsubscribed automatically. Use it to stop notifications before then. Accepts a canonical PR URL for any repository in this Factory, or a bare PR number when this session is filed under a single repository.',
-      inputSchema: pullRequestInputSchema,
+      input: pullRequestInputSchema,
       execute: async ({ pullRequest }) => {
         const number = await unsubscribeCurrentSessionFromPullRequest(requestContext, pullRequest, github);
         return { subscribed: false, pullRequestNumber: number };

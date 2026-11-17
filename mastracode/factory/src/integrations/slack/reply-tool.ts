@@ -1,12 +1,12 @@
+import { defineFactoryTool } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { FactoryToolDef } from '@factory/agent-runtime'; // fork(claude-agent)
 import { CHAT_CHANNEL_RENDER_CONTEXT_KEY } from '@mastra/core/channels';
 import type { ChatChannelRenderContext } from '@mastra/core/channels';
 import type { Processor, ProcessOutputStreamArgs } from '@mastra/core/processors';
 import type { RequestContext } from '@mastra/core/request-context';
 import type { ChunkType } from '@mastra/core/stream';
-import { createTool } from '@mastra/core/tools';
 import { z } from 'zod';
 
-import type { IntegrationTools } from '../base.js';
 import { SESSION_LINK_LABEL } from './channel-reply-processor.js';
 import { NEW_CHANNEL_SESSION_KEY, sessionLinkFromRequest } from './channel-session-link-processor.js';
 import { postTarget, resolveRenderContext } from './share-file-tool.js';
@@ -31,19 +31,22 @@ const replyInput = z
  * linked to Slack; with text shown the reply stream already posts and this
  * tool would double every message.
  */
-export function createReplyTool(requestContext: RequestContext, deps: ShareFileToolDeps = {}): IntegrationTools {
+export function createReplyTool(
+  requestContext: RequestContext,
+  deps: ShareFileToolDeps = {},
+): Record<string, FactoryToolDef> {
   return {
-    [REPLY_TOOL_NAME]: createTool({
-      id: REPLY_TOOL_NAME,
+    [REPLY_TOOL_NAME]: defineFactoryTool({
+      name: REPLY_TOOL_NAME,
       description:
         'Post a message in this chat thread. Nothing you write outside this tool reaches the thread, so use it for anything the people there should see: a short note that you are starting a longer job, a question you need answered, and the outcome when you finish. Post when you have something new; do not repeat yourself or post that nothing changed. To stay quiet, do not call it.',
-      inputSchema: replyInput,
+      input: replyInput,
       execute: async (input, context) => {
         const link = firstReplyLink(requestContext);
         const suffix = link ? `\n\n[${SESSION_LINK_LABEL}](${link})` : '';
         // FactoryReplyStreamProcessor may already be streaming this call's text
         // into the thread; finish that post rather than posting it again.
-        const toolCallId = context?.agent?.toolCallId;
+        const toolCallId = context.callId; // fork(claude-agent)
         const streamed = toolCallId ? replyStreams(requestContext).get(toolCallId) : undefined;
         if (toolCallId) replyStreams(requestContext).delete(toolCallId);
         if (!streamed || !(await streamed.finish(input.text, suffix))) {

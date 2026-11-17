@@ -154,6 +154,7 @@ export function createClaudeAgentWorkspaceResolver(options: {
         kind: processes.kind,
         checkoutDir: layout.root,
         sandbox: sandbox as MastraSandbox,
+        ...(workspace?.filesystem ? { filesystem: workspace.filesystem } : {}),
         env: freshEnv,
         spawn: processes.spawn,
       },

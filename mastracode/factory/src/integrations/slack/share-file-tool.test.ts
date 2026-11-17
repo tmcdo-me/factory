@@ -2,7 +2,12 @@ import { CHAT_CHANNEL_RENDER_CONTEXT_KEY } from '@mastra/core/channels';
 import { RequestContext } from '@mastra/core/request-context';
 import { describe, expect, it, vi } from 'vitest';
 
-import { createShareFileTool, SHARE_FILE_MAX_BYTES } from './share-file-tool.js';
+import { mastraCodeToolContext, mastraSessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
+import { createShareFileTool as createShareFileToolDefs, SHARE_FILE_MAX_BYTES } from './share-file-tool.js';
+
+// fork(claude-agent): the definitions as Mastra Code's agent gets them (slice 4).
+const createShareFileTool = (...args: Parameters<typeof createShareFileToolDefs>) =>
+  mastraSessionTools(createShareFileToolDefs(...args), mastraCodeToolContext(args[0]));
 
 type AttachFile = {
   execute: (input: { path: string }, ctx: Record<string, unknown>) => Promise<unknown>;

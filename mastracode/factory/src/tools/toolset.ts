@@ -57,7 +57,9 @@ function turnIds(requestContext: RequestContext | undefined): { sessionId: strin
  * sandbox can launch them) and the session's checkout in it. `undefined` without a sandbox.
  */
 export function mastraSessionWorkspace(workspace: unknown): SessionWorkspace | undefined {
-  const sandbox = (workspace as { sandbox?: MastraSandbox } | undefined)?.sandbox;
+  const { sandbox, filesystem } = (workspace ?? {}) as Pick<SessionWorkspace, 'filesystem'> & {
+    sandbox?: MastraSandbox;
+  };
   if (!sandbox) return undefined;
   const processes = sessionSandboxProcesses(sandbox);
   return {
@@ -65,6 +67,7 @@ export function mastraSessionWorkspace(workspace: unknown): SessionWorkspace | u
     kind: processes?.kind ?? 'remote',
     checkoutDir: sessionLayout(findSessionSandboxEntry(sandbox))?.root ?? '',
     sandbox,
+    ...(filesystem ? { filesystem } : {}),
     env: async () =>
       Object.fromEntries(
         Object.entries((sandbox as { getEnv?(): Record<string, string | undefined> }).getEnv?.() ?? {}).filter(

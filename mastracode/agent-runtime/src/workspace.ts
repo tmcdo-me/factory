@@ -1,6 +1,6 @@
 import type { Readable, Writable } from 'node:stream';
 
-import type { MastraSandbox } from '@mastra/core/workspace';
+import type { MastraSandbox, WorkspaceFilesystem } from '@mastra/core/workspace';
 
 export type SandboxKind = 'local' | 'sprite';
 
@@ -30,6 +30,11 @@ export interface SessionWorkspace {
   checkoutDir: string;
   /** Command and file API for runtimes that drive the sandbox directly (Mastra Code). */
   sandbox: MastraSandbox;
+  /**
+   * The workspace's filesystem, confined as the session's agent is (what Factory's tools read files
+   * through, such as a file shared into a chat thread), when it has one.
+   */
+  filesystem?: WorkspaceFilesystem;
   /**
    * Environment for processes in the sandbox: git credentials (`GH_TOKEN*`, credential helper) and
    * other sandbox-scoped values. Never contains Factory server secrets.
