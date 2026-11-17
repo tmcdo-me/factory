@@ -28,7 +28,7 @@ Tick a row when its file no longer imports these (or is deleted). Slice numbers 
 | [ ]  | `integrations/slack/channel-session-link-processor.ts` |  121 | 7     |                                                                                                                  |
 | [ ]  | `integrations/slack/run-error-card.ts`                 |   64 | 7     |                                                                                                                  |
 | [x]  | `integrations/slack/share-file-tool.ts`                |  153 | 4     | tools → FactoryToolDef                                                                                           |
-| [ ]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                                                  |
+| [x]  | `integrations/slack/slack.ts`                          | 1178 | 7     |                                                                                                                  |
 | [x]  | `integrations/subscription-session.ts`                 |  197 | 7     | run-context helpers only; the Mastra session bits moved to `mastra-code-subscription-sessions.ts` (7b)           |
 | [ ]  | `routes/config.ts`                                     | 1800 | 7     |                                                                                                                  |
 | [ ]  | `routes/contracts.ts`                                  | 1478 | 3     | session API                                                                                                      |

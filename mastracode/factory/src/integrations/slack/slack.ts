@@ -1,4 +1,4 @@
-import { migratePersistedModelSelection } from '@mastra/core/agent-controller';
+import { migratePersistedModelSelection } from '@factory/runtime-mastra-code/sdk';
 import { ChannelSessionRejectedError } from '@mastra/core/channels';
 import type {
   ChannelHandler,

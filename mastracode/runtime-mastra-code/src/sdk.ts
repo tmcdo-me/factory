@@ -52,3 +52,6 @@ export { PROVIDER_DEFAULT_MODELS, getOAuthProvider } from '@mastra/code-sdk/auth
 export { STT_MODELS, findSTTModel, resolveSTTModel, sttProviders } from '@mastra/code-sdk/voice/stt-registry';
 export type { STTModel } from '@mastra/code-sdk/voice/stt-registry';
 export { createSTTTranscriber, resolveSTTApiKey, sttApiKeyEnvVar } from '@mastra/code-sdk/voice/transcribe';
+
+// integrations/slack
+export { migratePersistedModelSelection } from '@mastra/core/agent-controller';

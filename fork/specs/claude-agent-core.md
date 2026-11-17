@@ -956,8 +956,13 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      `routes/surface.ts` and `skills/service.ts` import their device-login, credential-resolver, STT and
      `AuthCredential` / `MastraCodeState` / `AgentController` / `MessageAuthor` types from
      `@factory/runtime-mastra-code/sdk` (a new group in `src/sdk.ts`; re-exports only). Behaviour-preserving. The
-     factory allow-list is 25. Remaining: Slack, then the files that still use the controller at runtime
+     factory allow-list is 25. Remaining: the files that still use the controller at runtime
      (rules, session, sandbox, workspace, factory, integrations), which move with the adapter and the composition root.
+   - **7g** Slack: `integrations/slack/slack.ts`, the only Slack file on the allow-list, took
+     `migratePersistedModelSelection` (a pure helper over the thread-settings accessors) from
+     `@factory/runtime-mastra-code/sdk` (a new group in `src/sdk.ts`; re-export only). The other Slack files
+     (`run-error-card`, `channel-session-link-processor`) have no controller or SDK import in source, so nothing else
+     moved. Behaviour-preserving. The factory allow-list is 24; baseline shrunk.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via
