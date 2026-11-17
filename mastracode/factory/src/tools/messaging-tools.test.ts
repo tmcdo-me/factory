@@ -1229,14 +1229,28 @@ describe('factory_message_origin in a Claude Agent session', () => {
     ).resolves.toMatchObject({ delivered: 'woken' });
   });
 
-  it("leaves a Mastra Code session's answers to the notification store, as before", async () => {
+  // Slice 5e: the claim is kept for a Mastra Code session's answers too; its message stays in Mastra's store.
+  it('lets only one of two answers a Mastra Code session sends together through', async () => {
     const env = setup({ claude: ['session-claude'] });
     const sent = (await env.run(USER, 'factory_signal_session', { sessionId: 'session-b', message: 'Hi?' })) as {
       notificationId: string;
     };
-    await env.run(WORKER, 'factory_message_origin', { message: 'Hi.', inReplyTo: sent.notificationId });
+    const results = await Promise.allSettled([
+      env.run(WORKER, 'factory_message_origin', { message: 'Hi.', inReplyTo: sent.notificationId }),
+      env.run(WORKER, 'factory_message_origin', { message: 'Hello.', inReplyTo: sent.notificationId }),
+    ]);
+    expect(results.map(result => result.status).sort()).toEqual(['fulfilled', 'rejected']);
+    expect((results.find(result => result.status === 'rejected') as PromiseRejectedResult).reason.message).toBe(
+      `You already answered ${sent.notificationId}.`,
+    );
     const runtime = (await env.deps.messaging())!.runtime!;
-    expect(runtime.deliveries!.claimReply).not.toHaveBeenCalled();
+    expect(runtime.deliveries!.claimReply).toHaveBeenCalledWith('session-b', sent.notificationId, expect.any(Date));
+    const replies = await env.notifications.listNotifications({ threadId: 'thread-session-1' });
+    expect(replies.filter(record => record.kind === 'reply')).toHaveLength(1);
+    // Answered for good: a later answer is refused by the claim as by the reply already sent.
+    await expect(
+      env.run(WORKER, 'factory_message_origin', { message: 'Again.', inReplyTo: sent.notificationId }),
+    ).rejects.toThrow(`You already answered ${sent.notificationId}.`);
   });
 
   it('lets an answer through once a claim left by a stopped server lapses, not before', async () => {

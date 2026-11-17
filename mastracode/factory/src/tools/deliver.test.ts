@@ -3,8 +3,15 @@ import { Mastra } from '@mastra/core/mastra';
 import { InMemoryStore } from '@mastra/core/storage';
 import { describe, expect, it, vi } from 'vitest';
 
+import { dedupedMessageId } from '../storage/domains/agent-messages/base.js';
+import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { SourceControlSession } from '../storage/domains/source-control/base.js';
-import { deliverFactorySessionNotification, resolveSessionThread } from './deliver.js';
+import {
+  deliverFactorySessionNotification,
+  factoryNotificationReader,
+  factoryNotificationsOnThread,
+  resolveSessionThread,
+} from './deliver.js';
 import type { FactoryDeliveryController } from './deliver.js';
 
 const ROW = {
@@ -398,6 +405,32 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     expect(later.message.mock.calls.map(call => (call[1] as { wake: boolean }).wake)).toEqual([false, false]);
   });
 
+  // Slice 5e: a gate's approval notice is announced once per call, on this runtime as on Mastra Code.
+  it('sends a keyed notification under the id its key gives it, and reports a second one as a duplicate', async () => {
+    const { deliver, message } = onRuntime();
+    const approval = {
+      ...MESSAGE,
+      kind: 'approval',
+      priority: 'urgent' as const,
+      dedupeKey: 'factory-approval:call-9',
+    };
+    const first = await deliver(approval);
+    expect(first).toEqual({
+      delivered: 'woken',
+      notificationId: dedupedMessageId('session-b', 'factory-approval:call-9'),
+    });
+    expect(message.mock.calls[0]![1]).toMatchObject({
+      dedupeKey: 'factory-approval:call-9',
+      delivery: { id: dedupedMessageId('session-b', 'factory-approval:call-9'), kind: 'approval' },
+    });
+    message.mockResolvedValueOnce({ duplicate: true } as never);
+    await expect(deliver(approval)).resolves.toEqual({
+      delivered: 'skipped',
+      notificationId: dedupedMessageId('session-b', 'factory-approval:call-9'),
+      reason: 'duplicate',
+    });
+  });
+
   it("fails, and never wakes the controller session, when the target's runtime can't be read", async () => {
     const { controller, sessions, agent, calls } = setup();
     await expect(
@@ -412,5 +445,55 @@ describe('deliverFactorySessionNotification to a Claude Agent session', () => {
     ).rejects.toThrow('db down');
     expect(agent.sendNotificationSignal).not.toHaveBeenCalled();
     expect(calls).toEqual([]);
+  });
+});
+
+// Slice 5e: what either runtime kept for a thread, read as one list (rate limit, replies, the report backstop).
+describe('factoryNotificationsOnThread', () => {
+  it("lists Mastra Code's stored notifications and what a Claude Agent session was sent, newest first", async () => {
+    const mastra = new Mastra({ storage: new InMemoryStore() });
+    const store = (await mastra.getStorage()!.getStore('notifications'))!;
+    const at = (minute: number) => new Date(Date.UTC(2026, 10, 16, 12, minute));
+    await store.createNotification({
+      threadId: 'thread-1',
+      source: 'factory-session',
+      kind: 'message',
+      summary: 'stored',
+      createdAt: at(1),
+    } as never);
+    await store.createNotification({
+      threadId: 'thread-1',
+      source: 'github',
+      kind: 'review',
+      summary: 'other',
+    } as never);
+    const kept = new InMemoryAgentMessages();
+    await kept.told({
+      id: 'kept-1',
+      sessionId: 'session-claude',
+      source: 'factory-session',
+      text: 'kept',
+      attributes: { 'from-session': 'session-a' },
+      delivery: { threadId: 'thread-1', kind: 'done', priority: 'high', sourceId: 'session-a' },
+      createdAt: at(2),
+    });
+    const runtime = { deliveries: kept };
+
+    const both = await factoryNotificationsOnThread(store, runtime as never, 'thread-1', 10);
+    expect(both.map(record => record.summary)).toEqual(['kept', 'stored']);
+    expect(both[0]).toMatchObject({ id: 'kept-1', kind: 'done', attributes: { 'from-session': 'session-a' } });
+    expect((await factoryNotificationsOnThread(store, runtime as never, 'thread-1', 1)).map(r => r.summary)).toEqual([
+      'kept',
+    ]);
+
+    // As a store: `factory-session` lists read both runtimes; any other list reads Mastra's store alone.
+    const reader = factoryNotificationReader(store, runtime as never);
+    expect((await reader.listNotifications({ threadId: 'thread-1', source: 'factory-session', limit: 5 })).length).toBe(
+      2,
+    );
+    expect((await reader.listNotifications({ threadId: 'thread-1', source: 'github' })).map(r => r.summary)).toEqual([
+      'other',
+    ]);
+    expect(factoryNotificationReader(store, undefined)).toBe(store);
   });
 });

@@ -23,7 +23,7 @@ import { describe, expect, it, onTestFinished, vi } from 'vitest';
 import { z } from 'zod';
 
 import { FACTORY_INTERACTIVE_KEY } from '../auth.js';
-import { AgentMessagesStorage } from '../storage/domains/agent-messages/base.js';
+import { AgentMessagesStorage, dedupedMessageId } from '../storage/domains/agent-messages/base.js';
 import { InMemoryAgentMessages } from '../storage/domains/agent-messages/memory.js';
 import type { AgentSessionRecord } from '../storage/domains/agent-sessions/base.js';
 import { answerParkedCall, answerParkedQuestion } from '../tools/approval-tools.js';
@@ -2132,7 +2132,7 @@ describe('ClaudeAgentSessions: messages with a dedupe key', () => {
       dedupeKey: 'github:github:99:pull-request:34:review:4242',
     };
     expect(await runs.message('s1', review, owner)).toMatchObject({ runId: expect.any(String) });
-    expect(await runs.message('s1', review, owner)).toEqual({});
+    expect(await runs.message('s1', review, owner)).toEqual({ duplicate: true });
     // Held for the next turn: kept once too.
     const comment = { ...review, wake: false, dedupeKey: 'github:github:99:pull-request:34:comment:7' };
     await runs.message('s1', comment, owner);
@@ -2148,5 +2148,29 @@ describe('ClaudeAgentSessions: messages with a dedupe key', () => {
       e => e.event.type === 'notice' && e.event.tag === 'factory-message' && e.event.text.includes('ada'),
     );
     expect(told).toHaveLength(2);
+  });
+  // Slice 5e: a session-to-session notice with a key (a gate's approval notice) carries the id its key
+  // gives it, so the second is found and dropped, and the session answers the one it was told by that id.
+  it('tells the session a keyed notification once, under the id its key gives it', async () => {
+    const { sessions, log } = setup([claude('s1')]);
+    const runs = sessions.runtimeSessions();
+    const owner = hostContext('user-a', false);
+    const id = dedupedMessageId('s1', 'factory-approval:call-9');
+    const approval = {
+      text: 'The build session is waiting for approval to run deploy.',
+      source: 'factory-session',
+      wake: true,
+      dedupeKey: 'factory-approval:call-9',
+      delivery: { id, threadId: 'thread-s1', kind: 'approval', priority: 'urgent' },
+    };
+    expect(await runs.message('s1', approval, owner)).toMatchObject({ runId: expect.any(String) });
+    expect(await runs.message('s1', approval, owner)).toEqual({ duplicate: true });
+    expect(await runs.message('s1', { ...approval, wake: false }, owner)).toEqual({ duplicate: true });
+    await vi.waitFor(async () =>
+      expect((await log.list('s1')).filter(e => e.event.type === 'run.ended')).toHaveLength(1),
+    );
+    expect(await runs.deliveries!.recentOnThread('thread-s1', 10)).toEqual([
+      expect.objectContaining({ id, status: 'told' }),
+    ]);
   });
 });

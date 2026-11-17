@@ -434,7 +434,7 @@ Each slice: implement → focused tests → manual check where noted → commit.
    - **4e** ✅ The sandbox tools as definitions: `factory_recreate_sandbox` and
      `factory_sandbox_port_url`, which signs the session's browser in for the scope's thread (the
      turn's; upstream read it from Mastra's call, the same thread).
-5. **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
+5. ✅ **Interactions on the broker.** `submit_plan`, `ask_user`, approvals, auto-approval,
    `factory_answer_approval`, follower notifications. Design (owner's decision): the **controller is
    the authority** for Mastra Code's own suspended and gated calls (it resumes them, and decides
    between two answers), and the `InteractionBroker` is the **one index** Factory reads for both
@@ -516,7 +516,7 @@ Each slice: implement → focused tests → manual check where noted → commit.
      model alone is told `Answered by …`, `delivered`). Factory runs as one server process: recovering a
      session from storage while another process holds it live is not guarded against (several
      replicas would need the controller's thread lease first).
-   - **5d** (notices ✅; `tools/deliver.ts` onto runtime delivery still to do) Auto-approval and
+   - **5d** ✅ Auto-approval and
      follower notices from the broker. A board run that approves its phase's own exit tool
      (`watchRun`, at most `MAX_PLAN_APPROVALS` a run) answers the paused call through its broker
      record (`broker.resolve`, `resolvedBy: 'factory'`, as the run's owner) instead of
@@ -536,6 +536,41 @@ Each slice: implement → focused tests → manual check where noted → commit.
      Code sessions (one `blocked` notice per plan or question, one `approval` per gate, none for a plan
      the board approves through the broker, the run carrying on as its owner) and on the dispatcher's
      fake sessions through a real broker (approvals capped at three, then a person is asked once).
+     A call the board meant to answer and didn't (no record within the wait, one a bare yes doesn't
+     answer, or a resume the session refused, which fails the decision with `run_failed`) is announced
+     then (`DispatcherInteractions.announce`: the broker's record if it still waits, else the run-end
+     `blocked` report).
+   - **5e** ✅ Messages to Mastra Code sessions through its adapter (`tools/deliver.ts`):
+     session-to-session notifications, replies and follower reports reach a Mastra Code session
+     through `deliverMastraCodeNotification` (`@factory/runtime-mastra-code`), a Claude Agent one
+     through `FactoryRuntimeSessions.message`; `deliverFactorySessionNotification` checks the thread is
+     the target's own and picks the target's runtime. **Decision: each runtime keeps its own durable
+     record behind one delivery path.** Mastra Code keeps Mastra's notification inbox (its store is the
+     record and survives a restart; the inbox decides, by priority and whether the thread runs, to
+     wake it, reach the running turn at its next step, or keep it for its dispatcher, and the agent's
+     `notification-inbox` tool, coalescing and summaries read that store). Moving it onto
+     `agent-messages` would have meant a second copy of every notification and re-implementing that
+     inbox, and a message held for the next turn would no longer reach a running turn mid-run. What
+     is shared: readers see both runtimes' records as one list (`factoryNotificationsOnThread`,
+     `factoryNotificationReader`: the per-sender rate limit, "already answered", the run-end report
+     backstop, which before missed a report kept for a Claude Agent follower, and side sessions' last
+     reports), and the right to answer a message (`inReplyTo`) is claimed atomically in
+     `agent-messages` for both runtimes, keyed by the answering session and the message id (upstream
+     only looked for a reply already sent, which two answers in one turn both pass; upstream behaviour
+     change). A Mastra Code message stays answerable as long as Mastra keeps it; its claim mark is
+     forgotten after 7 days, when the reply already on the sender's thread still refuses a second.
+     Dedupe keys: a notification with one (a gate's `factory-approval:<call>` notice) is kept under the
+     id its key gives it (`dedupedMessageId`) on Claude Agent, so a second is `skipped: duplicate`
+     (before, the key was dropped on that runtime); Mastra Code coalesces by key while the first is
+     pending, as before. GitHub pull request events to subscribed sessions (`integrations/github/
+webhook.ts`, slice 7) are unchanged: one event is handled once by the event claims, whether
+     webhook or poll brought it, for both runtimes, and the per-session keys from #48 stay. Checked on
+     aimock Mastra Code sessions (libSQL): a message wakes an idle session, which reads it as its
+     owner; two answers at once let one through, and a later one is refused; an urgent message
+     reaches a running turn mid-run and that turn's next model call carries it; a low one is kept
+     pending in Mastra's store across a real stop and start over the same storage and is answered
+     from the restarted server (the sender, not live, opened as its owner and woken), once; the same
+     GitHub review by webhook and then by poll reaches the session once.
 6. **Dispatcher, start coordinator, goals, context providers on the seam.** Board rules read the
    Factory transcript. Removes the processor/state-signal coupling from Factory.
    - **6a** ✅ Claude Agent board runs start: a run's session that never ran takes its project's
