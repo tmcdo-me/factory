@@ -248,10 +248,14 @@ export class PendingInteractions implements InteractionStore, ParkedRunSource {
     if (project) this.#notify(() => this.#options.onChanged?.(sessionId, project));
   }
 
-  /** The pending interactions a session holds for one tool call, from memory. */
-  waitingOn(sessionId: string, callId: string): InteractionRecord[] {
+  /**
+   * The pending interactions a session holds for one tool call, from memory. A hidden one (its runtime
+   * let go of the call) is left out unless `includeHidden`: only the runtime's own report of how the
+   * call ended may find it, nothing answering it.
+   */
+  waitingOn(sessionId: string, callId: string, { includeHidden = false } = {}): InteractionRecord[] {
     return [...(this.#waiting.get(sessionId)?.values() ?? [])]
-      .filter(waiting => waiting.record.callId === callId)
+      .filter(waiting => waiting.record.callId === callId && (includeHidden || !waiting.hidden))
       .map(waiting => waiting.record);
   }
 

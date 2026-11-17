@@ -381,7 +381,7 @@ describe.each(['libsql', ...(postgresUrl ? ['postgres'] : [])])(
       observeSessionAgentEvents(session, new SessionEventHub(agentEvents), {
         interactions: {
           broker,
-          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+          waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId, { includeHidden: true }),
           hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
         },
       });

@@ -185,9 +185,13 @@ describe('PendingInteractions', () => {
       request: question,
       requestedAt: new Date().toISOString(),
     });
+    expect(pending.waitingOn('s-ask', 'call-ask')).toHaveLength(1);
     pending.hide('s-ask', 'call-ask');
 
     expect(await broker.listPending({ sessionId: 's-ask' })).toEqual([]);
+    // Nothing answers it (an in-session answer is not attributed to it), but its runtime's report finds it.
+    expect(pending.waitingOn('s-ask', 'call-ask')).toEqual([]);
+    expect(pending.waitingOn('s-ask', 'call-ask', { includeHidden: true })).toHaveLength(1);
     await expect(broker.resolve(held.id, { kind: 'question', answer: 'yes' })).resolves.toMatchObject({
       status: 'not_pending',
     });

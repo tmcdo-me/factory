@@ -1872,7 +1872,8 @@ export class MastraFactory {
     this.#interactionBroker = interactionBroker;
     this.#interactionRecords = {
       broker: interactionBroker,
-      waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId),
+      // The runtime's own report settles a call it let go of too, so it finds the hidden ones.
+      waitingOn: (sessionId, callId) => pendingInteractions.waitingOn(sessionId, callId, { includeHidden: true }),
       hide: (sessionId, callId) => pendingInteractions.hide(sessionId, callId),
     };
     this.#interactionsLoaded = pendingInteractions.load().then(
