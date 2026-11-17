@@ -74,6 +74,7 @@ import { workItemProviderAdapter } from '../work-items/providers/index.js';
 import { decisionOvertaken } from './decision-applicability.js';
 import { FactoryDispatchError, factoryDispatchFailureCode, factoryDispatchFailureMetadata } from './dispatch-errors.js';
 import { isStatusEventDecision } from './event-rules.js';
+import { MastraCodeRuntimeSessions } from './mastra-code-sessions.js'; // fork(claude-agent)
 import { endPhaseGoal, PHASE_GOAL_METADATA_KEY, phaseGoalOf, startPhaseGoal } from './phase-goal.js';
 import {
   holdRuntimeGoal,
@@ -812,6 +813,7 @@ async function awaitNotification(
 export class FactoryDecisionDispatcher {
   readonly #audit?: AuditRecorder;
   readonly #controller: FactoryController;
+  readonly #mastraCode: MastraCodeRuntimeSessions; // fork(claude-agent)
   readonly #transitionService: Pick<FactoryTransitionService, 'transition' | 'configVersion'>;
   readonly #boards: ProjectBoardSource;
   readonly #intakeRoutes?: IntakeRoutesReader;
@@ -879,6 +881,7 @@ export class FactoryDecisionDispatcher {
   constructor(options: FactoryDecisionDispatcherOptions) {
     this.#audit = options.audit;
     this.#controller = options.controller;
+    this.#mastraCode = new MastraCodeRuntimeSessions(options.controller); // fork(claude-agent)
     this.#transitionService = options.transitionService;
     this.#boards = toBoardSource(options.boards);
     this.#intakeRoutes = options.intakeRoutes;
@@ -1010,7 +1013,7 @@ export class FactoryDecisionDispatcher {
     const active =
       this.#runInFlight.size > 0 ||
       this.#bookkeepingInFlight.size > 0 ||
-      this.#controller.listActiveThreadRuns().length > 0 ||
+      this.#mastraCode.anyRunning() ||
       (this.#lastBoundThreadRunAt !== undefined &&
         now.getTime() - this.#lastBoundThreadRunAt < this.#reconcileIntervalMs);
     if (!this.#reconcileToolResults) this.#reconcileOwed = false;
@@ -1157,9 +1160,7 @@ export class FactoryDecisionDispatcher {
               const seam = this.#runtimeSessions!;
               return seam.isRunning(binding.sessionId) || (await seam.awaitsPerson(binding.sessionId));
             }
-            const session = await this.#controller.getSession(binding.sessionId);
-            if (session?.thread.getId() !== binding.threadId) return false;
-            return session.suspensions.hasPending() || session.run.isRunning();
+            return await this.#mastraCode.holdsThread(binding.sessionId, binding.threadId);
           } catch {
             return false;
           }
@@ -1608,8 +1609,7 @@ export class FactoryDecisionDispatcher {
             (await this.#roleSuperseded(record, decision.role)) ||
             (await this.#findBinding(record, decision.role))?.id !== binding.id ||
             (await this.#decisionOvertaken(record, decision.role));
-          const runStillActive = () =>
-            this.#controller.listActiveThreadRuns().some(active => active.threadId === binding.threadId);
+          const runStillActive = () => this.#mastraCode.isThreadRunning(binding.threadId);
           await this.#waitForOpenRun(session, binding, 'Factory skill run');
           if (await this.#roleSuperseded(record, decision.role)) throw new FactoryDecisionSuperseded();
           const activeBinding = await this.#requireBinding(record, decision.role);
@@ -1648,7 +1648,7 @@ export class FactoryDecisionDispatcher {
           }
           if (await kickoffStale()) throw new FactoryDecisionSuperseded();
           await this.#reviewQueuedOnce(record, decision);
-          if (decision.cancelInFlight && session.stream.isActive()) session.abort();
+          if (decision.cancelInFlight) await this.#mastraCode.abort(binding.sessionId); // fork(claude-agent)
           const precedingMessage = decision.precedingMessage;
           if (precedingMessage) {
             await awaitNotification(() =>
@@ -2732,8 +2732,7 @@ export class FactoryDecisionDispatcher {
       return this.#sameRoleReplacement(record, role, expectedBindingId);
     }
     if (binding) {
-      const session = await this.#controller.getSession(binding.sessionId);
-      if (session) return binding;
+      if (await this.#mastraCode.runs(binding.sessionId)) return binding;
     }
     if (!this.#prepareBinding) {
       throw new FactoryDispatchError(
@@ -2768,7 +2767,7 @@ export class FactoryDecisionDispatcher {
     ) {
       throw new FactoryDecisionSuperseded();
     }
-    if (!(await this.#controller.getSession(replacement.sessionId))) {
+    if (!(await this.#mastraCode.runs(replacement.sessionId))) {
       throw new FactoryDispatchError('session_unavailable', 'Bound Factory session not found.');
     }
     return replacement;
@@ -2863,13 +2862,12 @@ export class FactoryDecisionDispatcher {
     const open = (await listSessionOpenRuns(session)).filter(entry => entry.bindingId === binding.id);
     if (open.length === 0) return false;
     if (open.some(entry => isOpenRunLiveElsewhere(entry, this.#ownerId))) return true;
-    return this.#controller.listActiveThreadRuns().some(active => active.threadId === binding.threadId);
+    return this.#mastraCode.isThreadRunning(binding.threadId);
   }
 
   /** Waits for the run in flight on `binding` to end, so a kickoff never overlaps it. */
   async #waitForOpenRun(session: BoundDispatcherSession, binding: FactoryRunBindingRecord, label: string) {
-    const runStillActive = () =>
-      this.#controller.listActiveThreadRuns().some(active => active.threadId === binding.threadId);
+    const runStillActive = () => this.#mastraCode.isThreadRunning(binding.threadId);
     // Only a *live* run on this binding can be duplicated by a second
     // kickoff, so that is the only thing worth waiting on. The open-run
     // ledger is shared by every replica, but the run registry is local, so
@@ -3800,8 +3798,7 @@ export class FactoryDecisionDispatcher {
             autoApproving: this.#autoApproving,
             approve: this.#approver(binding.sessionId, requestContext, 'Factory kickoff run'), // fork(claude-agent)
             label: 'Factory kickoff run',
-            runStillActive: () =>
-              this.#controller.listActiveThreadRuns().some(active => active.threadId === binding.threadId),
+            runStillActive: () => this.#mastraCode.isThreadRunning(binding.threadId),
           });
           const sendKickoff = (dedupeKey: string) =>
             awaitNotification(
