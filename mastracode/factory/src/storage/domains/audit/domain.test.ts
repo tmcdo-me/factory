@@ -168,6 +168,28 @@ describe('AuditDomain', () => {
     });
   });
 
+  it('records agent events for a session that carries no model (a Claude Agent turn)', async () => {
+    // fork(claude-agent): the controller entry once threw on a missing `session`, which dropped the row.
+    const seed = await createFactoryStorageForTests();
+    const domain = auditDomain(seed, {
+      agentTenant: () => ({ orgId: 'org-1', userId: 'user-1' }),
+    });
+    const requestContext = new RequestContext();
+    requestContext.set('controller', {
+      threadId: 'thread-2',
+      getState: () => ({ factoryProjectId: 'project-1' }),
+    });
+
+    await domain.emitAgent({
+      requestContext,
+      input: { action: 'factory.agent.commit', targets: [{ type: 'worktree', id: '/tmp/worktree' }] },
+    });
+
+    const [event] = (await seed.audit.list({ orgId: 'org-1' })).events;
+    expect(event).toMatchObject({ actorId: 'agent:thread-2', metadata: { startedBy: 'user-1' } });
+    expect(event?.metadata).not.toHaveProperty('modelId');
+  });
+
   it('serves exactly the project audit route', async () => {
     const seed = await createFactoryStorageForTests();
     expect(

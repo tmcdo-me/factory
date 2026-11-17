@@ -842,7 +842,9 @@ Each slice: implement → focused tests → manual check where noted → commit.
      workspace setting `projectPath`, the processor's review-runtime read and its memory-settings error
      event) call `controllerEntry` instead; they move into the Mastra Code adapter with the processor
      (owner decision), so the key leaves Factory core with them. Behaviour unchanged (same fields, same
-     fallbacks); suites for those modules pass unchanged.
+     fallbacks) except one fix: `AuditDomain.emitAgent` read `session.modelId` unguarded, so a Claude Agent turn
+     (whose entry has no `session`) threw into its catch and its agent audit row was dropped; it is now
+     recorded without a `modelId` (pinned by `domain.test.ts`). Suites for those modules pass unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via
