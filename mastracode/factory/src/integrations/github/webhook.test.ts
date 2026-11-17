@@ -1,6 +1,7 @@
 import { RequestContext } from '@mastra/core/request-context';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { MERGED_MESSAGES } from '../channel-thread-announcements.js';
+import { mastraCodeSubscriptionSessions } from '../mastra-code-subscription-sessions.js';
 import type { GithubSignalSubscriptionRow } from './subscriptions.js';
 
 const getRepositoryCollaboratorPermission = vi.fn<
@@ -49,7 +50,7 @@ function parsed(event: string, action: string, extra: Record<string, unknown> = 
  * delivery get a store where every thread exists under `resource-1`.
  */
 function controllerStub(overrides: Record<string, unknown>, threads: Record<string, string> | 'all' = 'all') {
-  return {
+  const controller = {
     queryThreadById: async ({ threadId }: { threadId: string }) =>
       threads === 'all'
         ? { id: threadId, resourceId: 'resource-1' }
@@ -57,7 +58,8 @@ function controllerStub(overrides: Record<string, unknown>, threads: Record<stri
           ? { id: threadId, resourceId: threads[threadId] }
           : null,
     ...overrides,
-  } as never;
+  };
+  return mastraCodeSubscriptionSessions(controller as never);
 }
 
 function subscription(
@@ -144,7 +146,7 @@ describe('dispatchGithubWebhook', () => {
         pull_request: undefined,
       }),
       {
-        controller: {} as never,
+        sessions: {} as never,
         github: githubStub,
         listSubscriptions,
       },
@@ -169,7 +171,7 @@ describe('dispatchGithubWebhook', () => {
           issue: { number: 34, pull_request: { url: 'https://api.github.test/pr/34' } },
           pull_request: undefined,
         }),
-        { controller: {} as never, github: githubStub, listSubscriptions },
+        { sessions: {} as never, github: githubStub, listSubscriptions },
       );
 
       await vi.advanceTimersByTimeAsync(5_000);
@@ -192,7 +194,7 @@ describe('dispatchGithubWebhook', () => {
     });
 
     await expect(
-      dispatchGithubWebhook(unauthorized, { controller: {} as never, github: githubStub, listSubscriptions }),
+      dispatchGithubWebhook(unauthorized, { sessions: {} as never, github: githubStub, listSubscriptions }),
     ).resolves.toEqual({
       delivered: 0,
       failed: 0,
@@ -200,7 +202,7 @@ describe('dispatchGithubWebhook', () => {
       ignored: true,
     });
     await expect(
-      dispatchGithubWebhook(authorized, { controller: {} as never, github: githubStub, listSubscriptions }),
+      dispatchGithubWebhook(authorized, { sessions: {} as never, github: githubStub, listSubscriptions }),
     ).resolves.toEqual({
       delivered: 0,
       failed: 0,
@@ -222,7 +224,7 @@ describe('dispatchGithubWebhook', () => {
     });
 
     await expect(
-      dispatchGithubWebhook(verdict, { controller: {} as never, github, listSubscriptions }),
+      dispatchGithubWebhook(verdict, { sessions: {} as never, github, listSubscriptions }),
     ).resolves.toEqual({ delivered: 0, failed: 0, skipped: 0, ignored: false });
     expect(getRepositoryCollaboratorPermission).not.toHaveBeenCalled();
   });
@@ -236,7 +238,7 @@ describe('dispatchGithubWebhook', () => {
     });
 
     await expect(
-      dispatchGithubWebhook(notification, { controller: {} as never, github, listSubscriptions }),
+      dispatchGithubWebhook(notification, { sessions: {} as never, github, listSubscriptions }),
     ).resolves.toEqual({ delivered: 0, failed: 0, skipped: 0, ignored: false });
     // The configured list extends the defaults rather than replacing them.
     await expect(
@@ -245,7 +247,7 @@ describe('dispatchGithubWebhook', () => {
           review: { state: 'commented' },
           sender: { login: 'coderabbitai[bot]', type: 'Bot' },
         }),
-        { controller: {} as never, github, listSubscriptions },
+        { sessions: {} as never, github, listSubscriptions },
       ),
     ).resolves.toEqual({ delivered: 0, failed: 0, skipped: 0, ignored: false });
     expect(getRepositoryCollaboratorPermission).not.toHaveBeenCalled();
@@ -257,11 +259,11 @@ describe('dispatchGithubWebhook', () => {
 
     await dispatchGithubWebhook(
       parsed('pull_request_review_comment', 'created', { sender: { login: 'openswebot', type: 'Bot' } }),
-      { controller: {} as never, github: githubStub, listSubscriptions, onSenderRejected },
+      { sessions: {} as never, github: githubStub, listSubscriptions, onSenderRejected },
     );
     await dispatchGithubWebhook(
       parsed('pull_request_review_comment', 'created', { sender: { login: 'coderabbitai[bot]', type: 'Bot' } }),
-      { controller: {} as never, github: githubStub, listSubscriptions, onSenderRejected },
+      { sessions: {} as never, github: githubStub, listSubscriptions, onSenderRejected },
     );
 
     expect(onSenderRejected).toHaveBeenCalledOnce();
@@ -299,7 +301,7 @@ describe('dispatchGithubWebhook', () => {
         },
       }),
       {
-        controller: controllerStub({ getSession, createSession: vi.fn() }),
+        sessions: controllerStub({ getSession, createSession: vi.fn() }),
         listSubscriptions: async () => [
           subscription('auto', 'thread-auto', 'auto-gh-pr-create'),
           subscription('factory', 'thread-factory', 'factory-pr-create'),
@@ -388,7 +390,7 @@ describe('dispatchGithubWebhook', () => {
 
       await expect(
         dispatchGithubWebhook(appComment('**Verdict: request changes**\n\n- fix the thing'), {
-          controller,
+          sessions: controller,
           github,
           listSubscriptions: managed,
         }),
@@ -404,7 +406,7 @@ describe('dispatchGithubWebhook', () => {
 
       await expect(
         dispatchGithubWebhook(appComment('**Verdict: approve**'), {
-          controller,
+          sessions: controller,
           github,
           listSubscriptions: async () => [subscription('explicit')],
         }),
@@ -417,7 +419,7 @@ describe('dispatchGithubWebhook', () => {
 
       await expect(
         dispatchGithubWebhook(appComment('Can you also update the docs?', 'ada'), {
-          controller,
+          sessions: controller,
           github,
           listSubscriptions: managed,
           isAuthorizedSender: async () => true,
@@ -445,7 +447,7 @@ describe('dispatchGithubWebhook', () => {
         pull_request: undefined,
       }),
       {
-        controller: controllerStub({ getSession, createSession }),
+        sessions: controllerStub({ getSession, createSession }),
         github: githubWithSessionRow({ userId: 'user-1', orgId: 'org-1' }, getBySessionId),
         listSubscriptions: async () => rows,
         isAuthorizedSender: async () => true,
@@ -503,7 +505,7 @@ describe('dispatchGithubWebhook', () => {
         pull_request: undefined,
       }),
       {
-        controller: controllerStub({ getSession: async () => undefined, createSession }),
+        sessions: controllerStub({ getSession: async () => undefined, createSession }),
         github: githubWithSessionRow(null),
         listSubscriptions: async () => [subscription('a')],
         isAuthorizedSender: async () => true,
@@ -523,7 +525,7 @@ describe('dispatchGithubWebhook', () => {
     const session = { thread: { getId: () => currentThread, switch: switchThread }, sendNotificationSignal: send };
 
     await dispatchGithubWebhook(parsed('pull_request', 'synchronize'), {
-      controller: controllerStub({ getSession: async () => session, createSession: vi.fn() }),
+      sessions: controllerStub({ getSession: async () => session, createSession: vi.fn() }),
       listSubscriptions: async () => [subscription('a')],
     });
 
@@ -537,7 +539,7 @@ describe('dispatchGithubWebhook', () => {
     const updateStatus = vi.fn(async () => {});
 
     await dispatchGithubWebhook(parsed('pull_request', 'reopened'), {
-      controller: controllerStub({
+      sessions: controllerStub({
         getSession: async () => ({
           thread: { getId: () => 'thread-a', switch: vi.fn() },
           sendNotificationSignal: send,
@@ -579,7 +581,7 @@ describe('dispatchGithubWebhook', () => {
     const result = await dispatchGithubWebhook(
       parsed('pull_request', 'closed', { pull_request: { number: 34, merged: true } }),
       {
-        controller: controllerStub({
+        sessions: controllerStub({
           getSession: async (sessionId: string) => (sessionId === 'session-a' ? success : failure),
           createSession: vi.fn(),
         }),
@@ -614,7 +616,7 @@ describe('dispatchGithubWebhook', () => {
         pull_request: { number: 34, merged: true, html_url: 'https://github.com/octo/hello/pull/34' },
       }),
       {
-        controller: controllerStub({
+        sessions: controllerStub({
           getSession: async (sessionId: string) => sessionFor(sessionId),
           createSession: vi.fn(),
           getChannels: () => ({ buildRenderContextForThread }),
@@ -650,7 +652,7 @@ describe('dispatchGithubWebhook', () => {
     const result = await dispatchGithubWebhook(
       parsed('pull_request', 'closed', { pull_request: { number: 34, merged: true } }),
       {
-        controller: controllerStub({
+        sessions: controllerStub({
           getSession: async () => session,
           createSession: vi.fn(),
           getChannels: () => ({
@@ -683,7 +685,7 @@ describe('dispatchGithubWebhook', () => {
     const result = await dispatchGithubWebhook(
       parsed('pull_request', 'closed', { pull_request: { number: 34, merged: false } }),
       {
-        controller: controllerStub({ getSession: async () => session, createSession: vi.fn() }),
+        sessions: controllerStub({ getSession: async () => session, createSession: vi.fn() }),
         // The row names no subscriber and the Factory session row is gone, so
         // there is no user to run as.
         github: githubWithSessionRow(null),
@@ -714,7 +716,7 @@ describe('dispatchGithubWebhook', () => {
     const result = await dispatchGithubWebhook(parsed('pull_request', 'synchronize'), {
       // The subscribed thread is absent from storage: the row points somewhere
       // this deployment cannot reach.
-      controller: controllerStub({ getSession, createSession }, {}),
+      sessions: controllerStub({ getSession, createSession }, {}),
       listSubscriptions: async () => [subscription('a')],
       retireSubscription: retire,
       onTargetSkipped,
@@ -738,7 +740,7 @@ describe('dispatchGithubWebhook', () => {
     const result = await dispatchGithubWebhook(parsed('pull_request', 'synchronize'), {
       // A session created before Factory resources were shared runs under its
       // own id, so the subscription's stored 'resource-1' does not own the thread.
-      controller: controllerStub({ getSession, createSession: vi.fn() }, { 'thread-a': 'session-a' }),
+      sessions: controllerStub({ getSession, createSession: vi.fn() }, { 'thread-a': 'session-a' }),
       listSubscriptions: async () => [subscription('a')],
     });
 
@@ -750,7 +752,7 @@ describe('dispatchGithubWebhook', () => {
   it('does nothing when no subscription exists', async () => {
     const controller = { getSession: vi.fn(), createSession: vi.fn() };
     const result = await dispatchGithubWebhook(parsed('pull_request', 'edited'), {
-      controller: controllerStub(controller),
+      sessions: controllerStub(controller),
       listSubscriptions: async () => [],
     });
 
@@ -777,7 +779,7 @@ describe('dispatchGithubWebhook org seeding', () => {
         pull_request: undefined,
       }),
       {
-        controller: controllerStub({ getSession: async () => session }),
+        sessions: controllerStub({ getSession: async () => session }),
         github: githubWithSessionRow(null, getBySessionId as never),
         listSubscriptions: async () => [subscription('a')],
         isAuthorizedSender: async () => true,
@@ -870,7 +872,7 @@ describe('dispatchGithubWebhook to Claude Agent sessions', () => {
     const result = await dispatchGithubWebhook(
       parsed('pull_request', 'closed', { pull_request: { number: 34, merged: true } }),
       {
-        controller: controllerStub({ getSession, createSession }),
+        sessions: controllerStub({ getSession, createSession }),
         github: githubWithSessionRow({ userId: 'user-1', orgId: 'org-1' }),
         listSubscriptions: async () => [subscription('claude')],
         retireSubscription,
@@ -904,7 +906,7 @@ describe('dispatchGithubWebhook to Claude Agent sessions', () => {
     const getSession = vi.fn();
     const createSession = vi.fn();
     const result = await dispatchGithubWebhook(parsed('pull_request', 'synchronize'), {
-      controller: controllerStub({ getSession, createSession }),
+      sessions: controllerStub({ getSession, createSession }),
       github: githubWithSessionRow({ userId: 'user-1', orgId: 'org-1' }),
       listSubscriptions: async () => [subscription('claude')],
       isAuthorizedSender: async () => true,

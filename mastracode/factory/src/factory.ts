@@ -99,11 +99,12 @@ import {
 import { isFactoryGithubLogin, trustedCollaborator } from './integrations/github/rules.js';
 import { dismissStaleFactoryReviews } from './integrations/github/stale-reviews.js';
 import { KeptCards } from './integrations/kept-cards.js';
+import { createSessionAsRowOwner } from './integrations/mastra-code-subscription-sessions.js';
 import { PlatformApiClient, platformApiClientConfigFromEnv } from './integrations/platform/api-client.js';
 import { buildConnectToolsRoute } from './integrations/platform/connect/routes.js';
 import { platformConnectTools } from './integrations/platform/connect/session-tools.js';
 import { logIntegrationSummary } from './integrations/startup-summary.js';
-import { createSessionAsRowOwner, prepareSessionRunContext } from './integrations/subscription-session.js';
+import { prepareSessionRunContext } from './integrations/subscription-session.js';
 import { shareLinkedRepositoryChanges } from './linked-repositories-changed.js';
 import { buildFactoryMcpRoutes, resolveMcpAuthorizationServers } from './mcp/routes.js';
 import type { FactoryMcpConfig } from './mcp/routes.js';

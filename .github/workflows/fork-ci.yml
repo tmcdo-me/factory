@@ -67,6 +67,14 @@ jobs:
       - name: Typecheck
         run: pnpm --filter @mastra/factory check
 
+      # Includes the seam import rule (mastracode/seam-import-lint.ts) and its allow-list.
+      - name: Lint
+        run: pnpm --filter @mastra/factory lint
+
+      - name: Format check
+        working-directory: mastracode/factory
+        run: pnpm exec oxfmt --check .
+
       - name: Fork-marked tests
         working-directory: mastracode/factory
         run: |
@@ -95,6 +103,14 @@ jobs:
 
       - name: Typecheck
         run: pnpm --filter @internal/factory-ui typecheck
+
+      # Includes the seam import rule (mastracode/seam-import-lint.ts) and its allow-list.
+      - name: Lint
+        run: pnpm --filter @internal/factory-ui lint
+
+      - name: Format check
+        working-directory: mastracode/factory-ui
+        run: pnpm exec oxfmt --check .
 
       - name: Fork-marked tests
         working-directory: mastracode/factory-ui

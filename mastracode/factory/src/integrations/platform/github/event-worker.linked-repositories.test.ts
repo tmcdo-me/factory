@@ -190,7 +190,7 @@ describe.each(databases)('PlatformGithubEventWorker linked repositories on $name
           });
         },
       }),
-      controller: {} as never,
+      sessions: {} as never,
       github: {} as never,
       storage: {
         integrationId: 'github',

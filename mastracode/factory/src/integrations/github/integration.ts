@@ -50,6 +50,7 @@ import type {
 import type { GithubEventClaims } from '../../storage/domains/github-events/base.js';
 import type { FactorySessionTools } from '../../tools/toolset.js'; // fork(claude-agent)
 import type { FactoryIntegration, IntegrationContext } from '../base.js';
+import { mastraCodeSubscriptionSessions } from '../mastra-code-subscription-sessions.js';
 import {
   GithubActivePullRequestPollWorker,
   GithubEventBusy,
@@ -1405,18 +1406,18 @@ export class GithubIntegration implements FactoryIntegration {
     const options = githubRulesOptions(this, ctx);
     if (!intervalMs || !options) return undefined;
     const ingest = attachGithubRules(this, ctx);
-    const controller = ctx.controller;
+    const sessions = ctx.controller ? mastraCodeSubscriptionSessions(ctx.controller) : undefined;
     // As a webhook delivery is handled, once per event: one the webhook brought first is a duplicate.
     const deliver = async (event: ParsedGithubWebhook) => {
       const outcome = await processGithubEvent(event, {
         ...(this.eventClaims ? { claims: this.eventClaims } : {}),
         ...(ingest ? { ingest } : {}),
-        ...(controller
+        ...(sessions
           ? {
               dispatch: (polled: ParsedGithubWebhook) =>
                 dispatchGithubWebhook(polled, {
                   github: this,
-                  controller,
+                  sessions,
                   ...(ctx.runtimeSessions ? { runtimeSessions: ctx.runtimeSessions } : {}),
                   onTargetError: (subscription, error) =>
                     console.warn(`[GitHub poll] Delivery failed for subscription ${subscription.id}.`, error),
