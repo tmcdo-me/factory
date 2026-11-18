@@ -1,7 +1,6 @@
 // fork(claude-agent): spec section 5. Factory and its UI reach agents through `@factory/agent-runtime`; they
-// do not import Mastra Code's agent controller or SDK. Slice 7 shrinks these lists to empty: each file listed
-// still imports one of them. Remove a file from its list in the change that removes its import (the rule then
-// guards it); a new file may not be added. Test files are exempt (the adapter's tests move with it).
+// do not import Mastra Code's agent controller or SDK. Slice 7 emptied these lists: Factory reaches Mastra Code
+// only through `@factory/runtime-mastra-code` (its `/sdk` and `/thinking` re-exports included). A new file may not be added. Test files are exempt (the adapter's tests move with it).
 import { defineConfig } from 'oxlint';
 
 export const restrictedMastraCodeImports = {
@@ -15,17 +14,10 @@ export const restrictedMastraCodeImports = {
 };
 
 /** Files under `mastracode/factory` that still import Mastra Code's controller or SDK. */
-export const factoryAllowList: string[] = [
-  'src/factory.ts',
-  'src/integrations/base.ts',
-  'src/integrations/github/routes.ts',
-];
+export const factoryAllowList: string[] = [];
 
 /** Files under `mastracode/factory-ui` that still import Mastra Code's SDK or controller types. */
-export const factoryUiAllowList: string[] = [
-  'src/ui/domains/chat/context/useChatCommandRegistry.ts',
-  'src/ui/domains/chat/services/thinkingLevels.ts',
-];
+export const factoryUiAllowList: string[] = [];
 
 /** The overrides that enforce the ban outside `allowList`. */
 export function seamImportOverrides(allowList: string[]): ReturnType<typeof defineConfig>['overrides'] {

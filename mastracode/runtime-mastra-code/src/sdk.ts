@@ -63,3 +63,11 @@ export { createSTTTranscriber, resolveSTTApiKey, sttApiKeyEnvVar } from '@mastra
 
 // integrations/slack
 export { migratePersistedModelSelection } from '@mastra/core/agent-controller';
+
+// factory.ts, integrations/base.ts: mounting, memory, MCP and credential-policy hooks used by the composition root
+export type { MastraCodeConfig } from '@mastra/code-sdk';
+export { prepareAgentControllerMount } from '@mastra/code-sdk';
+export { getDynamicMemory } from '@mastra/code-sdk/agents/memory';
+export { refuseClaudeSubscriptionCredentials } from '@mastra/code-sdk/auth/claude-subscription-policy';
+export { getGlobalMcpPath } from '@mastra/code-sdk/mcp/config';
+export type { AgentControllerRequestContext, BuiltinToolId } from '@mastra/core/agent-controller';

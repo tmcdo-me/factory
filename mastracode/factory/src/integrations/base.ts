@@ -17,7 +17,7 @@
  * sandbox machine's `derive()` gate).
  */
 
-import type { MastraCodeConfig, MountedMastraCode } from '@mastra/code-sdk';
+import type { MastraCodeConfig, MountedMastraCode } from '@factory/runtime-mastra-code/sdk';
 import type { AgentChannels, AgentControllerChannelsConfig, ChannelAdapterConfig } from '@mastra/core/channels';
 import type { InputProcessor, OutputProcessor } from '@mastra/core/processors';
 import type { RequestContext } from '@mastra/core/request-context';

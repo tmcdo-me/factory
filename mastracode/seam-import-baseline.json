@@ -1,7 +1,4 @@
 {
-  "factory": ["src/factory.ts", "src/integrations/base.ts", "src/integrations/github/routes.ts"],
-  "factoryUi": [
-    "src/ui/domains/chat/context/useChatCommandRegistry.ts",
-    "src/ui/domains/chat/services/thinkingLevels.ts"
-  ]
+  "factory": [],
+  "factoryUi": []
 }

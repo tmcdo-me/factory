@@ -17,6 +17,7 @@
   },
   "dependencies": {
     "@factory/agent-runtime": "workspace:*",
+    "@factory/runtime-mastra-code": "workspace:*",
     "@mastra/client-js": "workspace:*",
     "@mastra/code-sdk": "workspace:*",
     "@mastra/core": "workspace:*",

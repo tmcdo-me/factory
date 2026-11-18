@@ -19,6 +19,12 @@
         "default": "./dist/sdk.js"
       }
     },
+    "./thinking": {
+      "import": {
+        "types": "./dist/thinking.d.ts",
+        "default": "./dist/thinking.js"
+      }
+    },
     "./package.json": "./package.json"
   },
   "scripts": {
