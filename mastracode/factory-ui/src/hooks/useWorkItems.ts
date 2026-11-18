@@ -42,14 +42,20 @@ function requireFactoryProjectId(factoryProjectId: string | undefined): string {
   return factoryProjectId;
 }
 
+/** Whether a cached read under the board's key is a card snapshot: the waiting list shares the key but holds none. */
+function holdsCards<T extends BoardSnapshot>(cached: T | { workItems?: unknown } | undefined): cached is T {
+  return cached !== undefined && Array.isArray(cached.workItems);
+}
+
 /**
  * Rewrite the cached cards of the board and of every session read under `listKey`, keeping the
  * session activity read alongside them.
  */
 function patchCards(queryClient: QueryClient, listKey: QueryKey, patch: (cards: WorkItem[]) => WorkItem[]) {
   // Returning undefined skips the write: never seed a partial board before the list query loads.
+  // fork(claude-agent): other reads (the waiting list) live under the board's key and hold no cards: leave them be.
   queryClient.setQueriesData<BoardSnapshot>({ queryKey: listKey }, board =>
-    board ? { ...board, workItems: patch(board.workItems) } : undefined,
+    holdsCards(board) ? { ...board, workItems: patch(board.workItems) } : undefined,
   );
 }
 
@@ -573,9 +579,8 @@ export function useDeleteWorkItemMutation(factoryProjectId: string | undefined) 
     onMutate: async id => {
       await queryClient.cancelQueries({ queryKey: listKey });
       const previous = queryClient.getQueriesData<BoardSnapshot>({ queryKey: listKey });
-      queryClient.setQueriesData<BoardSnapshot | BoardPhasesSnapshot>(
-        { queryKey: listKey },
-        cached => cached && withoutCard(cached, id),
+      queryClient.setQueriesData<BoardSnapshot | BoardPhasesSnapshot>({ queryKey: listKey }, cached =>
+        holdsCards(cached) ? withoutCard(cached, id) : undefined,
       );
       return { previous };
     },
