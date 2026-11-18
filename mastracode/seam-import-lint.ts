@@ -13,6 +13,24 @@ export const restrictedMastraCodeImports = {
   ],
 };
 
+/**
+ * Factory UI runs in the browser and talks to the runtime through `@factory/agent-runtime`. The adapter's bare root
+ * and `/sdk` pull in Node-only Mastra Code code; only the browser-safe `/thinking` subpath is allowed. `paths`
+ * matches the exact specifier (a `patterns` group would also swallow `/thinking`).
+ */
+export const restrictedFactoryUiImports = {
+  paths: [
+    {
+      name: '@factory/runtime-mastra-code',
+      message: 'Factory UI may import only the browser-safe @factory/runtime-mastra-code/thinking subpath.',
+    },
+    {
+      name: '@factory/runtime-mastra-code/sdk',
+      message: 'Factory UI may import only the browser-safe @factory/runtime-mastra-code/thinking subpath.',
+    },
+  ],
+};
+
 /** Files under `mastracode/factory` that still import Mastra Code's controller or SDK. */
 export const factoryAllowList: string[] = [];
 
@@ -20,11 +38,19 @@ export const factoryAllowList: string[] = [];
 export const factoryUiAllowList: string[] = [];
 
 /** The overrides that enforce the ban outside `allowList`. */
-export function seamImportOverrides(allowList: string[]): ReturnType<typeof defineConfig>['overrides'] {
+export function seamImportOverrides(
+  allowList: string[],
+  { factoryUi = false }: { factoryUi?: boolean } = {},
+): ReturnType<typeof defineConfig>['overrides'] {
   return [
     {
       files: ['src/**/*.{ts,tsx}'],
-      rules: { 'no-restricted-imports': ['error', restrictedMastraCodeImports] },
+      rules: {
+        'no-restricted-imports': [
+          'error',
+          factoryUi ? { ...restrictedMastraCodeImports, ...restrictedFactoryUiImports } : restrictedMastraCodeImports,
+        ],
+      },
     },
     { files: allowList, rules: { 'no-restricted-imports': 'off' } },
     { files: ['**/*.test.*', '**/__tests__/**'], rules: { 'no-restricted-imports': 'off' } },

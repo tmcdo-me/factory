@@ -11,6 +11,10 @@ import { factoryAllowList, factoryUiAllowList } from '../../seam-import-lint';
 
 const RESTRICTED = /['"`]@mastra\/(?:code-sdk(?:\/[^'"`]*)?|core\/agent-controller)['"`]/;
 
+// Factory UI is browser code: the adapter's bare root and `/sdk` are banned, only `/thinking` is allowed. Unlike
+// the allow-listed specifiers above this ban has no allow-list, so any hit fails.
+const FACTORY_UI_BANNED = /['"`]@factory\/runtime-mastra-code(?:\/sdk)?['"`]/;
+
 function sourceFiles(root: string): string[] {
   const out: string[] = [];
   const walk = (dir: string) => {
@@ -54,5 +58,19 @@ describe.each(packages)('seam import allow-list: $name', ({ root, allowList, bas
 
   it('lists only files that still import Mastra Code', () => {
     expect(allowList.filter(file => !importers.includes(file))).toEqual([]);
+  });
+});
+
+describe('factory-ui may import only @factory/runtime-mastra-code/thinking', () => {
+  it('has no import of the adapter root or /sdk in any form', () => {
+    const root = join(__dirname, '../../factory-ui');
+    const offenders = sourceFiles(root).filter(file => FACTORY_UI_BANNED.test(readFileSync(join(root, file), 'utf8')));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the pattern distinguishes the banned specifiers from /thinking', () => {
+    expect(FACTORY_UI_BANNED.test("from '@factory/runtime-mastra-code'")).toBe(true);
+    expect(FACTORY_UI_BANNED.test('import("@factory/runtime-mastra-code/sdk")')).toBe(true);
+    expect(FACTORY_UI_BANNED.test("from '@factory/runtime-mastra-code/thinking'")).toBe(false);
   });
 });

@@ -20,7 +20,7 @@ export default defineConfig({
     'mastra/sentence-case-labels': 'error',
   },
   overrides: [
-    ...(seamImportOverrides(factoryUiAllowList) ?? []),
+    ...(seamImportOverrides(factoryUiAllowList, { factoryUi: true }) ?? []),
     {
       files: ['src/**/*.{ts,tsx}'],
       rules: copyRules,
