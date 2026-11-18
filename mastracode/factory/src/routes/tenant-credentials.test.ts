@@ -17,7 +17,9 @@ const { refreshToken, getApiKeyFromCreds } = vi.hoisted(() => ({
   refreshToken: vi.fn(),
   getApiKeyFromCreds: vi.fn(),
 }));
-vi.mock('@mastra/code-sdk/auth/storage', () => ({
+vi.mock('@mastra/code-sdk/auth/storage', async importOriginal => ({
+  // fork(claude-agent): the adapter's `/sdk` re-exports load the SDK root, which needs the rest of this module.
+  ...(await importOriginal<typeof import('@mastra/code-sdk/auth/storage')>()),
   PROVIDER_DEFAULT_MODELS: {
     anthropic: 'anthropic/claude-fable-5',
     'openai-codex': 'openai/gpt-5.6-sol',
