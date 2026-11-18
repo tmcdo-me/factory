@@ -639,3 +639,44 @@ describe('useBoardPhasesQuery', () => {
     expect(whole).toMatchObject({ matchingTotal: 3, boardTotal: 3 });
   });
 });
+
+describe('card writes while the Waiting list is cached', () => {
+  // The Waiting page's read lives under the board's key but holds `{ items }`, not cards.
+  it('create, move and remove leave it alone instead of failing on a snapshot without cards', async () => {
+    const waiting = { items: [] };
+    server.use(
+      http.post(`${TEST_BASE_URL}/web/factory/projects/${PROJECT_ID}/work-items`, () =>
+        HttpResponse.json({ workItem: { ...wireItem, id: 'item-2', stages: ['intake'] } }),
+      ),
+      http.post(`${TEST_BASE_URL}/web/factory/projects/${PROJECT_ID}/work-items/${ITEM_ID}/transition`, () =>
+        HttpResponse.json({
+          result: {
+            status: 'accepted',
+            transitionId: 't-1',
+            itemId: ITEM_ID,
+            revision: 2,
+            stage: 'planning',
+            decisions: [],
+          },
+        }),
+      ),
+      http.delete(`${TEST_BASE_URL}/web/factory/work-items/${ITEM_ID}`, () => HttpResponse.json({ ok: true })),
+    );
+    const { result, client } = renderHookWithProviders(() => ({
+      create: useUpsertWorkItemMutation(PROJECT_ID),
+      move: useTransitionWorkItemMutation(PROJECT_ID),
+      remove: useDeleteWorkItemMutation(PROJECT_ID),
+    }));
+    client.setQueryData(queryKeys.waitingSessions(PROJECT_ID), waiting);
+
+    act(() => result.current.create.mutate({ source: 'manual', sourceKey: null, title: 'New card' }));
+    await waitFor(() => expect(result.current.create.isSuccess).toBe(true));
+    act(() => result.current.move.mutate({ item: item(1, 'intake'), board: 'work', stage: 'planning' }));
+    await waitFor(() => expect(result.current.move.isSuccess).toBe(true));
+    act(() => result.current.remove.mutate(ITEM_ID));
+    await waitFor(() => expect(result.current.remove.isSuccess).toBe(true));
+    await waitForMutationsIdle(client);
+
+    expect(client.getQueryData(queryKeys.waitingSessions(PROJECT_ID))).toEqual(waiting);
+  });
+});
