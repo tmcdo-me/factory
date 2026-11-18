@@ -72,6 +72,7 @@ export interface RuntimeSessionState extends Record<string, unknown> {
   projectRepositoryId?: string;
   untrustedCheckout?: boolean;
   baseRef?: string;
+  pluginInstructions?: string[];
 }
 
 /** The session state accessors of a live session. */

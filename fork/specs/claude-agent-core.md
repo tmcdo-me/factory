@@ -994,6 +994,17 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      `@factory/runtime-mastra-code` implements it (`mastraCodeWorkspaceBuilders`) and `workspace-builders.test.ts`
      checks the types against Mastra Code's own; `factory.ts` passes it to `createWorkspaceFactory` (a required
      `builders` option; `workspace.test.ts` passes it too). `workspace.ts` left the allow-list. `claude-agent-workspace.ts` and `context-sandboxes.ts` are handled by 7h. Behaviour unchanged.
+   - **7l** (partial) Live session and controller as Factory's types: `@factory/agent-runtime` `live-session.ts`
+     (`RuntimeLiveSession`, `RuntimeController`, `RuntimeSignalInput/Result`), and
+     `runtime-mastra-code/src/live-session.test.ts` assigns the controller's own `Session` / `AgentController` to
+     them at compile time. The dispatcher, start coordinator, `session/factory-session.ts`, `rules/mastra-code-sessions.ts`,
+     `integrations/mastra-code-subscription-sessions.ts`, `skills/service.ts` and the test-support event hub
+     (`controller-event-hub.ts`) use them instead of the controller types; six files left the allow-list (now 3:
+     `factory.ts`, `integrations/base.ts`, `integrations/github/routes.ts`, all 7m). Behaviour unchanged. Not done,
+     and why: moving these files into `@factory/runtime-mastra-code` would make the adapter import Factory's
+     storage, skills and work-item modules (a cycle), so they stay in Factory behind the interface; moving
+     `FactoryPhaseStateProcessor` waits (66 test constructions, entangled with Factory's ingest/reconcile); the
+     `/sdk` subpath still has about 25 consumers and goes with 7m.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

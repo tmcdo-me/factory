@@ -1,4 +1,4 @@
-import type { MastraCodeState, AgentController } from '@factory/runtime-mastra-code/sdk';
+import type { RuntimeController } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { SendAgentSignalResult } from '@mastra/core/agent';
 import type { RequestContext } from '@mastra/core/request-context';
 import { formatSkillActivation } from '@mastra/core/workspace';
@@ -65,7 +65,7 @@ export function formatSkillMessage(name: string, contents: string): string {
 
 /** Kicks a run off from a plain prompt, for runs that activate no skill. */
 export async function resolvePromptInvocation(
-  controller: Pick<AgentController<MastraCodeState>, 'getSession'>,
+  controller: Pick<RuntimeController, 'getSession'>,
   input: { sessionId: string; prompt: string },
 ): Promise<{ session: SkillSession; skillName?: undefined; contents: string }> {
   const session = (await controller.getSession(input.sessionId)) as SkillSession | undefined;
@@ -74,7 +74,7 @@ export async function resolvePromptInvocation(
 }
 
 export async function resolveSkillInvocation(
-  controller: Pick<AgentController<MastraCodeState>, 'getSession'>,
+  controller: Pick<RuntimeController, 'getSession'>,
   input: SkillInvocationInput,
 ): Promise<{ session: SkillSession; skillName: string; contents: string }> {
   const session = (await controller.getSession(input.sessionId)) as SkillSession | undefined;
@@ -98,7 +98,7 @@ export async function resolveSkillInvocation(
  * skill tool.
  */
 export async function resolveSkillResumeInvocation(
-  controller: Pick<AgentController<MastraCodeState>, 'getSession'>,
+  controller: Pick<RuntimeController, 'getSession'>,
   input: SkillInvocationInput,
 ): Promise<{ session: SkillSession; skillName: string; contents: string }> {
   const session = (await controller.getSession(input.sessionId)) as SkillSession | undefined;

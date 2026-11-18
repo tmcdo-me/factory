@@ -1,10 +1,9 @@
 // fork(claude-agent): slice 6. Test support: Factory's event stream for a fake Mastra Code session.
-import type { EventEnvelope } from '@factory/agent-runtime';
+import type { EventEnvelope, RuntimeSessionEvent } from '@factory/agent-runtime';
 import { MastraCodeEventMapper } from '@factory/runtime-mastra-code';
-import type { AgentControllerEvent } from '@mastra/core/agent-controller';
 
 interface ControllerSession {
-  subscribe(listener: (event: AgentControllerEvent) => void): () => void;
+  subscribe(listener: (event: RuntimeSessionEvent) => void): () => void;
   identity?: { getId(): string };
 }
 
@@ -25,15 +24,15 @@ export function hubOf(session: ControllerSession): { sessionId: string; events: 
   const listeners = new Set<(envelope: EventEnvelope) => void>();
   let seq = 0;
   let running = false;
-  const deliver = (event: AgentControllerEvent) => {
-    for (const mapped of mapper.map(event)) {
+  const deliver = (event: RuntimeSessionEvent) => {
+    for (const mapped of mapper.map(event as Parameters<typeof mapper.map>[0])) {
       const envelope = { sessionId, seq: ++seq, at: new Date().toISOString(), event: mapped };
       for (const listener of [...listeners]) listener(envelope);
     }
   };
   const stop = session.subscribe(event => {
     if (event.type === 'agent_start') running = true;
-    if (event.type === 'agent_end' && !running) deliver({ type: 'agent_start' } as AgentControllerEvent);
+    if (event.type === 'agent_end' && !running) deliver({ type: 'agent_start' });
     if (event.type === 'agent_end') running = false;
     deliver(event);
   });

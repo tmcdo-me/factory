@@ -1,7 +1,6 @@
 // fork(claude-agent): the dispatcher's questions about Mastra Code sessions, asked through the same
 // vocabulary it uses for sessions on another runtime (`FactoryRuntimeSessions`), over the agent controller.
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentController, Session } from '@mastra/core/agent-controller';
+import type { RuntimeController, RuntimeLiveSession } from '@factory/agent-runtime'; // fork(claude-agent)
 import { RequestContext } from '@mastra/core/request-context';
 
 import { resolvePromptInvocation, resolveSkillInvocation, resolveSkillResumeInvocation } from '../skills/service.js';
@@ -62,7 +61,7 @@ export async function awaitNotification(
 }
 
 export function factoryRequestContext(input: {
-  session: Session<MastraCodeState>;
+  session: RuntimeLiveSession;
   binding: Pick<FactoryRunBindingRecord, 'sessionId' | 'threadId' | 'resourceId'>;
   userId: string;
   orgId: string;
@@ -87,7 +86,7 @@ export function factoryRequestContext(input: {
 }
 
 /** What the controller gives the dispatcher: the session registry and the run registry. */
-export type MastraCodeController = Pick<AgentController<MastraCodeState>, 'getSession' | 'listActiveThreadRuns'>;
+export type MastraCodeController = Pick<RuntimeController, 'getSession' | 'listActiveThreadRuns'>;
 
 /** The part of `FactoryRuntimeSessions` Mastra Code sessions answer here (kickoff and messages follow in later slices). */
 export type MastraCodeSessionQueries = Pick<

@@ -1,15 +1,5 @@
 {
-  "factory": [
-    "src/factory.ts",
-    "src/integrations/base.ts",
-    "src/integrations/github/routes.ts",
-    "src/integrations/mastra-code-subscription-sessions.ts",
-    "src/rules/dispatcher.ts",
-    "src/rules/mastra-code-sessions.ts",
-    "src/rules/start-coordinator.ts",
-    "src/session/controller-event-hub.ts",
-    "src/session/factory-session.ts"
-  ],
+  "factory": ["src/factory.ts", "src/integrations/base.ts", "src/integrations/github/routes.ts"],
   "factoryUi": [
     "src/ui/domains/chat/context/useChatCommandRegistry.ts",
     "src/ui/domains/chat/services/thinkingLevels.ts"
