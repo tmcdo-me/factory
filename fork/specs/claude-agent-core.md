@@ -902,7 +902,7 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      (it needs the structured error, observational-memory failures and an `agent_end`-synchronous
      `supersededAtEnd`, none of which the hub carries); the adapter moves into `runtime-mastra-code` at the end
      of slice 7, where it may import the controller.
-7. **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
+7. ✅ **Remaining call sites** (integrations' session subscriptions, Slack, voice, routes/config,
    credentials) → seam. Lint allow-list empty; `factory.ts` builds the Mastra Code adapter only at
    the composition root.
    - **7a** ✅ The `controller` request-context entry is named in one file, `session/turn-session.ts`. Every
@@ -1005,6 +1005,17 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      storage, skills and work-item modules (a cycle), so they stay in Factory behind the interface; moving
      `FactoryPhaseStateProcessor` waits (66 test constructions, entangled with Factory's ingest/reconcile); the
      `/sdk` subpath still has about 25 consumers and goes with 7m.
+   - **7m** ✅ Allow-lists empty (factory and factory-ui) and the baseline empty. `factory.ts`,
+     `integrations/base.ts` and `integrations/github/routes.ts` import the mount, memory, MCP-path, credential-policy
+     and model-resolution code from `@factory/runtime-mastra-code/sdk` (new re-exports; no behaviour of its own);
+     factory-ui's two thinking-level files use a new browser-safe `@factory/runtime-mastra-code/thinking` subpath.
+     Review nits from 7l: `openAsOwner` is typed to return the controller session (the cast is gone,
+     `createSessionAsRowOwner` is generic over the session type), and the two tautological `returns.toEqualTypeOf`
+     lines left `live-session.test.ts` (its plain assignments still catch drift). The cast in
+     `controller-event-hub.ts` stays: `RuntimeSessionEvent` is Factory's looser event type and narrowing it needs the
+     controller's event union. **Deliberate end state:** Factory reaches Mastra Code only through
+     `@factory/runtime-mastra-code`, including its `/sdk` and `/thinking` re-export subpaths; there is no full
+     capability injection at the composition root. Behaviour unchanged.
 8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
    resume/abort.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via

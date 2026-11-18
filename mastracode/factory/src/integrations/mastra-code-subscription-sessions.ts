@@ -1,6 +1,6 @@
 // fork(claude-agent): how a provider event reaches a Mastra Code session. Mastra Code internal: it moves
 // into `@factory/runtime-mastra-code` with the adapter (slice 7); the integrations see `SubscriptionSessions`.
-import type { RuntimeController } from '@factory/agent-runtime'; // fork(claude-agent)
+import type { RuntimeController, RuntimeLiveSession } from '@factory/agent-runtime'; // fork(claude-agent)
 import type { AgentChannels } from '@mastra/core/channels';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
 import { RequestContext } from '@mastra/core/request-context';
@@ -55,8 +55,8 @@ export function mastraCodeSubscriptionSessions(controller: MastraCodeController)
  * reach a session nobody has open: there is no signed-in user, so the session
  * runs as the person it belongs to.
  */
-export async function createSessionAsRowOwner(
-  controller: Pick<MastraCodeController, 'createSession'>,
+export async function createSessionAsRowOwner<TSession extends RuntimeLiveSession = RuntimeLiveSession>(
+  controller: Pick<RuntimeController<TSession>, 'createSession'>,
   args: {
     sessionId: string;
     ownerResourceId: string;

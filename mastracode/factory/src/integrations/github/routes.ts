@@ -11,8 +11,8 @@
  * so the SPA can cleanly hide all GitHub UI.
  */
 
-import type { MountedMastraCode } from '@mastra/code-sdk';
-import { resolveModel } from '@mastra/code-sdk/agents/model';
+import { resolveModel } from '@factory/runtime-mastra-code/sdk';
+import type { MountedMastraCode } from '@factory/runtime-mastra-code/sdk';
 import { RequestContext } from '@mastra/core/request-context';
 import type { ApiRoute, IUserProvider } from '@mastra/core/server';
 import { registerApiRoute } from '@mastra/core/server';

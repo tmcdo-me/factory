@@ -4,7 +4,7 @@ import {
   parseThinkCommand,
   runThinkingLevel,
   THINK_COMMAND_DESCRIPTOR,
-} from '@mastra/code-sdk/thinking';
+} from '@factory/runtime-mastra-code/thinking';
 import { useLocation, useNavigate, useParams } from 'react-router';
 
 import { useAbortSessionMutation } from '../../../../hooks/useSessionCommandMutations';

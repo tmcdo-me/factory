@@ -1,4 +1,3 @@
-import type { RuntimeLiveSession } from '@factory/agent-runtime';
 import type { AgentController } from '@mastra/core/agent-controller';
 import type { SendNotificationSignalInput } from '@mastra/core/notifications';
 
@@ -64,9 +63,9 @@ export async function deliverMastraCodeNotification(
     onlyIfLive?: boolean;
     /**
      * Open the session nobody has live, as the person it belongs to; undefined when nobody can be. It is a
-     * session this controller created (Factory sees it as a `RuntimeLiveSession`).
+     * session this controller created.
      */
-    openAsOwner: () => Promise<RuntimeLiveSession | undefined>;
+    openAsOwner: () => Promise<MastraCodeDeliverySession | undefined>;
   },
 ): Promise<MastraCodeDeliveryResult> {
   // No request context: without a user the controller's access check is a no-op, and this is a
@@ -74,7 +73,7 @@ export async function deliverMastraCodeNotification(
   let session = await controller.getSession(target.sessionId);
   if (!session) {
     if (options.onlyIfLive) return { delivered: 'skipped', reason: 'offline' };
-    session = (await options.openAsOwner()) as MastraCodeDeliverySession | undefined;
+    session = await options.openAsOwner();
     if (!session) return { delivered: 'skipped', reason: 'session-not-found' };
   }
 

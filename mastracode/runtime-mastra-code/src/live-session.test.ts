@@ -4,7 +4,7 @@
 import type { RuntimeController, RuntimeLiveSession } from '@factory/agent-runtime';
 import type { MastraCodeState } from '@mastra/code-sdk/schema';
 import type { AgentController, Session } from '@mastra/core/agent-controller';
-import { describe, expectTypeOf, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 describe('Factory-owned live session and controller types against the controller', () => {
   it("a controller session is structurally Factory's live session", () => {
@@ -12,7 +12,6 @@ describe('Factory-owned live session and controller types against the controller
     const asLiveSession = (session: Session<MastraCodeState>): RuntimeLiveSession => session;
     const asController = (controller: AgentController<MastraCodeState>): RuntimeController<Session<MastraCodeState>> =>
       controller;
-    expectTypeOf(asLiveSession).returns.toEqualTypeOf<RuntimeLiveSession>();
-    expectTypeOf(asController).returns.toEqualTypeOf<RuntimeController<Session<MastraCodeState>>>();
+    expect([asLiveSession, asController]).toHaveLength(2);
   });
 });

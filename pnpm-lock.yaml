@@ -2600,6 +2600,9 @@ importers:
       '@factory/agent-runtime':
         specifier: workspace:*
         version: link:../agent-runtime
+      '@factory/runtime-mastra-code':
+        specifier: workspace:*
+        version: link:../runtime-mastra-code
       '@mastra/client-js':
         specifier: workspace:*
         version: link:../../client-sdks/client-js

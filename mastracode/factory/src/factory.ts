@@ -30,14 +30,19 @@ import {
   mastraCodeWorkspaceBuilders,
 } from '@factory/runtime-mastra-code';
 import type { MastraCodeAnswerSession } from '@factory/runtime-mastra-code'; // fork(claude-agent)
+import {
+  getDynamicMemory,
+  getGlobalMcpPath,
+  prepareAgentControllerMount,
+  refuseClaudeSubscriptionCredentials,
+} from '@factory/runtime-mastra-code/sdk';
+import type {
+  AgentControllerRequestContext,
+  BuiltinToolId,
+  MastraCodeConfig,
+  MastraCodeState,
+} from '@factory/runtime-mastra-code/sdk';
 import { MastraAuthStudio } from '@mastra/auth-studio';
-import { prepareAgentControllerMount } from '@mastra/code-sdk';
-import type { MastraCodeConfig } from '@mastra/code-sdk';
-import { getDynamicMemory } from '@mastra/code-sdk/agents/memory';
-import { refuseClaudeSubscriptionCredentials } from '@mastra/code-sdk/auth/claude-subscription-policy';
-import { getGlobalMcpPath } from '@mastra/code-sdk/mcp/config';
-import type { MastraCodeState } from '@mastra/code-sdk/schema';
-import type { AgentControllerRequestContext, BuiltinToolId } from '@mastra/core/agent-controller';
 import type { MastraBrowser } from '@mastra/core/browser';
 import { AgentControllerChannels } from '@mastra/core/channels';
 import { EventEmitterPubSub } from '@mastra/core/events';
