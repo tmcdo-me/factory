@@ -238,8 +238,8 @@ Runtimes never assume the checkout is on the Factory host: Claude Agent always l
 | Resume after Factory restart | Claude transcripts in host `~/.claude` | Claude transcripts persist on the sprite disk (`~/.factory/claude-agent/.claude`) → `resume: sessionId` works                                             |
 | Server config                | —                                      | `SPRITES_TOKEN` (the Fly org's Sprites token), optional `FACTORY_SPRITES_REGION`; Node ≥ 24 (required by `@fly/sprites`)                                  |
 
-Selection: `FACTORY_SANDBOX_PROVIDER=local|sprites` as the deployment default, overridable per
-project. Platform and E2B sandbox paths are left in place but unsupported by this fork.
+Selection: `FACTORY_SANDBOX_PROVIDER=local|sprites`, one per server (no per-project override; see
+slice 10). Platform and E2B sandbox paths are left in place but unsupported by this fork.
 Later: Sprites network policy to restrict egress; checkpoints before Building for cheap rollback.
 
 Compliance note: running the unmodified Claude Code binary in a sandbox the operator owns, signed
@@ -1016,8 +1016,14 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      controller's event union. **Deliberate end state:** Factory reaches Mastra Code only through
      `@factory/runtime-mastra-code`, including its `/sdk` and `/thinking` re-export subpaths; there is no full
      capability injection at the composition root. Behaviour unchanged.
-8. **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
-   resume/abort.
+8. ✅ **Claude Agent adapter** (local): text turn → built-in tools → Factory tools → interactions →
+   resume/abort. `@factory/runtime-claude-agent` (`ClaudeAgentSession`): one Claude Code process per
+   session kept across turns, its stream folded into the Factory transcript; Claude Code's coding tools
+   only; Factory's tools as the in-process `factory` MCP server, each call bound to its `tool_use` and
+   run; `ask_user`, `submit_plan` and approvals through the broker (slice 5); a stopped turn ends as
+   aborted (the tool in flight is stopped), and an idle or restarted Claude Code resumes the
+   conversation with `resume`. Covered by `session.test.ts` (fake SDK) and `session.live.test.ts`
+   (real binary); the later work in slices 9, 12 and 13 builds on it.
 9. **Sprites sandbox**: `FactorySandbox` wrapper over `@mastra/sprites`, `workspace.spawn` via
    `sprite.spawn`, pinned Claude Code install, lifecycle (create/hibernate/destroy). Mastra Code on
    Sprites first (uses the sandbox API only), then Claude Agent on Sprites.
@@ -1132,7 +1138,14 @@ ended`) of runs on the binding's thread, shaped as the assistant messages the pr
      other than those denied (the sandbox lets commands read the rest of the machine); and `sudo`
      inside the sandbox (bubblewrap sets `no_new_privs`, so `sudo apt-get install` from Claude's
      shell doesn't work).
-10. **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
+10. ✅ **Runtime + sandbox selection**: project defaults + per-session override in UI and API.
+    Runtime: `routes/agent-runtimes.ts` serves the catalog, each project's default
+    (`GET|PUT /web/factory/projects/:projectId/runtime`, Settings → Manage Factory) and a session's
+    runtime and model (`GET|PUT /web/factory/sessions/:sessionId/runtime`; refused once the session
+    has started); the composer's runtime picker is preset from the project default, and board runs
+    use it. Sandbox: **dropped** as a per-project or per-session choice. The sandbox is the
+    server's, set by `FACTORY_SANDBOX_PROVIDER` (Sprites in the container deployment, which refuses
+    any other, slice 15; local for development), so there is nothing to choose per project (§3.6).
 11. **Full board run on Claude Agent** on a scratch repo, local and on Sprites (manual E2E).
 12. ✅ **Remove Claude subscription OAuth sign-in** (`routes/oauth.ts`, UI option, refuse stored
     `anthropic` OAuth creds). The Anthropic paste-code flow is gone with everything only it used:
